@@ -291,17 +291,17 @@
   (setf (buffer-value buffer 'mode-class-cache) value))
 
 (defun get-active-modes-class-instance (buffer)
-  (let ((mode-classes (all-active-mode-classes buffer)))
+  (let* ((mode-classes (all-active-mode-classes buffer))
+         (mode-names (mapcar #'class-name mode-classes)))
     (cond ((or (null (buffer-active-modes-class-cache buffer))
                (not (equal (car (buffer-active-modes-class-cache buffer))
-                           (mapcar #'class-name mode-classes))))
+                           mode-names)))
            (let ((instance
                    (make-instance
                     (c2mop:ensure-class (buffer-mode-class-name buffer)
                                         :direct-superclasses mode-classes))))
              (setf (buffer-active-modes-class-cache buffer)
-                   (cons (mapcar #'class-name mode-classes)
-                         instance))
+                   (cons mode-names instance))
              instance))
           (t
            (cdr (buffer-active-modes-class-cache buffer))))))

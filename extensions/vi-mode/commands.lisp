@@ -984,17 +984,17 @@ Only opens the file if it exists"
     (if (eq direction :forward)
         (line-end limit)
         (line-start limit))
-    (let ((lem:*case-fold-search* t))
-      (when (loop repeat count
-                  for result = (funcall (if (eq direction :forward)
-                                            'search-forward
-                                            'search-backward)
-                                        p
-                                        (string c)
-                                        limit)
-                  unless result
-                    do (return nil)
-                  finally (return t))
+    (let ((lem:*case-fold-search* nil))
+      (when (loop :repeat count
+                  :for result = (funcall (if (eq direction :forward)
+                                             'search-forward
+                                             'search-backward)
+                                         p
+                                         (string c)
+                                         limit)
+                  :unless result
+                    :do (return nil)
+                  :finally (return t))
         (character-offset p offset)
         (move-point (current-point) p)))))
 

@@ -156,7 +156,10 @@
       (switch-to-window window))))
 
 (define-command previous-window (&optional (n 1)) (:universal)
-  (next-window (- n)))
+  (let ((window (current-window)))
+    (dotimes (_ n t)
+      (setf window (get-previous-window window)))
+    (switch-to-window window)))
 
 (define-command switch-to-last-focused-window () ()
   "Go to the window that was last in focus."

@@ -496,8 +496,9 @@ The difference from 'insert-string' is that the text properties in 'buffer' are 
   (loop :for line := (point-line (buffer-start-point buffer)) :then (line:line-next line)
         :while line
         :do (insert-string point (line:line-string line))
-            (setf (line:line-plist (point-line point)) (line:line-plist line))
-            (insert-character point #\newline)))
+            (setf (line:line-plist (point-line point)) (copy-tree (line:line-plist line)))
+            (when (line:line-next line)
+              (insert-character point #\newline))))
 
 (defun buffer-text (buffer)
   (points-to-string (buffer-start-point buffer)

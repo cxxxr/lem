@@ -489,23 +489,27 @@ close to it."
 You can pass in the optional argument WINDOW-LIST to replace the default
 `window-list`."
   (if (attached-window-p window)
-      (get-next-window (attached-window-parent-window window))
-      (let ((window (let ((result (member window window-list)))
-                      (if (cdr result)
-                          (cadr result)
-                          (car window-list)))))
-        (or (window-attached-window window)
-            window))))
+      (get-next-window (attached-window-parent-window window) window-list)
+      (let ((next (let ((result (member window window-list)))
+                    (if (cdr result)
+                        (cadr result)
+                        (car window-list)))))
+        (or (window-attached-window next)
+            next))))
 
 (defun get-previous-window (window &optional (window-list (window-list)))
   "Return window before WINDOW in the cyclic ordering of windows.
 
 You can pass in the optional argument WINDOW-LIST to replace the default
 `window-list`."
-  (let ((result (member window (reverse window-list))))
-    (if (cdr result)
-        (cadr result)
-        (car window-list))))
+  (if (attached-window-p window)
+      (get-previous-window (attached-window-parent-window window) window-list)
+      (let ((prev (let ((result (member window (reverse window-list))))
+                    (if (cdr result)
+                        (cadr result)
+                        (car (last window-list))))))
+        (or (window-attached-window prev)
+            prev))))
 
 (defvar *update-only-when-state-changed* nil)
 

@@ -93,8 +93,10 @@ lem-if:char-pixel-width of its characters."))
            (text-object-within-cursor-p drawing-object-2))))
 
 (defmethod drawing-object-equal ((drawing-object-1 eol-cursor-object) (drawing-object-2 eol-cursor-object))
-  (equal (eol-cursor-object-color drawing-object-1)
-         (eol-cursor-object-color drawing-object-2)))
+  (and (equal (eol-cursor-object-color drawing-object-1)
+              (eol-cursor-object-color drawing-object-2))
+       (eq (not (null (eol-cursor-object-true-cursor-p drawing-object-1)))
+           (not (null (eol-cursor-object-true-cursor-p drawing-object-2))))))
 
 (defmethod drawing-object-equal ((drawing-object-1 extend-to-eol-object) (drawing-object-2 extend-to-eol-object))
   (equal (extend-to-eol-object-color drawing-object-1)
@@ -106,11 +108,11 @@ lem-if:char-pixel-width of its characters."))
               (line-end-object-offset drawing-object-2))))
 
 (defmethod drawing-object-equal ((drawing-object-1 image-object) (drawing-object-2 image-object))
-  (and (eq (image-object-image drawing-object-1) (image-object-image drawing-object-1))
-       (equal (image-object-width drawing-object-1) (image-object-width drawing-object-1))
-       (equal (image-object-height drawing-object-1) (image-object-height drawing-object-1))))
+  (and (eq (image-object-image drawing-object-1) (image-object-image drawing-object-2))
+       (equal (image-object-width drawing-object-1) (image-object-width drawing-object-2))
+       (equal (image-object-height drawing-object-1) (image-object-height drawing-object-2))))
 
-
+
 (defgeneric drawing-object-mergable-p (drawing-object-1 drawing-object-2))
 
 (defmethod drawing-object-mergable-p (drawing-object-1 drawing-object-2)
@@ -128,8 +130,10 @@ lem-if:char-pixel-width of its characters."))
            (text-object-within-cursor-p drawing-object-2))))
 
 (defmethod drawing-object-mergable-p ((drawing-object-1 eol-cursor-object) (drawing-object-2 eol-cursor-object))
-  (equal (eol-cursor-object-color drawing-object-1)
-         (eol-cursor-object-color drawing-object-2)))
+  (and (equal (eol-cursor-object-color drawing-object-1)
+              (eol-cursor-object-color drawing-object-2))
+       (eq (not (null (eol-cursor-object-true-cursor-p drawing-object-1)))
+           (not (null (eol-cursor-object-true-cursor-p drawing-object-2))))))
 
 (defmethod drawing-object-mergable-p ((drawing-object-1 extend-to-eol-object) (drawing-object-2 extend-to-eol-object))
   (equal (extend-to-eol-object-color drawing-object-1)
@@ -141,11 +145,11 @@ lem-if:char-pixel-width of its characters."))
               (line-end-object-offset drawing-object-2))))
 
 (defmethod drawing-object-mergable-p ((drawing-object-1 image-object) (drawing-object-2 image-object))
-  (and (eq (image-object-image drawing-object-1) (image-object-image drawing-object-1))
-       (equal (image-object-width drawing-object-1) (image-object-width drawing-object-1))
-       (equal (image-object-height drawing-object-1) (image-object-height drawing-object-1))))
+  (and (eq (image-object-image drawing-object-1) (image-object-image drawing-object-2))
+       (equal (image-object-width drawing-object-1) (image-object-width drawing-object-2))
+       (equal (image-object-height drawing-object-1) (image-object-height drawing-object-2))))
 
-
+
 (defgeneric drawing-object-merge (drawing-object-1 drawing-object-2))
 
 (defmethod drawing-object-merge ((drawing-object-1 void-object) (drawing-object-2 void-object))
@@ -183,7 +187,7 @@ lem-if:char-pixel-width of its characters."))
 (defmethod drawing-object-merge ((drawing-object-1 image-object) (drawing-object-2 image-object))
   drawing-object-1)
 
-
+
 
 (defun object-width (drawing-object)
   (or (drawing-object-width drawing-object)
@@ -341,10 +345,10 @@ monospace types when PROPORTIONAL (see proportional-text-p)."
 (defun create-drawing-objects (logical-line &optional proportional)
   (multiple-value-bind (items line-end-item)
       (compute-items-from-logical-line logical-line)
-    (append (loop :for item :in items
-                  :append (create-drawing-object item proportional))
-            (when line-end-item
-              (create-drawing-object line-end-item)))))
+    (nconc (loop :for item :in items
+                  :nconc (create-drawing-object item proportional))
+           (when line-end-item
+             (create-drawing-object line-end-item)))))
 
 (defun make-letter-object (character attribute)
   (make-object-with-type (string character)

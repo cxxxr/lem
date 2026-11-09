@@ -143,9 +143,26 @@ the same immutable instance for every subsequent message."
                            :collect (lem:window-view window)))
        'vector)))
 
+(defun valid-display-size-p (width height)
+  "Return T when WIDTH and HEIGHT are usable display sizes in character units.
+
+The browser client computes these by dividing the pixel size of its
+editor element by the font metrics.  When the webview window has no
+layout yet (e.g. the webkit renderer failed to start, as happens
+under WSLg without a working GPU surface) the values arrive as
+JSON null and would otherwise be stored as NIL, later crashing
+MAX-WINDOW-HEIGHT with (- NIL 0) and cascading into an error-error
+loop during frame setup.
+
+NOTE: Lem with webview likely won't work under WSL due to webkitgtk
+limitations."
+  (and (typep width  '(integer 1))
+       (typep height '(integer 1))))
+
 (defmethod resize-display ((jsonrpc jsonrpc) width height)
-  (setf (jsonrpc-display-width jsonrpc) width
-        (jsonrpc-display-height jsonrpc) height))
+  (when (valid-display-size-p width height)
+    (setf (jsonrpc-display-width jsonrpc) width
+          (jsonrpc-display-height jsonrpc) height)))
 
 (defmethod notify ((jsonrpc jsonrpc) method argument)
   (jsonrpc:broadcast (jsonrpc-server jsonrpc) method argument))
@@ -572,7 +589,7 @@ the same immutable instance for every subsequent message."
         (yason:encode-object-element "cursor" (bool (lem-core:cursor-attribute-p attribute)))))))
 
 
-
+
 ;;; drawing
 (defgeneric object-width (drawing-object))
 
