@@ -13,6 +13,11 @@
 #ifdef __APPLE__
   #include <util.h>
   #include <sys/ioctl.h>
+#elif __FreeBSD__
+  #include <sys/types.h>
+  #include <sys/ioctl.h>
+  #include <termios.h>
+  #include <libutil.h>
 #else
   #include <pty.h>
 #endif

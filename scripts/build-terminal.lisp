@@ -1,8 +1,8 @@
 ;;;; Build the lem-terminal native helper (terminal.so) for the current
 ;;;; platform from extensions/terminal/terminal.c.
 ;;;;
-;;;; Requires a C compiler and libvterm. On Linux, also requires libutil
-;;;; (for forkpty); macOS provides it via libc.
+;;;; Requires a C compiler and libvterm. On Linux and FreeBSD, also
+;;;; requires libutil (for forkpty); macOS provides it via libc.
 ;;;;
 ;;;; Invoke via `make terminal-lib` or directly:
 ;;;;   sbcl --script scripts/build-terminal.lisp
@@ -50,29 +50,35 @@ leave this unset and dynamic-link against the system libvterm."
          (not (member v '("0" "no" "false") :test #'string-equal)))))
 
 (defun libvterm-prefix ()
-  "Resolve the libvterm install prefix for static linking on macOS, where the
-archive must be passed by path. Honors LIBVTERM_PREFIX, then `brew --prefix
-libvterm`, then the default Homebrew location."
+  "Resolve the libvterm install prefix. Honors LIBVTERM_PREFIX, then a
+platform default: on macOS `brew --prefix libvterm` or the default Homebrew
+location; on FreeBSD LOCALBASE or /usr/local."
   (or (uiop:getenv "LIBVTERM_PREFIX")
-      (ignore-errors
-       (let ((p (string-trim '(#\Space #\Tab #\Newline #\Return)
-                             (uiop:run-program '("brew" "--prefix" "libvterm")
-                                               :output :string))))
-         (when (plusp (length p)) p)))
-      "/opt/homebrew/opt/libvterm"))
+      #+darwin (ignore-errors
+                (let ((p (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                      (uiop:run-program '("brew" "--prefix" "libvterm")
+                                                        :output :string))))
+                  (when (plusp (length p)) p)))
+      #+darwin "/opt/homebrew/opt/libvterm"
+      #+freebsd (or (uiop:getenvp "LOCALBASE") "/usr/local")))
 
 ;; libvterm linker fragment, selected by platform and static/dynamic mode.
 ;; macOS dynamic uses Homebrew's include/lib; macOS static links the archive
 ;; directly (no -L/-lvterm, which would re-introduce a dynamic dependency).
 ;; Linux static wraps -lvterm in -Bstatic so only libvterm is static while
 ;; libutil/libc stay dynamic.
+;; FreeBSD links dynamically against (libvterm-prefix) (LOCALBASE, default
+;; /usr/local) with an rpath so non-default prefixes load at runtime.
 (defun vterm-flags ()
   (if (static-p)
       #+darwin (let ((prefix (libvterm-prefix)))
                  (format nil "-I~A/include ~A/lib/libvterm.a" prefix prefix))
       #-darwin "-Wl,-Bstatic -lvterm -Wl,-Bdynamic -lutil"
       #+darwin "-I/opt/homebrew/include -L/opt/homebrew/lib -lvterm"
-      #-darwin "-lvterm -lutil"))
+      #+freebsd (let ((prefix (libvterm-prefix)))
+                  (format nil "-I~A/include -L~A/lib -Wl,-rpath,~A/lib -lvterm -lutil"
+                          prefix prefix prefix))
+      #-(or darwin freebsd) "-lvterm -lutil"))
 
 (defun build-command (source lib)
   (let ((cc (or (uiop:getenv "CC") "cc"))
