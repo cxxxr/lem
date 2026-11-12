@@ -10,6 +10,10 @@
  (:class qlot/source/ql:source-ql
   :initargs (:%version :latest)
   :version "ql-2026-01-01"))
+("cl-charms" .
+ (:class qlot/source/ql:source-ql
+  :initargs (:%version :latest)
+  :version "ql-2026-01-01"))
 ("micros" .
  (:class qlot/source/git:source-git
   :initargs (:remote-url "https://github.com/lem-project/micros.git")
