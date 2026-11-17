@@ -111,7 +111,12 @@ jobs:
       - name: Set up Common Lisp environment
         if: steps.diff.outputs.skip != 'true'
         run: |
-          brew install sbcl tree-sitter libvterm enchant
+          brew install sbcl tree-sitter libvterm enchant openssl@3
+          # Homebrew's unversioned `openssl` now points at OpenSSL 4, which
+          # removed ASN1_STRING_data. cl+ssl (used by qlot and lem) loads
+          # $(brew --prefix)/opt/openssl/lib/libssl.dylib and still needs that
+          # symbol, so point the alias back at openssl@3.
+          ln -sfn "$(brew --prefix openssl@3)" "$(brew --prefix)/opt/openssl"
           curl -O https://beta.quicklisp.org/quicklisp.lisp
           sbcl --non-interactive --load quicklisp.lisp --eval "(quicklisp-quickstart:install)"
           curl -L https://qlot.tech/installer | sh
