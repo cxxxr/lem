@@ -30,27 +30,34 @@
 (defsystem "lem-sdl3"
   :description "SDL3 frontend for Lem."
   :depends-on ("sdl3"
-               "lem/core")
+               "lem/core"
+               "lem/extensions"
+               "trivial-main-thread")
   :serial t
   ;; Files not listed yet are copied from frontends/sdl2 and still call
   ;; cl-sdl2; they are added as they are ported:
-  ;;   keyboard mouse main (app and input)
-  ;;   graphics image-buffer tree color-picker (widgets; need main)
+  ;;   image-buffer tree color-picker (widgets)
   :components ((:file "ffi")
                (:file "event")
                (:file "wm")
                (:file "resource")
                (:file "platform")
+               (:file "keyboard")
                (:file "font")
                (:file "icon")
                (:file "text-surface-cache")
                (:file "log")
                (:file "sdl3")
                (:file "icon-font")
+               (:file "mouse")
                (:file "utils")
                (:file "display")
                (:file "view")
-               (:file "drawing"))
+               (:file "main")
+               (:file "drawing")
+               ;; Provides the default method on lem-sdl3:render, which
+               ;; redraw-view-after calls for every view.
+               (:file "graphics"))
   :in-order-to ((test-op (test-op "lem-sdl3/tests"))))
 
 (defsystem "lem-sdl3/tests"
@@ -59,6 +66,7 @@
   :components ((:module "tests"
                 :components ((:file "ffi")
                              (:file "event")
+                             (:file "keyboard")
                              (:file "font")
                              (:file "drawing"))))
   :perform (test-op (op c) (symbol-call :rove '#:run c)))

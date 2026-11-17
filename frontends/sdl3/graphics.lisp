@@ -90,63 +90,50 @@
 (defun draw-line (target x1 y1 x2 y2 &key color)
   (with-drawable (target)
     (lem-sdl3/display::set-render-color lem-sdl3/display::*display* color)
-    (sdl2:render-draw-line (lem-sdl3:current-renderer)
-                           x1
-                           y1
-                           x2
-                           y2)))
+    (lem-sdl3/ffi:render-line (lem-sdl3:current-renderer) x1 y1 x2 y2)))
 
 (defun draw-rectangle (target x y width height &key filled color)
   (with-drawable (target)
     (lem-sdl3/display::set-render-color lem-sdl3/display::*display* color)
-    (sdl2:with-rects ((rect x y width height))
+    (lem-sdl3/ffi:with-frect (rect x y width height)
       (if filled
-          (sdl2:render-fill-rect (lem-sdl3:current-renderer) rect)
-          (sdl2:render-draw-rect (lem-sdl3:current-renderer) rect)))))
+          (lem-sdl3/ffi:render-fill-rect (lem-sdl3:current-renderer) rect)
+          (lem-sdl3/ffi:render-rect (lem-sdl3:current-renderer) rect)))))
 
 (defun draw-point (target x y &key color)
   (with-drawable (target)
     (lem-sdl3/display::set-render-color lem-sdl3/display::*display* color)
-    (sdl2:render-draw-point (lem-sdl3:current-renderer) x y)))
+    (lem-sdl3/ffi:render-point (lem-sdl3:current-renderer) x y)))
 
 (defun draw-points (target x-y-seq &key color)
-  (let ((num-points (length x-y-seq)))
-    (with-drawable (target)
-      (plus-c:c-let ((c-points sdl2-ffi:sdl-point :count num-points))
-        (etypecase x-y-seq
-          (vector
-           (loop :for i :from 0
-                 :for (x . y) :across x-y-seq
-                 :do (setf (c-points i :x) x
-                           (c-points i :y) y))))
-        (lem-sdl3/display::set-render-color lem-sdl3/display::*display* color)
-        (sdl2:render-draw-points (lem-sdl3:current-renderer)
-                                 (c-points plus-c:&)
-                                 num-points)))))
+  (check-type x-y-seq vector)
+  (with-drawable (target)
+    (lem-sdl3/display::set-render-color lem-sdl3/display::*display* color)
+    (lem-sdl3/ffi:render-points (lem-sdl3:current-renderer) x-y-seq)))
 
 (defun draw-string (target string x y
                     &key (font (lem-sdl3/font:font-latin-normal-font
                                 (lem-sdl3/display::display-font lem-sdl3/display::*display*)))
                          (color (alexandria:required-argument :color)))
-  (let* ((surface (sdl2-ttf:render-utf8-blended font
-                                                string
-                                                (lem:color-red color)
-                                                (lem:color-green color)
-                                                (lem:color-blue color)
-                                                0)))
-    (call-with-drawable
-     target
-     (lambda ()
-       (let ((texture (sdl2:create-texture-from-surface (lem-sdl3:current-renderer) surface)))
-         (sdl2:with-rects ((dest-rect x
-                                      y
-                                      (sdl2:surface-width surface)
-                                      (sdl2:surface-height surface)))
-           (sdl2:render-copy (lem-sdl3:current-renderer) texture :dest-rect dest-rect))
-         (sdl2:destroy-texture texture)))
-     :cleanup-function (lambda ()
-                         (trivial-garbage:cancel-finalization surface)
-                         (sdl2:free-surface surface)))))
+  (let ((surface (lem-sdl3/ffi:render-text-blended font
+                                                   string
+                                                   (lem:color-red color)
+                                                   (lem:color-green color)
+                                                   (lem:color-blue color))))
+    (when surface
+      (call-with-drawable
+       target
+       (lambda ()
+         (let ((texture (lem-sdl3/ffi:create-texture-from-surface (lem-sdl3:current-renderer)
+                                                                  surface)))
+           (lem-sdl3/ffi:with-frect (dest-rect x
+                                               y
+                                               (lem-sdl3/ffi:surface-width surface)
+                                               (lem-sdl3/ffi:surface-height surface))
+             (lem-sdl3/ffi:render-texture (lem-sdl3:current-renderer) texture nil dest-rect))
+           (lem-sdl3/ffi:destroy-texture texture)))
+       :cleanup-function (lambda ()
+                           (lem-sdl3/ffi:destroy-surface surface))))))
 
 (defclass image ()
   ((surface :initarg :surface
@@ -157,18 +144,17 @@
            :reader image-height)))
 
 (defun load-image (pathname)
-  (let ((image (sdl2-image:load-image pathname)))
+  (let ((surface (lem-sdl3/ffi:load-image pathname)))
     (make-instance 'image
-                   :width (sdl2:surface-width image)
-                   :height (sdl2:surface-height image)
-                   :surface image)))
+                   :width (lem-sdl3/ffi:surface-width surface)
+                   :height (lem-sdl3/ffi:surface-height surface)
+                   :surface surface)))
 
 (defun delete-image (image)
   (when image
     (let ((surface (image-surface image)))
       (when surface
-        (trivial-garbage:cancel-finalization surface)
-        (sdl2:free-surface surface))))
+        (lem-sdl3/ffi:destroy-surface surface))))
   (values))
 
 (defun draw-image (target image
@@ -178,17 +164,15 @@
                         (height (image-height image))
                         clip-rect)
   (with-drawable (target)
-    (sdl2:with-rects ((dest-rect x y width height))
-      (let ((source-rect
-              (when clip-rect
-                (destructuring-bind (x y w h) clip-rect
-                  (sdl2:make-rect x y w h))))
-            (texture (sdl2:create-texture-from-surface (lem-sdl3:current-renderer) (image-surface image))))
+    (lem-sdl3/ffi:with-frect (dest-rect x y width height)
+      (let ((texture (lem-sdl3/ffi:create-texture-from-surface (lem-sdl3:current-renderer)
+                                                               (image-surface image))))
         (unwind-protect
-             (sdl2:render-copy (lem-sdl3:current-renderer)
-                               texture
-                               :source-rect source-rect
-                               :dest-rect dest-rect)
-          (when source-rect
-            (sdl2:free-rect source-rect))
-          (sdl2:destroy-texture texture))))))
+             (if clip-rect
+                 (destructuring-bind (cx cy cw ch) clip-rect
+                   (lem-sdl3/ffi:with-frect (source-rect cx cy cw ch)
+                     (lem-sdl3/ffi:render-texture (lem-sdl3:current-renderer)
+                                                  texture source-rect dest-rect)))
+                 (lem-sdl3/ffi:render-texture (lem-sdl3:current-renderer)
+                                              texture nil dest-rect))
+          (lem-sdl3/ffi:destroy-texture texture))))))

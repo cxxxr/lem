@@ -12,8 +12,8 @@
 
 (defun show-cursor ()
   (setf *cursor-shown* t)
-  (sdl2:show-cursor))
+  (lem-sdl3/ffi:show-cursor))
 
 (defun hide-cursor ()
   (setf *cursor-shown* nil)
-  (sdl2:hide-cursor))
+  (lem-sdl3/ffi:hide-cursor))
