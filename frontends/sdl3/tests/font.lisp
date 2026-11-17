@@ -216,7 +216,7 @@
        (let ((font (lem-sdl3/display::display-font display)))
          (flet ((font-for (character &key bold)
                   (lem-sdl3/display:get-display-font display
-                                                     :type (lem-core::char-type character)
+                                                     :type :cjk
                                                      :bold bold
                                                      :character character)))
            (testing "one-cell characters use the latin fonts"
