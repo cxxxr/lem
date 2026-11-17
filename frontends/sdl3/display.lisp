@@ -18,6 +18,8 @@
            :display-char-height
            :display-font-ascent
            :display-font-descent
+           :box-drawing-char-p
+           :display-box-drawing-band
            :display-focus-p
            :create-view-texture
            :display-renderer
@@ -184,10 +186,37 @@ e.g. -3 for NotoSansMono at 12pt). |descent| pixels sit below the baseline."
   (set-render-color display (display-background-color display))
   (lem-sdl3/ffi:render-fill-rect (display-renderer display) nil))
 
+(defun box-drawing-char-p (character)
+  "Return true if CHARACTER is a box-drawing or block-element character
+(U+2500..U+259F)."
+  (and character
+       (<= #x2500 (char-code character) #x259f)))
+
+(defun box-drawing-font (display bold character)
+  "Return the monospace font to draw the box-drawing CHARACTER with, or NIL
+if that font lacks the glyph.  Lem classifies these characters as :cjk, but
+the CJK font draws them full-width while Lem gives them one cell, so lines
+and corners do not meet.  Monospace fonts draw them to fill the cell."
+  (let ((font (if bold
+                  (display-latin-bold-font display)
+                  (display-latin-font display))))
+    (when (lem-sdl3/ffi:font-has-glyph-p font character)
+      font)))
+
+(defun display-box-drawing-band (display character bold)
+  "When CHARACTER is a box-drawing character drawn with the latin font (see
+get-display-font), return that font's (TOP . BOTTOM) box-drawing band, to be
+stretched to the cell height.  Otherwise return NIL."
+  (and (box-drawing-char-p character)
+       (box-drawing-font display bold character)
+       (font:font-box-drawing-band (display-font display) bold)))
+
 (defmethod get-display-font ((display display) &key type bold character)
   (check-type type lem-core::char-type)
   (cond ((eq type :control)
          (display-latin-font display))
+        ((and (box-drawing-char-p character)
+              (box-drawing-font display bold character)))
         ((eq type :icon)
          (or (and character (icon-font:icon-font
                              character

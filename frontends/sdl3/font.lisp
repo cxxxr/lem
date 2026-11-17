@@ -14,6 +14,7 @@
            :font-char-height
            :font-ascent
            :font-descent
+           :font-box-drawing-band
            :save-font-size
            :make-font-config
            :font-config-size
@@ -51,7 +52,11 @@
   ;; every blit.  ASCENT is positive (pixels above baseline), DESCENT is
   ;; negative (pixels below baseline) per SDL_ttf convention.
   ascent
-  descent)
+  descent
+  ;; (TOP . BOTTOM) surface rows covered by U+2502 in the latin fonts, or
+  ;; NIL; see box-drawing-band.
+  latin-normal-box-band
+  latin-bold-box-band)
 
 (defun save-font-size (font-config &optional (ratio 1))
   (setf (lem:config :sdl2-font-size)
@@ -116,6 +121,26 @@
                           (lem-sdl3/ffi:surface-height surface))
       (lem-sdl3/ffi:destroy-surface surface))))
 
+(defun box-drawing-band (ttf-font)
+  "Return (TOP . BOTTOM), the rows of a rendered glyph surface that U+2502
+(BOX DRAWINGS LIGHT VERTICAL) covers in TTF-FONT, or NIL if the font lacks
+it.  Fonts draw box-drawing glyphs within their own ascent/descent, which is
+slightly shorter than Lem's row, so stretching this band to the cell height
+makes vertical lines meet across rows, as in a terminal."
+  (when (lem-sdl3/ffi:font-has-glyph-p ttf-font #\│)
+    (multiple-value-bind (minx maxx miny maxy)
+        (lem-sdl3/ffi:glyph-metrics ttf-font #\│)
+      (declare (ignore minx maxx))
+      (when maxy
+        (let ((ascent (lem-sdl3/ffi:font-ascent ttf-font)))
+          (cons (- ascent maxy) (- ascent miny)))))))
+
+(defun font-box-drawing-band (font bold)
+  "Return the box-drawing band of FONT's bold or regular latin font."
+  (if bold
+      (font-latin-bold-box-band font)
+      (font-latin-normal-box-band font)))
+
 (defun open-font (&optional font-config)
   (let* ((font-config (or font-config (make-font-config)))
          (latin-normal-font (lem-sdl3/ffi:open-font (font-config-latin-normal-file font-config)
@@ -141,7 +166,9 @@
                  :char-width char-width
                  :char-height char-height
                  :ascent (lem-sdl3/ffi:font-ascent latin-normal-font)
-                 :descent (lem-sdl3/ffi:font-descent latin-normal-font)))))
+                 :descent (lem-sdl3/ffi:font-descent latin-normal-font)
+                 :latin-normal-box-band (box-drawing-band latin-normal-font)
+                 :latin-bold-box-band (box-drawing-band latin-bold-font)))))
 
 (defun close-font (font)
   (lem-sdl3/ffi:close-font (font-latin-normal-font font))

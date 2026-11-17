@@ -22,6 +22,8 @@
    :close-font
    :font-ascent
    :font-descent
+   :font-has-glyph-p
+   :glyph-metrics
    :render-text-blended
    :render-text-solid
    ;; textures
@@ -254,6 +256,18 @@ surface has been destroyed."
 (defun font-descent (font)
   "Return FONT's descent in pixels (negative, per SDL_ttf)."
   (sdl3-ttf:get-font-descent font))
+
+(defun font-has-glyph-p (font character)
+  "Return true if FONT provides a glyph for CHARACTER."
+  (sdl3-ttf:font-has-glyph font (char-code character)))
+
+(defun glyph-metrics (font character)
+  "Return CHARACTER's metrics in FONT as values MINX MAXX MINY MAXY ADVANCE
+(pixels; Y up from the baseline), or NIL if the font lacks the glyph."
+  (multiple-value-bind (ok minx maxx miny maxy advance)
+      (sdl3-ttf:get-glyph-metrics font (char-code character))
+    (when ok
+      (values minx maxx miny maxy advance))))
 
 (defun opaque-color (red green blue)
   "Return an opaque SDL3:COLOR.  SDL2_ttf ignored the alpha Lem passed (0);

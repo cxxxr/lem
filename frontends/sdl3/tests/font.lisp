@@ -72,3 +72,59 @@
                     (font:font-ascent large))))
         (font:close-font small)
         (font:close-font large)))))
+
+(defun call-with-display-for-font (size function)
+  "Call FUNCTION with a display holding fonts opened at SIZE (no window)."
+  (let* ((config (font:make-font-config :size size))
+         (font (font:open-font config)))
+    (unwind-protect
+         (funcall function (make-instance 'lem-sdl3/display:display
+                                          :font font
+                                          :font-config config))
+      (font:close-font font))))
+
+(deftest box-drawing-characters-use-the-monospace-font
+  ;; Lem classifies U+2500..U+259F as :cjk; the CJK font draws them
+  ;; full-width in a one-cell slot, so lines and corners did not meet.
+  (with-ttf ()
+    (call-with-display-for-font
+     14
+     (lambda (display)
+       (flet ((font-for (character &key bold)
+                (lem-sdl3/display:get-display-font display
+                                                   :type :cjk
+                                                   :bold bold
+                                                   :character character)))
+         (testing "box drawing and block elements use the latin fonts"
+           (dolist (character '(#\─ #\│ #\┌ #\┼ #\━ #\═ #\╬ #\█ #\▒))
+             (ok (eq (font-for character)
+                     (font:font-latin-normal-font (lem-sdl3/display::display-font display))))
+             (ok (eq (font-for character :bold t)
+                     (font:font-latin-bold-font (lem-sdl3/display::display-font display))))))
+         (testing "CJK text still uses the CJK fonts"
+           (ok (eq (font-for #\日)
+                   (font:font-cjk-normal-font (lem-sdl3/display::display-font display))))
+           (ok (eq (font-for #\日 :bold t)
+                   (font:font-cjk-bold-font (lem-sdl3/display::display-font display))))))))))
+
+(deftest box-drawing-band-is-stretched-only-for-box-drawing
+  ;; Monospace fonts draw box-drawing glyphs inside their ascent/descent,
+  ;; which is shorter than Lem's row, so vertical lines left gaps between
+  ;; rows.  The band of rows U+2502 covers is stretched to the cell height.
+  (with-ttf ()
+    (call-with-display-for-font
+     14
+     (lambda (display)
+       (let ((band (lem-sdl3/display:display-box-drawing-band display #\│ nil))
+             (font-height (sdl3-ttf:get-font-height
+                           (font:font-latin-normal-font (lem-sdl3/display::display-font display)))))
+         (testing "the band lies within the glyph surface"
+           (ok (consp band))
+           (ok (<= 0 (car band)))
+           (ok (< (car band) (cdr band)))
+           (ok (<= (cdr band) font-height)))
+         (testing "the bold font has its own band"
+           (ok (consp (lem-sdl3/display:display-box-drawing-band display #\│ t))))
+         (testing "other characters are not stretched"
+           (ok (null (lem-sdl3/display:display-box-drawing-band display #\M nil)))
+           (ok (null (lem-sdl3/display:display-box-drawing-band display #\日 nil)))))))))
