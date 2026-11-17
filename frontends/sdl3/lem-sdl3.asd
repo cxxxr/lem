@@ -32,19 +32,31 @@
   :depends-on ("sdl3"
                "lem/core")
   :serial t
-  ;; The other files in this directory are copied from frontends/sdl2 and
-  ;; still call cl-sdl2.  They are added here, in the same order as in
-  ;; lem-sdl2.asd, as they are ported:
-  ;;   wm resource platform keyboard font icon text-surface-cache log sdl3
-  ;;   icon-font mouse utils display view main drawing graphics image-buffer
-  ;;   tree color-picker
-  :components ((:file "ffi"))
+  ;; Files not listed yet are copied from frontends/sdl2 and still call
+  ;; cl-sdl2; they are added as they are ported:
+  ;;   keyboard mouse main (app and input)
+  ;;   graphics image-buffer tree color-picker (widgets; need main)
+  :components ((:file "ffi")
+               (:file "wm")
+               (:file "resource")
+               (:file "platform")
+               (:file "font")
+               (:file "icon")
+               (:file "text-surface-cache")
+               (:file "log")
+               (:file "sdl3")
+               (:file "icon-font")
+               (:file "utils")
+               (:file "display")
+               (:file "view")
+               (:file "drawing"))
   :in-order-to ((test-op (test-op "lem-sdl3/tests"))))
 
 (defsystem "lem-sdl3/tests"
   :depends-on ("lem-sdl3"
                "rove")
   :components ((:module "tests"
-                ;; tests/font and tests/drawing are added once ported.
-                :components ((:file "ffi"))))
+                :components ((:file "ffi")
+                             (:file "font")
+                             (:file "drawing"))))
   :perform (test-op (op c) (symbol-call :rove '#:run c)))

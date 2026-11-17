@@ -38,23 +38,19 @@ during transitional frames).")
   "Destroy all cached GPU textures and clear the cache."
   (maphash (lambda (key texture)
              (declare (ignore key))
-             (handler-case (sdl2:destroy-texture texture)
+             (handler-case (lem-sdl3/ffi:destroy-texture texture)
                (error () nil)))
            *texture-cache*)
   (clrhash *texture-cache*))
 
 (defun free-all-surfaces ()
-  "Explicitly free all SDL surfaces in the surface cache.
-Cancels autocollect finalizers first to prevent double-free."
+  "Explicitly free all SDL surfaces in the surface cache."
   (maphash (lambda (key entries)
              (declare (ignore key))
              (dolist (entry entries)
                (let ((surface (cache-entry-surface entry)))
                  (when surface
-                   (handler-case
-                       (progn
-                         (trivial-garbage:cancel-finalization surface)
-                         (sdl2:free-surface surface))
+                   (handler-case (lem-sdl3/ffi:destroy-surface surface)
                      (error () nil))))))
            *text-surface-cache*))
 
@@ -67,7 +63,7 @@ Cancels autocollect finalizers first to prevent double-free."
   "Return a cached GPU texture for SURFACE, creating one if needed.
 Uses EQ identity on the surface wrapper object as cache key."
   (or (gethash surface *texture-cache*)
-      (let ((texture (sdl2:create-texture-from-surface renderer surface)))
+      (let ((texture (lem-sdl3/ffi:create-texture-from-surface renderer surface)))
         (setf (gethash surface *texture-cache*) texture)
         texture)))
 
@@ -112,7 +108,7 @@ that were evicted or replaced. Returns the number of textures purged."
     (dolist (surface stale-keys)
       (let ((texture (gethash surface *texture-cache*)))
         (when texture
-          (handler-case (sdl2:destroy-texture texture)
+          (handler-case (lem-sdl3/ffi:destroy-texture texture)
             (error () nil)))
         (remhash surface *texture-cache*)))
     (length stale-keys)))
@@ -130,12 +126,10 @@ Three-tier strategy:
     ;; Tier 1: surface cache overflow → full reset
     ((> (hash-table-count *text-surface-cache*) *max-surface-cache-entries*)
      (clear-text-surface-cache)
-     (lem:send-event :resize)
-     ;; Hint the GC to run soon — old drawing objects still hold surface
-     ;; wrappers whose autocollect finalizers need to fire to free native
-     ;; memory.  A minor GC is cheap (~1ms) and accelerates finalizer
-     ;; execution rather than waiting for the next natural collection.
-     #+sbcl (sb-ext:gc :gen 0))
+     ;; Surfaces are freed explicitly above; drawing objects that still
+     ;; reference them re-render on the next frame (see the :around method
+     ;; on get-surface in drawing.lisp).
+     (lem:send-event :resize))
     ;; Tier 2: texture cache overflow → purge orphaned textures only
     ((> (hash-table-count *texture-cache*) *max-texture-cache-entries*)
      (purge-stale-textures))))

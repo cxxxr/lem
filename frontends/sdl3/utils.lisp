@@ -5,16 +5,8 @@
 (in-package :lem-sdl3/utils)
 
 (defun create-texture (renderer width height)
-  (sdl2:create-texture renderer
-                       sdl2:+pixelformat-rgba8888+
-                       sdl2-ffi:+sdl-textureaccess-target+
-                       width
-                       height))
+  (lem-sdl3/ffi:create-target-texture renderer width height))
 
 (defun render-texture (renderer texture x y width height)
-  (sdl2:with-rects ((dest-rect x y width height))
-    (sdl2:render-copy-ex renderer
-                         texture
-                         :source-rect nil
-                         :dest-rect dest-rect
-                         :flip (list :none))))
+  (lem-sdl3/ffi:with-frect (dest-rect x y width height)
+    (lem-sdl3/ffi:render-texture renderer texture nil dest-rect)))

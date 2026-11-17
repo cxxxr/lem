@@ -81,19 +81,19 @@
 
 (defmethod delete-view ((view view))
   (when (view-texture view)
-    (sdl2:destroy-texture (view-texture view))
+    (lem-sdl3/ffi:destroy-texture (view-texture view))
     (setf (view-texture view) nil)))
 
 (defmethod render-clear ((view view) display)
   (display::with-display-render-target (display (view-texture view))
     (display:set-render-color display (display:display-background-color display))
-    (sdl2:render-clear (display:display-renderer display))))
+    (lem-sdl3/ffi:render-clear (display:display-renderer display))))
 
 (defmethod resize ((view view) display width height)
   (when (view-use-modeline view) (incf height))
   (setf (view-width view) width
         (view-height view) height)
-  (sdl2:destroy-texture (view-texture view))
+  (lem-sdl3/ffi:destroy-texture (view-texture view))
   (setf (view-texture view)
         (display:create-view-texture display (max width 1) (max height 1))))
 
@@ -104,7 +104,7 @@
 (defmethod draw-window-border (view display (window lem:floating-window))
   (when (and (lem:window-border window)
              (< 0 (lem:window-border window)))
-    (sdl2:set-render-target (display:display-renderer display) (display:display-texture display))
+    (lem-sdl3/ffi:set-render-target (display:display-renderer display) (display:display-texture display))
     (display:render-border display
                            (lem:window-x window)
                            (lem:window-y window)
@@ -114,7 +114,7 @@
 
 (defmethod draw-window-border (view display (window lem:window))
   (when (< 0 (lem:window-x window))
-    (sdl2:set-render-target (display:display-renderer display) (display:display-texture display))
+    (lem-sdl3/ffi:set-render-target (display:display-renderer display) (display:display-texture display))
     (display:render-margin-line display
                                           (lem:window-x window)
                                           (lem:window-y window)
@@ -124,14 +124,15 @@
   (draw-window-border view display (view-window view)))
 
 (defun render-view-texture-to-display (view display)
-  (sdl2:set-render-target (display:display-renderer display) (display:display-texture display))
-  (sdl2:with-rects ((dest-rect (* (view-x view) (display:display-char-width display))
-                               (* (view-y view) (display:display-char-height display))
-                               (* (view-width view) (display:display-char-width display))
-                               (* (view-height view) (display:display-char-height display))))
-    (sdl2:render-copy (display:display-renderer display)
-                      (view-texture view)
-                      :dest-rect dest-rect)))
+  (lem-sdl3/ffi:set-render-target (display:display-renderer display) (display:display-texture display))
+  (lem-sdl3/ffi:with-frect (dest-rect (* (view-x view) (display:display-char-width display))
+                                     (* (view-y view) (display:display-char-height display))
+                                     (* (view-width view) (display:display-char-width display))
+                                     (* (view-height view) (display:display-char-height display)))
+    (lem-sdl3/ffi:render-texture (display:display-renderer display)
+                                 (view-texture view)
+                                 nil
+                                 dest-rect)))
 
 (defun refresh-all-view-textures (display)
   "Recreate the SDL texture backing every live view at the current
@@ -149,7 +150,7 @@ upper-left quarter of the window)."
     (let ((view (lem:window-view window)))
       (when (typep view 'view)
         (when (view-texture view)
-          (sdl2:destroy-texture (view-texture view)))
+          (lem-sdl3/ffi:destroy-texture (view-texture view)))
         (setf (view-texture view)
               (display:create-view-texture display
                                            (max (view-width view) 1)

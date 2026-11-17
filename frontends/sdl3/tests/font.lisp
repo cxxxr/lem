@@ -13,9 +13,9 @@
 ;;; show a mis-aligned baseline.
 
 (defun call-with-ttf (thunk)
-  (sdl2-ttf:init)
+  (sdl3-ttf:init)
   (unwind-protect (funcall thunk)
-    (sdl2-ttf:quit)))
+    (sdl3-ttf:quit)))
 
 (defmacro with-ttf (() &body body)
   `(call-with-ttf (lambda () ,@body)))
@@ -28,8 +28,8 @@
     (let ((font (open-default-font 14)))
       (unwind-protect
            (let* ((latin (font:font-latin-normal-font font))
-                  (live-ascent  (sdl2-ffi.functions:ttf-font-ascent  latin))
-                  (live-descent (sdl2-ffi.functions:ttf-font-descent latin)))
+                  (live-ascent  (sdl3-ttf:get-font-ascent  latin))
+                  (live-descent (sdl3-ttf:get-font-descent latin)))
              (testing "cached ascent matches the live TTF_FontAscent"
                (ok (= (font:font-ascent font) live-ascent)))
              (testing "cached descent matches the live TTF_FontDescent"
@@ -52,7 +52,7 @@
            ;; additionally include a small line gap) -- otherwise the glyph
            ;; would clip into the next row.
            (let* ((latin (font:font-latin-normal-font font))
-                  (height (sdl2-ffi.functions:ttf-font-height latin)))
+                  (height (sdl3-ttf:get-font-height latin)))
              (ok (<= (+ (font:font-ascent font)
                         (abs (font:font-descent font)))
                      height)))

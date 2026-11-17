@@ -8,30 +8,35 @@
 (defgeneric get-surface (drawing-object display))
 
 (defmethod get-surface :around (drawing-object display)
-  (or (text-object-surface drawing-object)
-      (setf (text-object-surface drawing-object)
-            (call-next-method))))
+  ;; A cached surface may have been freed by clear-text-surface-cache (font
+  ;; change or cache overflow) while this drawing object was still alive.
+  (let ((surface (text-object-surface drawing-object)))
+    (if (lem-sdl3/ffi:surface-live-p surface)
+        surface
+        (setf (text-object-surface drawing-object)
+              (call-next-method)))))
 
 (defun make-text-surface (display string attribute type)
-  (cffi:with-foreign-string (c-string string)
-    (let ((foreground (lem-core:attribute-foreground-with-reverse attribute)))
-      (sdl2-ttf:render-utf8-blended
-       (or (lem-core:attribute-font attribute)
-           (display:get-display-font display
-                                     :type type
-                                     :bold (and attribute (lem:attribute-bold attribute))
-                                     :character (and (plusp (length string))
-                                                     (char string 0))))
-       c-string
-       (lem:color-red foreground)
-       (lem:color-green foreground)
-       (lem:color-blue foreground)
-       0))))
+  "Render STRING to a new surface, or return NIL if SDL_ttf produces nothing
+(e.g. for an empty string)."
+  (let ((foreground (lem-core:attribute-foreground-with-reverse attribute)))
+    (lem-sdl3/ffi:render-text-blended
+     (or (lem-core:attribute-font attribute)
+         (display:get-display-font display
+                                   :type type
+                                   :bold (and attribute (lem:attribute-bold attribute))
+                                   :character (and (plusp (length string))
+                                                   (char string 0))))
+     string
+     (lem:color-red foreground)
+     (lem:color-green foreground)
+     (lem:color-blue foreground))))
 
 (defun make-text-surface-with-cache (display string attribute type)
   (or (lem-sdl3/text-surface-cache:get-text-surface-cache string attribute type)
       (let ((surface (make-text-surface display string attribute type)))
-        (lem-sdl3/text-surface-cache:register-text-surface-cache string attribute type surface)
+        (when surface
+          (lem-sdl3/text-surface-cache:register-text-surface-cache string attribute type surface))
         surface)))
 
 (defmethod get-surface ((drawing-object text-object) display)
@@ -58,7 +63,7 @@ Uses a sentinel key so it participates in the normal cache lifecycle
 (cleared on font change, cleared by sweep-if-oversize)."
   (or (lem-sdl3/text-surface-cache:get-text-surface-cache
        "__folder_icon__" nil :folder)
-      (let ((surface (sdl2-image:load-image
+      (let ((surface (lem-sdl3/ffi:load-image
                       (lem-sdl3/resource:get-resource-pathname
                        "resources/open-folder.png"))))
         (lem-sdl3/text-surface-cache:register-text-surface-cache
@@ -73,7 +78,7 @@ Uses a sentinel key so it participates in the normal cache lifecycle
 (defun text-cell-width (drawing-object display)
   "Cell-aligned pixel width of a text-object: string-width × char-width.
 Mirrors lem-ncurses/drawing-object:object-width semantics (logical
-column width) so SDL2 text aligns on the character grid regardless of
+column width) so SDL text aligns on the character grid regardless of
 per-string SDL_ttf surface-width drift."
   (* (lem-core:string-width (text-object-string drawing-object))
      (display:display-char-width display)))
@@ -106,7 +111,7 @@ per-string SDL_ttf surface-width drift."
 
 (defmethod object-width ((drawing-object image-object) display)
   (or (image-object-width drawing-object)
-      (sdl2:surface-width (image-object-image drawing-object))))
+      (lem-sdl3/ffi:surface-width (image-object-image drawing-object))))
 
 
 (defgeneric object-height (drawing-object display))
@@ -150,7 +155,7 @@ per-string SDL_ttf surface-width drift."
 
 (defmethod object-height ((drawing-object image-object) display)
   (or (image-object-height drawing-object)
-      (sdl2:surface-height (image-object-image drawing-object))))
+      (lem-sdl3/ffi:surface-height (image-object-image drawing-object))))
 
 (defmethod lem-if:object-width ((implementation lem-sdl3/sdl3:sdl3) drawing-object)
   (display:with-display (display)
@@ -166,7 +171,7 @@ per-string SDL_ttf surface-width drift."
 (defun draw-rect (display x y width height color)
   (display:with-scratch-rect (rect display x y width height)
     (display:set-render-color display color)
-    (sdl2:render-fill-rect (display:display-renderer display) rect)))
+    (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect)))
 
 (defun draw-cursor (display x y surface-width surface-height background)
   (ecase (display:display-cursor-type display)
@@ -187,14 +192,14 @@ character row height instead of being placed at their natural pixel height.
 CLIP / PHASE control how the glyph and its background are composited:
 
 * CLIP NIL (icon / folder / emoji): the surface is rendered into the cell with
-  `render-copy-ex' allowed to scale it down to fit, preventing oversized glyph
+  `render-texture' allowed to scale it down to fit, preventing oversized glyph
   surfaces from spilling into adjacent columns or rows.
 
 * CLIP T (text characters): the surface is rendered at its natural pixel size.
   At small font sizes the NotoSansMono rasterizer produces some glyphs (`p',
   `g', `T', ...) whose blended surface-width is one pixel wider than the
   advance width — that overhang is anti-aliasing tail that must not be
-  squished by `render-copy-ex' (which is what made `P' and the other exact-
+  squished by `render-texture' (which is what made `P' and the other exact-
   width letters look visually different from their neighbours).
 
 PHASE selects what to draw:
@@ -204,10 +209,13 @@ PHASE selects what to draw:
 
 The two-phase split lets a multi-character text run paint all backgrounds
 first and then all glyphs, so a 1-pixel right-edge AA overhang from one glyph
-is not erased by the next glyph's background fill."
+is not erased by the next glyph's background fill.
+
+When there is no surface (SDL_ttf renders nothing for an empty string) only
+the background phase draws anything."
   (let* ((surface (get-surface drawing-object display))
-         (surface-width (sdl2:surface-width surface))
-         (surface-height (sdl2:surface-height surface))
+         (surface-width (if surface (lem-sdl3/ffi:surface-width surface) 0))
+         (surface-height (if surface (lem-sdl3/ffi:surface-height surface) 0))
          (cell-height (object-height drawing-object display))
          (attribute (text-object-attribute drawing-object))
          (background (lem-core:attribute-background-with-reverse attribute))
@@ -220,14 +228,14 @@ is not erased by the next glyph's background fill."
              (draw-cursor display x y cell-width cell-height background))
             (t
              (draw-rect display x y cell-width cell-height background))))
-    (when (member phase '(:glyph :both))
+    (when (and surface (member phase '(:glyph :both)))
       (let ((texture (lem-sdl3/text-surface-cache:get-or-create-texture
                       (display:display-renderer display)
                       surface)))
         (cond
           (clip
            ;; Natural-size render with explicit baseline anchoring.  The
-           ;; `render-utf8-blended' surface places the glyph baseline at
+           ;; `render-text-blended' surface places the glyph baseline at
            ;; (ascent) pixels down from the surface top, regardless of the
            ;; specific glyph's bounding box.  We anchor the surface so the
            ;; baseline lands at the row's intrinsic baseline:
@@ -249,18 +257,16 @@ is not erased by the next glyph's background fill."
                   (glyph-y (- bottom-y ascent (abs descent))))
              (display:with-scratch-rect (dst-rect display x glyph-y
                                                   surface-width surface-height)
-               (sdl2:render-copy-ex (display:display-renderer display)
-                                    texture
-                                    :source-rect nil
-                                    :dest-rect dst-rect
-                                    :flip (list :none)))))
+               (lem-sdl3/ffi:render-texture (display:display-renderer display)
+                                            texture
+                                            nil
+                                            dst-rect))))
           (t
            (display:with-scratch-rect (dst-rect display x y draw-width draw-height)
-             (sdl2:render-copy-ex (display:display-renderer display)
-                                  texture
-                                  :source-rect nil
-                                  :dest-rect dst-rect
-                                  :flip (list :none)))))))
+             (lem-sdl3/ffi:render-texture (display:display-renderer display)
+                                          texture
+                                          nil
+                                          dst-rect))))))
     (when (and (member phase '(:bg :both))
                attribute
                (lem:attribute-underline attribute))
@@ -366,7 +372,7 @@ width so the rasterizer's right-edge anti-aliasing tail is preserved."
                               (- bottom-y (display:display-char-height display))
                               (- (lem-if:view-width (lem-core:implementation) view) x)
                               (display:display-char-height display))
-    (sdl2:render-fill-rect (display:display-renderer display) rect))
+    (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect))
   (object-width drawing-object display))
 
 (defmethod draw-object ((drawing-object line-end-object) x bottom-y display view)
@@ -381,16 +387,15 @@ width so the rasterizer's right-edge anti-aliasing tail is preserved."
 (defmethod draw-object ((drawing-object image-object) x bottom-y display view)
   (let* ((surface-width (object-width drawing-object display))
          (surface-height (object-height drawing-object display))
-         (texture (sdl2:create-texture-from-surface (display:display-renderer display)
-                                                    (image-object-image drawing-object)))
+         (texture (lem-sdl3/ffi:create-texture-from-surface (display:display-renderer display)
+                                                            (image-object-image drawing-object)))
          (y (- bottom-y surface-height)))
     (display:with-scratch-rect (dest-rect display x y surface-width surface-height)
-      (sdl2:render-copy-ex (display:display-renderer display)
-                           texture
-                           :source-rect nil
-                           :dest-rect dest-rect
-                           :flip (list :none)))
-    (sdl2:destroy-texture texture)
+      (lem-sdl3/ffi:render-texture (display:display-renderer display)
+                                   texture
+                                   nil
+                                   dest-rect))
+    (lem-sdl3/ffi:destroy-texture texture)
     surface-width))
 
 (defun plain-text-object-p (object)
@@ -459,7 +464,7 @@ rather than the row-wide two-pass)."
   (display:with-scratch-rect (rect display x y (- (lem-if:view-width (lem-core:implementation) view) x) height)
     (display:set-render-color display
                               (lem-core:attribute-background-color default-attribute))
-    (sdl2:render-fill-rect (display:display-renderer display) rect)))
+    (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect)))
 
 (defmethod lem-if:render-line ((implementation lem-sdl3/sdl3:sdl3) view x y objects height)
   (display:with-display (display)
@@ -497,13 +502,13 @@ rather than the row-wide two-pass)."
                                 y
                                 (lem-if:view-width implementation view)
                                 (- (lem-if:view-height implementation view) y))
-      (sdl2:render-fill-rect (display:display-renderer display) rect))))
+      (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect))))
 
 (defmethod lem-core:redraw-buffer :before ((implementation lem-sdl3/sdl3:sdl3) buffer window force)
   (display:with-display (display)
-    (sdl2:set-render-target (display:display-renderer display)
-                            (view:view-texture (lem:window-view window)))))
+    (lem-sdl3/ffi:set-render-target (display:display-renderer display)
+                                    (view:view-texture (lem:window-view window)))))
 
 (defmethod lem-core:redraw-buffer :around ((implementation lem-sdl3/sdl3:sdl3) buffer window force)
-  (sdl2:in-main-thread ()
+  (lem-sdl3/ffi:in-main-thread ()
     (call-next-method)))

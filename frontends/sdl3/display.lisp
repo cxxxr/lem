@@ -107,30 +107,25 @@ Retina to a 1x display).")
    (scale :initform '(1 1)
           :initarg :scale
           :accessor display-scale)
-   (scratch-rect :initform (sdl2:make-rect 0 0 0 0)
+   (scratch-rect :initform (lem-sdl3/ffi:make-frect)
                  :reader display-scratch-rect
                  :documentation
-                 "Pre-allocated SDL_Rect reused across all render calls to
-avoid heap-allocating a new rect + Lisp wrapper on every draw-rect,
-fill-to-end-of-line, render-texture, etc.  Mutated in-place by
+                 "Pre-allocated SDL_FRect reused across all render calls to
+avoid allocating a new rect on every draw-rect, fill-to-end-of-line,
+render-texture, etc.  Lives as long as the display.  Mutated in-place by
 `call-with-scratch-rect' / `with-scratch-rect'; do not rely on its
 contents outside the dynamic extent of that call.")))
 
 (declaim (inline call-with-scratch-rect))
 (defun call-with-scratch-rect (display x y w h function)
-  "Set the display's scratch SDL_Rect to (X Y W H) and call FUNCTION with it.
+  "Set the display's scratch SDL_FRect to (X Y W H) and call FUNCTION with it.
 Single mutation + funcall — no heap allocation.  Used by
 `with-scratch-rect'; expose the underlying function so callers that
 want to pass a closure directly can skip the macro."
-  (let ((rect (display-scratch-rect display)))
-    (setf (sdl2:rect-x rect) x
-          (sdl2:rect-y rect) y
-          (sdl2:rect-width rect) w
-          (sdl2:rect-height rect) h)
-    (funcall function rect)))
+  (funcall function (lem-sdl3/ffi:set-frect (display-scratch-rect display) x y w h)))
 
 (defmacro with-scratch-rect ((var display-form x y w h) &body body)
-  "Bind VAR to the display's pre-allocated SDL_Rect with fields set to X Y W H.
+  "Bind VAR to the display's pre-allocated SDL_FRect with fields set to X Y W H.
 The rect is mutated in-place — no heap allocation occurs.  Thin wrapper
 over `call-with-scratch-rect'."
   `(call-with-scratch-rect ,display-form ,x ,y ,w ,h (lambda (,var) ,@body)))
@@ -168,7 +163,7 @@ e.g. -3 for NotoSansMono at 12pt). |descent| pixels sit below the baseline."
       (slot-value display 'background-color)))
 
 (defun call-with-renderer (display function)
-  (sdl2:in-main-thread ()
+  (lem-sdl3/ffi:in-main-thread ()
     (bt2:with-recursive-lock-held ((display-mutex display))
       (funcall function))))
 
@@ -176,18 +171,18 @@ e.g. -3 for NotoSansMono at 12pt). |descent| pixels sit below the baseline."
   `(call-with-renderer ,display (lambda () ,@body)))
 
 (defun call-with-display-render-target (display texture function)
-  (let ((previous (sdl2::sdl-get-render-target (display-renderer display))))
-    (sdl2:set-render-target (display-renderer display) texture)
+  (let ((previous (lem-sdl3/ffi:get-render-target (display-renderer display))))
+    (lem-sdl3/ffi:set-render-target (display-renderer display) texture)
     (unwind-protect (funcall function)
-      (sdl2:set-render-target (display-renderer display) previous))))
+      (lem-sdl3/ffi:set-render-target (display-renderer display) previous))))
 
 (defmacro with-display-render-target ((display texture) &body body)
   `(call-with-display-render-target ,display ,texture (lambda () ,@body)))
 
 (defmethod clear ((display display))
-  (sdl2:set-render-target (display-renderer display) (display-texture display))
+  (lem-sdl3/ffi:set-render-target (display-renderer display) (display-texture display))
   (set-render-color display (display-background-color display))
-  (sdl2:render-fill-rect (display-renderer display) nil))
+  (lem-sdl3/ffi:render-fill-rect (display-renderer display) nil))
 
 (defmethod get-display-font ((display display) &key type bold character)
   (check-type type lem-core::char-type)
@@ -220,23 +215,23 @@ e.g. -3 for NotoSansMono at 12pt). |descent| pixels sit below the baseline."
     (floor (* scale-y y) (display-char-height display))))
 
 (defmethod update-display ((display display))
-  (sdl2:render-present (display-renderer display)))
+  (lem-sdl3/ffi:render-present (display-renderer display)))
 
 (defmethod display-width ((display display))
-  (nth-value 0 (sdl2:get-renderer-output-size (display-renderer display))))
+  (nth-value 0 (lem-sdl3/ffi:get-render-output-size (display-renderer display))))
 
 (defmethod display-height ((display display))
-  (nth-value 1 (sdl2:get-renderer-output-size (display-renderer display))))
+  (nth-value 1 (lem-sdl3/ffi:get-render-output-size (display-renderer display))))
 
 (defmethod display-window-width ((display display))
-  (nth-value 0 (sdl2:get-window-size (display-window display))))
+  (nth-value 0 (lem-sdl3/ffi:get-window-size (display-window display))))
 
 (defmethod display-window-height ((display display))
-  (nth-value 1 (sdl2:get-window-size (display-window display))))
+  (nth-value 1 (lem-sdl3/ffi:get-window-size (display-window display))))
 
 (defmethod update-texture ((display display))
   (bt2:with-lock-held ((display-mutex display))
-    (sdl2:destroy-texture (display-texture display))
+    (lem-sdl3/ffi:destroy-texture (display-texture display))
     (setf (display-texture display)
           (utils:create-texture (display-renderer display)
                                 (display-width display)
@@ -244,16 +239,15 @@ e.g. -3 for NotoSansMono at 12pt). |descent| pixels sit below the baseline."
 
 (defmethod set-render-color ((display display) color)
   (when color
-    (sdl2:set-render-draw-color (display-renderer display)
-                                (lem:color-red color)
-                                (lem:color-green color)
-                                (lem:color-blue color)
-                                0)))
+    (lem-sdl3/ffi:set-render-draw-color (display-renderer display)
+                                        (lem:color-red color)
+                                        (lem:color-green color)
+                                        (lem:color-blue color))))
 
 (defun adapt-high-dpi-display-scale (display)
   (with-renderer (display)
     (multiple-value-bind (renderer-width renderer-height)
-        (sdl2:get-renderer-output-size (display-renderer display))
+        (lem-sdl3/ffi:get-render-output-size (display-renderer display))
       (let* ((window-width (display-window-width display))
              (window-height (display-window-height display))
              (scale-x (/ renderer-width window-width))
@@ -282,9 +276,9 @@ Idempotent."
   (with-renderer (display)
     (when (display-redraw-at-least-once-p display)
       (setf (display-redraw-at-least-once-p display) nil)
-      (sdl2:set-render-target (display-renderer display) (display-texture display))
+      (lem-sdl3/ffi:set-render-target (display-renderer display) (display-texture display))
       (set-render-color display (display-background-color display))
-      (sdl2:render-clear (display-renderer display))
+      (lem-sdl3/ffi:render-clear (display-renderer display))
       #+darwin
       (adapt-high-dpi-display-scale display)
       #+darwin
@@ -327,16 +321,16 @@ event handler pattern in `on-windowevent')."
         (height (* height (display-char-height display))))
     (with-scratch-rect (rect display x y width height)
       (set-render-color display color)
-      (sdl2:render-fill-rect (display-renderer display) rect))))
+      (lem-sdl3/ffi:render-fill-rect (display-renderer display) rect))))
 
 (defmethod render-line (display x1 y1 x2 y2 &key color)
   (set-render-color display color)
-  (sdl2:render-draw-line (display-renderer display) x1 y1 x2 y2))
+  (lem-sdl3/ffi:render-line (display-renderer display) x1 y1 x2 y2))
 
 (defmethod render-fill-rect-by-pixels ((display display) x y width height &key color)
   (with-scratch-rect (rect display x y width height)
     (set-render-color display color)
-    (sdl2:render-fill-rect (display-renderer display) rect)))
+    (lem-sdl3/ffi:render-fill-rect (display-renderer display) rect)))
 
 (defmethod render-border ((display display) x y w h &key border-type)
   (let* ((x1 (- (* x (display-char-width display)) (floor (display-char-width display) 2)))
@@ -345,25 +339,22 @@ event handler pattern in `on-windowevent')."
          (y2 (+ y1 (* (+ h 1) (display-char-height display)))))
     (with-scratch-rect (rect display x1 y1 (- x2 x1) (- y2 y1))
       (set-render-color display (display-background-color display))
-      (sdl2:render-fill-rect (display-renderer display) rect))
-    (sdl2:with-points ((upleft x1 y1)
-                       (downleft x1 y2)
-                       (downright x2 y2)
-                       (upright x2 y1))
+      (lem-sdl3/ffi:render-fill-rect (display-renderer display) rect))
+    (let ((renderer (display-renderer display)))
+      (set-render-color display (display-foreground-color display))
       (case border-type
         (:drop-curtain
-         (set-render-color display (display-foreground-color display))
-         (sdl2:render-draw-lines (display-renderer display) (sdl2:points* downleft upleft) 2)
-         (set-render-color display (display-foreground-color display))
-         (sdl2:render-draw-lines (display-renderer display) (sdl2:points* upleft upright) 2))
+         ;; downleft -> upleft, upleft -> upright
+         (lem-sdl3/ffi:render-lines renderer x1 y2 x1 y1)
+         (lem-sdl3/ffi:render-lines renderer x1 y1 x2 y1))
         (:left-border
-         (set-render-color display (display-foreground-color display))
-         (sdl2:render-draw-lines (display-renderer display) (sdl2:points* downleft upleft) 2))
+         ;; downleft -> upleft
+         (lem-sdl3/ffi:render-lines renderer x1 y2 x1 y1))
         (otherwise
-         (set-render-color display (display-foreground-color display))
-         (sdl2:render-draw-lines (display-renderer display) (sdl2:points* downleft upleft upright) 3)))
-      (set-render-color display (display-foreground-color display))
-      (sdl2:render-draw-lines (display-renderer display) (sdl2:points* upright downright downleft) 3))))
+         ;; downleft -> upleft -> upright
+         (lem-sdl3/ffi:render-lines renderer x1 y2 x1 y1 x2 y1)))
+      ;; upright -> downright -> downleft
+      (lem-sdl3/ffi:render-lines renderer x2 y1 x2 y2 x1 y2))))
 
 (defmethod render-margin-line ((display display) x y height)
   (let ((attribute (lem:ensure-attribute 'lem:modeline-inactive)))

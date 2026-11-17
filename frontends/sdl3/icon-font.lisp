@@ -9,7 +9,7 @@
 (defun clear-icon-font-cache ()
   (maphash (lambda (key font)
              (declare (ignore key))
-             (handler-case (sdl2-ttf:close-font font)
+             (handler-case (lem-sdl3/ffi:close-font font)
                (error () nil)))
            *icon-font-cache*)
   (clrhash *icon-font-cache*))
@@ -21,4 +21,4 @@
         (let ((pathname (lem-sdl3/resource:get-resource-pathname
                          (merge-pathnames font-name "resources/fonts/"))))
           (setf (gethash character *icon-font-cache*)
-                (sdl2-ttf:open-font pathname font-size))))))
+                (lem-sdl3/ffi:open-font pathname font-size))))))

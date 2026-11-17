@@ -7,7 +7,7 @@
 ;;; Regression tests for `lem-sdl3/drawing::object-height' on the base
 ;;; `text-object' class.
 ;;;
-;;; Earlier the method returned `(sdl2:surface-height (get-surface ...))',
+;;; Earlier the method returned the SDL surface height of `(get-surface ...)',
 ;;; i.e. the per-string SDL_ttf surface height.  SDL_ttf can return slightly
 ;;; different surface heights for different strings (notably ones containing
 ;;; descenders like `p'/`g'/`y' vs ones without), which leaked through to the

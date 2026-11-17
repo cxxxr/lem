@@ -3,17 +3,10 @@
   (:export :set-x11-wm-class))
 (in-package :lem-sdl3/wm)
 
-(defparameter +lem-x11-wm-class+ "Lem SDL2")
+(defparameter +lem-app-id+ "lem")
 
-;; this is SDL2 way
-;; if the stable version of SDL is 3, set WM_CLASS is set via hint SDL_HINT_APP_ID
-;;
-;; cf.
-;; - how SDL3 gets WM_CLASS:
-;;     - https://github.com/libsdl-org/SDL/blob/d3f2de7f297d761a7dc5b0dda3c7b5d7bd49eac9/src/video/x11/SDL_x11window.c#L633C40-L633C40
-;; - how to set WM_CLASS in here:
-;;     - SDL_SetHint() function with key SDL_HINT_APP_ID
-;;     - https://wiki.libsdl.org/SDL2/SDL_SetHint
-;;     - https://github.com/libsdl-org/SDL/blob/d3f2de7f297d761a7dc5b0dda3c7b5d7bd49eac9/src/core/unix/SDL_appid.c#L63C45-L63C45
+;; SDL3 derives the X11 WM_CLASS and the Wayland app_id from SDL_HINT_APP_ID.
+;; Must be called before SDL_Init.
+;; cf. https://wiki.libsdl.org/SDL3/SDL_HINT_APP_ID
 (defun set-x11-wm-class ()
-  (setf (uiop:getenv "SDL_VIDEO_X11_WMCLASS") +lem-x11-wm-class+))
+  (sdl3:set-hint "SDL_APP_ID" +lem-app-id+))
