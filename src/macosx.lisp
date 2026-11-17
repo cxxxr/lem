@@ -23,3 +23,18 @@
         (setf (deploy:library-dont-deploy-p (deploy:ensure-library ts)) t))
       (when tw
         (setf (deploy:library-dont-deploy-p (deploy:ensure-library tw)) t)))))
+
+;; Tell the deploy library not to bundle OS-provided libraries. They exist
+;; only in the dyld shared cache, not as files, so deploy cannot copy them
+;; ("does not have a known shared library file path", or FILE-DOES-NOT-EXIST
+;; for the CoreFoundation framework binary). Every macOS install has them, so
+;; the deployed binary loads them from the system at boot.
+(unless (deploy:deployed-p)
+  (loop :for (package-name symbol-name) :in '((:lem-darwin/appearance "CORE-FOUNDATION")
+                                              (:objc-cffi "LIBOBJC")
+                                              (:cffi "LIBFFI"))
+        :for package := (find-package package-name)
+        :for symbol := (and package (find-symbol symbol-name package))
+        :when (and symbol (find symbol (cffi:list-foreign-libraries)
+                                :key #'cffi:foreign-library-name))
+        :do (setf (deploy:library-dont-deploy-p (deploy:ensure-library symbol)) t)))

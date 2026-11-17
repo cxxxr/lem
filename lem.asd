@@ -332,4 +332,5 @@
                "lem-ncurses")
   :pathname "src"
   :components ((:file "macosx" :if-feature :os-macosx)
+               (:file "linux" :if-feature (:and :os-unix (:not :os-macosx)))
                (:file "windows" :if-feature :os-windows)))
