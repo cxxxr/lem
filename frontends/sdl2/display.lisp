@@ -18,6 +18,7 @@
            :display-char-height
            :display-font-ascent
            :display-font-descent
+           :font-ascent-of
            :box-drawing-char-p
            :display-box-drawing-band
            :display-focus-p
@@ -202,31 +203,40 @@ e.g. -3 for NotoSansMono at 12pt). |descent| pixels sit below the baseline."
   "Return true if FONT provides a glyph for CHARACTER."
   (/= 0 (sdl2-ffi.functions:ttf-glyph-is-provided32 font (char-code character))))
 
-(defun box-drawing-font (display bold character)
-  "Return the monospace font to draw the box-drawing CHARACTER with, or NIL
-if that font lacks the glyph.  Lem classifies these characters as :cjk, but
-the CJK font draws them full-width while Lem gives them one cell, so lines
-and corners do not meet.  Monospace fonts draw them to fill the cell."
-  (let ((font (if bold
-                  (display-latin-bold-font display)
-                  (display-latin-font display))))
-    (when (font-has-glyph-p font character)
-      font)))
+(defun narrow-char-font (display type bold character)
+  "Return the monospace font to draw CHARACTER, of char-type TYPE, with, or
+NIL if CHARACTER is not a one-cell :cjk character or that font lacks the
+glyph.  Lem calls every character it does not otherwise know :cjk (Greek,
+Cyrillic, arrows, math, box drawing), but the CJK font draws many of these
+full-width while Lem gives them one cell, and on its own baseline.
+Monospace fonts draw them to fit the cell."
+  (when (and (eq type :cjk)
+             character
+             (not (lem:wide-char-p character)))
+    (let ((font (if bold
+                    (display-latin-bold-font display)
+                    (display-latin-font display))))
+      (when (font-has-glyph-p font character)
+        font))))
 
 (defun display-box-drawing-band (display character bold)
   "When CHARACTER is a box-drawing character drawn with the latin font (see
 get-display-font), return that font's (TOP . BOTTOM) box-drawing band, to be
 stretched to the cell height.  Otherwise return NIL."
   (and (box-drawing-char-p character)
-       (box-drawing-font display bold character)
+       (narrow-char-font display :cjk bold character)
        (font:font-box-drawing-band (display-font display) bold)))
+
+(defun font-ascent-of (ttf-font)
+  "Return TTF-FONT's ascent in pixels.  A glyph rendered with TTF-FONT has
+its baseline this many pixels below the top of the surface."
+  (sdl2-ffi.functions:ttf-font-ascent ttf-font))
 
 (defmethod get-display-font ((display display) &key type bold character)
   (check-type type lem-core::char-type)
   (cond ((eq type :control)
          (display-latin-font display))
-        ((and (box-drawing-char-p character)
-              (box-drawing-font display bold character)))
+        ((narrow-char-font display type bold character))
         ((eq type :icon)
          (or (and character (icon-font:icon-font
                              character
