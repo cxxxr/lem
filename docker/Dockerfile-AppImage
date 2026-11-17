@@ -1,6 +1,19 @@
 FROM ubuntu:22.04 AS build
 
-RUN apt-get update && apt-get install -y curl bzip2 git libzstd-dev file libncurses-dev build-essential libvterm-dev libenchant-2-dev
+RUN apt-get update && apt-get install -y curl bzip2 git libzstd-dev file libncurses-dev build-essential libtool-bin libenchant-2-dev
+
+# Build libvterm 0.3.3 from source. Ubuntu 22.04 ships libvterm 0.1.x, whose
+# VTermScreenCellAttrs lacks the conceal/small/baseline fields terminal.c uses.
+# We stay on 22.04 for the AppImage's glibc baseline, so build a newer libvterm
+# here; terminal-lib links its static archive from /usr/local/lib into
+# terminal.so, so it must be compiled with -fPIC.
+WORKDIR /tmp
+RUN curl -L -o libvterm.tar.gz https://launchpad.net/libvterm/trunk/v0.3/+download/libvterm-0.3.3.tar.gz && \
+    tar xf libvterm.tar.gz && \
+    cd libvterm-0.3.3 && \
+    make -j$(nproc) PREFIX=/usr/local CFLAGS="-O2 -fPIC" && \
+    make install PREFIX=/usr/local && \
+    ldconfig
 
 # Build tree-sitter from main branch (tree-sitter-cl requires 0.27+ which is unreleased)
 WORKDIR /tmp
