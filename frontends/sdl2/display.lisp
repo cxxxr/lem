@@ -205,14 +205,12 @@ e.g. -3 for NotoSansMono at 12pt). |descent| pixels sit below the baseline."
 
 (defun narrow-char-font (display type bold character)
   "Return the monospace font to draw CHARACTER, of char-type TYPE, with, or
-NIL if CHARACTER is not a one-cell :cjk character or that font lacks the
-glyph.  Lem calls every character it does not otherwise know :cjk (Greek,
-Cyrillic, arrows, math, box drawing), but the CJK font draws many of these
-full-width while Lem gives them one cell, and on its own baseline.
-Monospace fonts draw them to fit the cell."
-  (when (and (eq type :cjk)
-             character
-             (not (lem:wide-char-p character)))
+NIL if TYPE is not :other or that font lacks the glyph.  :other characters
+(Greek, Cyrillic, arrows, math, box drawing) take one cell; the monospace
+font draws them to fit it, while the CJK font draws many of them full-width.
+SDL2_ttf has no fallback fonts, so a glyph the monospace font lacks is drawn
+with the CJK font instead."
+  (when (and (eq type :other) character)
     (let ((font (if bold
                     (display-latin-bold-font display)
                     (display-latin-font display))))
@@ -224,7 +222,7 @@ Monospace fonts draw them to fit the cell."
 get-display-font), return that font's (TOP . BOTTOM) box-drawing band, to be
 stretched to the cell height.  Otherwise return NIL."
   (and (box-drawing-char-p character)
-       (narrow-char-font display :cjk bold character)
+       (narrow-char-font display :other bold character)
        (font:font-box-drawing-band (display-font display) bold)))
 
 (defun font-ascent-of (ttf-font)
@@ -233,7 +231,7 @@ its baseline this many pixels below the top of the surface."
   (sdl2-ffi.functions:ttf-font-ascent ttf-font))
 
 (defmethod get-display-font ((display display) &key type bold character)
-  (check-type type lem-core::char-type)
+  (check-type type lem-core/display:char-type)
   (cond ((eq type :control)
          (display-latin-font display))
         ((narrow-char-font display type bold character))
