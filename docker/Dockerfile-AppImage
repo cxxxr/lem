@@ -15,9 +15,11 @@ RUN curl -L -o libvterm.tar.gz https://launchpad.net/libvterm/trunk/v0.3/+downlo
     make install PREFIX=/usr/local && \
     ldconfig
 
-# Build tree-sitter from main branch (tree-sitter-cl requires 0.27+ which is unreleased)
+# Build tree-sitter 0.27. tree-sitter-cl's prebuilt libts-wrapper.so links
+# against libtree-sitter.so.0.27, so the soname must match exactly; building
+# from main (now 0.28) leaves that dependency unresolved for linuxdeploy.
 WORKDIR /tmp
-RUN git clone --depth 1 https://github.com/tree-sitter/tree-sitter.git && \
+RUN git clone --depth 1 --branch v0.27.2 https://github.com/tree-sitter/tree-sitter.git && \
     cd tree-sitter && \
     make -j$(nproc) && \
     make install && \
