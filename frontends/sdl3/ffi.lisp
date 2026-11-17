@@ -71,6 +71,7 @@
    :set-window-bordered
    :maximize-window
    :minimize-window
+   :cocoa-window
    :start-text-input
    :set-text-input-area
    :get-mouse-state
@@ -520,6 +521,16 @@ no rectangle."
       (with-int-rect (rect x y w h)
         (%set-render-viewport renderer rect))
       (%set-render-viewport renderer (cffi:null-pointer))))
+
+(defun cocoa-window (window)
+  "Return the NSWindow behind WINDOW, as a foreign pointer, or NIL if
+WINDOW is not a Cocoa window."
+  (let ((props (sdl3:get-window-properties window)))
+    (unless (zerop props)
+      (let ((nswindow (sdl3:get-pointer-property props "SDL.window.cocoa.window"
+                                                 (cffi:null-pointer))))
+        (unless (cffi:null-pointer-p nswindow)
+          nswindow)))))
 
 (defun set-window-icon (window surface)
   "Use SURFACE (a SURFACE struct) as WINDOW's icon."

@@ -52,7 +52,8 @@
            :with-scratch-rect))
 (in-package :lem-sdl3/display)
 
-(defvar *display*)
+(defvar *display* nil
+  "The display, set once the SDL window has been created.")
 
 (defvar *post-display-change-hooks* '()
   "Hook variable (analogous to Lem's other `*...-hooks*' registries): a list

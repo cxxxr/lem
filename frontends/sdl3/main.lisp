@@ -316,6 +316,16 @@ single :windowevent; SDL3 gives each its own event type."
       (display:with-renderer (display)
         (floor (display:display-height display) (display:display-char-height display))))))
 
+(defmethod lem-if:set-frame-color ((implementation sdl3) mode)
+  "Set the window frame to MODE, :dark or :light.
+Implemented on macOS; elsewhere, or before the window exists, this does
+nothing. Can be called from any thread."
+  (let ((display (display:current-display)))
+    (when display
+      (lem-darwin/appearance:dispatch-set-window-appearance
+       (ffi:cocoa-window (display:display-window display))
+       mode))))
+
 (defmethod lem-if:display-title ((implementation sdl3))
   (with-debug ("lem-if:display-title")
     (display:with-display (display)

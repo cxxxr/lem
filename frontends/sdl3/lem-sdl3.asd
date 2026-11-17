@@ -32,6 +32,7 @@
   :depends-on ("sdl3"
                "lem/core"
                "lem/extensions"
+               "lem-darwin"
                "trivial-main-thread")
   :serial t
   :components ((:file "ffi")
