@@ -145,6 +145,7 @@ sequenceDiagram
 | Frontend | Package | Transport |
 |----------|---------|-----------|
 | SDL2 | `lem-sdl2` | Native graphics |
+| SDL3 | `lem-sdl3` | Native graphics (experimental) |
 | NCurses | `lem-ncurses` | Terminal |
 | Webview | `lem-webview` | WebKit/Chromium |
 | Server | `lem-server` | JSON-RPC over WebSocket |

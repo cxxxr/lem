@@ -5,7 +5,7 @@ Options:
         -q, --without-init-file   do not load ~/.lem/init.lisp
         --debug                   enable debugger
         --log-filename FILENAME   file name of the log file
-        -i, --interface INTERFACE interface to use, either sdl2 or ncurses
+        -i, --interface INTERFACE interface to use: sdl2, sdl3, ncurses or webview
         -v, --version             print the version number and exit
         -h, --help                display this help and exit
         -e, --eval FORM           common lisp form (in quotes) to evaluate on startup"

@@ -59,7 +59,7 @@ When rendering the DOM and a window in a one-to-one manner, no redraw is require
           (mapcar (lambda (impl)
                     (find impl classes :test 'string= :key 'class-name))
                   ;; always try to find specified implementation first
-                  (list implementation :webview :ncurses :sdl2)))
+                  (list implementation :webview :ncurses :sdl2 :sdl3)))
 
     ;; pick the first implementation that is available
     (setf class (funcall #'some #'identity implementation-fallback))

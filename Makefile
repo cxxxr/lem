@@ -20,6 +20,13 @@ sdl2:
 	$(LISP) --load .qlot/setup.lisp \
 		--load scripts/build-sdl2.lisp
 
+# Experimental SDL3 frontend; needs SDL3, SDL3_ttf and SDL3_image.
+sdl3:
+	qlot install
+	-$(MAKE) terminal-lib
+	$(LISP) --load .qlot/setup.lisp \
+		--load scripts/build-sdl3.lisp
+
 sdl2-ncurses:
 	qlot install
 	-$(MAKE) terminal-lib
@@ -87,6 +94,9 @@ endif
 # Install targets
 install-sdl2:
 	$(MAKE) install VARIANT=sdl2
+
+install-sdl3:
+	$(MAKE) install VARIANT=sdl3
 
 install-ncurses:
 	$(MAKE) install VARIANT=ncurses

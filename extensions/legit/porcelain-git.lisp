@@ -299,11 +299,11 @@ allows to learn about the file state: modified, deleted, ignored… "
 
 ;; Save our script as a string at compile time.
 (defparameter *rebase-script-content*
-  #+(or lem-ncurses lem-sdl2)
+  #+(or lem-ncurses lem-sdl2 lem-sdl3)
   (str:from-file
    (asdf:system-relative-pathname (asdf:find-system "lem-legit")
                                   "scripts/dumbrebaseeditor.sh"))
-  #-(or lem-ncurses lem-sdl2)
+  #-(or lem-ncurses lem-sdl2 lem-sdl3)
   ""
   "Our dumb editor shell script, saved as a string at compile time.
   We then save it to the user's ~/.lem/legit/rebaseetidor.sh at first use.")
