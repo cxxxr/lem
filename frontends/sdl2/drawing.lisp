@@ -12,16 +12,20 @@
       (setf (text-object-surface drawing-object)
             (call-next-method))))
 
+(defun text-font (display string attribute type)
+  "Return the font STRING, with ATTRIBUTE and char-type TYPE, is drawn with."
+  (or (lem-core:attribute-font attribute)
+      (display:get-display-font display
+                                :type type
+                                :bold (and attribute (lem:attribute-bold attribute))
+                                :character (and (plusp (length string))
+                                                (char string 0)))))
+
 (defun make-text-surface (display string attribute type)
   (cffi:with-foreign-string (c-string string)
     (let ((foreground (lem-core:attribute-foreground-with-reverse attribute)))
       (sdl2-ttf:render-utf8-blended
-       (or (lem-core:attribute-font attribute)
-           (display:get-display-font display
-                                     :type type
-                                     :bold (and attribute (lem:attribute-bold attribute))
-                                     :character (and (plusp (length string))
-                                                     (char string 0))))
+       (text-font display string attribute type)
        c-string
        (lem:color-red foreground)
        (lem:color-green foreground)
@@ -262,7 +266,12 @@ is not erased by the next glyph's background fill."
                                           :source-rect src-rect
                                           :dest-rect dst-rect
                                           :flip (list :none))))
-                 (let* ((ascent (display:display-font-ascent display))
+                 ;; The surface's baseline is the ascent of the font that
+                 ;; drew it, which for CJK glyphs is not the latin font's,
+                 ;; so anchor with that font's ascent.
+                 (let* ((ascent (display:font-ascent-of
+                                 (text-font display string attribute
+                                            (text-object-type drawing-object))))
                         (descent (display:display-font-descent display))
                         (glyph-y (- bottom-y ascent (abs descent))))
                    (display:with-scratch-rect (dst-rect display x glyph-y

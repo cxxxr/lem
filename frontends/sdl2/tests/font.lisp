@@ -128,3 +128,43 @@
          (testing "other characters are not stretched"
            (ok (null (lem-sdl2/display:display-box-drawing-band display #\M nil)))
            (ok (null (lem-sdl2/display:display-box-drawing-band display #\日 nil)))))))))
+
+(deftest narrow-characters-use-the-monospace-font
+  ;; Lem classifies every character it does not otherwise know (Greek,
+  ;; Cyrillic, arrows, math) as :cjk, which drew them with the CJK font in
+  ;; its own style and, being taller, below the row's baseline.
+  (with-ttf ()
+    (call-with-display-for-font
+     14
+     (lambda (display)
+       (let ((font (lem-sdl2/display::display-font display)))
+         (flet ((font-for (character &key bold)
+                  (lem-sdl2/display:get-display-font display
+                                                     :type :cjk
+                                                     :bold bold
+                                                     :character character)))
+           (testing "one-cell characters use the latin fonts"
+             (dolist (character '(#\α #\Ж #\→ #\∀))
+               (ok (eq (font-for character) (font:font-latin-normal-font font)))
+               (ok (eq (font-for character :bold t) (font:font-latin-bold-font font)))))
+           (testing "wide characters still use the CJK fonts"
+             (dolist (character '(#\日 #\あ #\ㄱ))
+               (ok (eq (font-for character) (font:font-cjk-normal-font font)))
+               (ok (eq (font-for character :bold t) (font:font-cjk-bold-font font)))))
+           (testing "a one-cell glyph the latin font lacks still uses the CJK font"
+             (ok (not (lem:wide-char-p #\★)))
+             (ok (eq (font-for #\★) (font:font-cjk-normal-font font))))))))))
+
+(deftest glyphs-are-anchored-with-their-own-font-ascent
+  ;; A rendered surface puts the baseline at its font's ascent; the CJK
+  ;; font's is larger than the latin font's, so anchoring CJK glyphs with
+  ;; the latin ascent drew them below the baseline.
+  (with-ttf ()
+    (call-with-display-for-font
+     28
+     (lambda (display)
+       (let ((font (lem-sdl2/display::display-font display)))
+         (ok (= (lem-sdl2/display:font-ascent-of (font:font-latin-normal-font font))
+                (font:font-ascent font)))
+         (ok (/= (lem-sdl2/display:font-ascent-of (font:font-cjk-normal-font font))
+                 (font:font-ascent font))))))))
