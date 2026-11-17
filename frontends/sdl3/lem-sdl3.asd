@@ -37,6 +37,7 @@
   ;;   keyboard mouse main (app and input)
   ;;   graphics image-buffer tree color-picker (widgets; need main)
   :components ((:file "ffi")
+               (:file "event")
                (:file "wm")
                (:file "resource")
                (:file "platform")
@@ -57,6 +58,7 @@
                "rove")
   :components ((:module "tests"
                 :components ((:file "ffi")
+                             (:file "event")
                              (:file "font")
                              (:file "drawing"))))
   :perform (test-op (op c) (symbol-call :rove '#:run c)))

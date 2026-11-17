@@ -8,6 +8,7 @@
    ;; main thread
    :call-in-main-thread
    :in-main-thread
+   :wakeup-event-type
    ;; surfaces
    :surface
    :surface-pointer
@@ -43,10 +44,36 @@
    :render-line
    :render-lines
    :render-point
+   :render-points
    :render-texture
    ;; sizes
    :get-render-output-size
-   :get-window-size))
+   :get-window-size
+   ;; application and windows
+   :with-float-traps-masked
+   :init-video
+   :quit
+   :set-hint
+   :create-window
+   :destroy-window
+   :create-renderer
+   :destroy-renderer
+   :set-render-viewport
+   :set-window-icon
+   :get-window-title
+   :set-window-title
+   :window-fullscreen-p
+   :set-window-fullscreen
+   :window-borderless-p
+   :set-window-bordered
+   :maximize-window
+   :minimize-window
+   :start-text-input
+   :set-text-input-area
+   :get-mouse-state
+   :show-cursor
+   :hide-cursor
+   :set-clipboard-text))
 (in-package :lem-sdl3/ffi)
 
 ;;; Thin layer between the frontend and cl-sdl3.
@@ -121,23 +148,50 @@ Unlike SDL3:GET-CLIPBOARD-TEXT, this frees the buffer SDL allocates."
       (with-float-traps-masked
         (funcall task)))))
 
+(defvar *wakeup-event-type* nil
+  "SDL event type registered for waking the main thread's event loop.")
+
+(defun wakeup-event-type ()
+  "Return the event type used to wake the event loop, registering it on
+first use."
+  (or *wakeup-event-type*
+      (setf *wakeup-event-type* (sdl3:register-events 1))))
+
+(defun wake-main-thread ()
+  "Push an event so a main thread blocked in SDL_WaitEvent returns and runs
+the queued main-thread callbacks."
+  (cffi:with-foreign-object (event :uint8 128)
+    (dotimes (i 128) (setf (cffi:mem-aref event :uint8 i) 0))
+    (setf (cffi:mem-ref event :uint32 0) (wakeup-event-type))
+    (sdl3:push-event event)))
+
 (defun call-in-main-thread (function)
   "Call FUNCTION on SDL's main thread, wait for it, and return its values.
 Runs FUNCTION directly when already on the main thread.  An error signaled by
-FUNCTION is re-signaled in the calling thread."
+FUNCTION is re-signaled in the calling thread.
+
+SDL runs SDL_RunOnMainThread callbacks only while pumping events, and does
+not reliably wake a main thread blocked in SDL_WaitEvent.  So the callback is
+queued without SDL's own wait, a wake-up event is pushed, and the caller
+blocks on a Lisp semaphore until the callback has run."
   (if (sdl3:is-main-thread)
       (funcall function)
       (let* ((values nil)
              (condition nil)
+             (done (bt2:make-semaphore :name "lem-sdl3 main thread call"))
              (id (register-main-thread-task
                   (lambda ()
-                    (handler-case (setf values (multiple-value-list (funcall function)))
-                      (error (c) (setf condition c)))))))
+                    (unwind-protect
+                         (handler-case (setf values (multiple-value-list (funcall function)))
+                           (error (c) (setf condition c)))
+                      (bt2:signal-semaphore done))))))
         (unless (sdl3:run-on-main-thread (cffi:callback run-main-thread-task)
                                          (cffi:make-pointer id)
-                                         t)
+                                         nil)
           (take-main-thread-task id)
           (sdl-error "SDL_RunOnMainThread failed"))
+        (wake-main-thread)
+        (bt2:wait-on-semaphore done)
         (when condition
           (error condition))
         (values-list values))))
@@ -300,6 +354,11 @@ sampling.  The texture keeps SDL's default blend mode, so alpha is honoured."
   (points :pointer)
   (count :int))
 
+(cffi:defcfun ("SDL_RenderPoints" %render-points) :bool
+  (renderer :pointer)
+  (points :pointer)
+  (count :int))
+
 (cffi:defcfun ("SDL_GetRenderOutputSize" %get-render-output-size) :bool
   (renderer :pointer)
   (w (:pointer :int))
@@ -350,6 +409,18 @@ whole texture / whole target."
   "Draw a single point at (X, Y)."
   (sdl3:render-point renderer (f x) (f y)))
 
+(defun render-points (renderer points)
+  "Draw every point in POINTS, a sequence of (X . Y) conses."
+  (let ((count (length points)))
+    (cffi:with-foreign-object (array :float (* 2 count))
+      (let ((i 0))
+        (map nil (lambda (point)
+                   (setf (cffi:mem-aref array :float i) (f (car point))
+                         (cffi:mem-aref array :float (1+ i)) (f (cdr point)))
+                   (incf i 2))
+             points))
+      (%render-points renderer array count))))
+
 ;;; Sizes
 
 (defun get-render-output-size (renderer)
@@ -363,3 +434,134 @@ whole texture / whole target."
   (multiple-value-bind (ok width height) (sdl3:get-window-size window)
     (declare (ignore ok))
     (values width height)))
+
+;;; Application and windows
+
+(cffi:defcfun ("SDL_SetRenderViewport" %set-render-viewport) :bool
+  (renderer :pointer)
+  (rect :pointer))
+
+(defmacro with-int-rect ((var x y w h) &body body)
+  "Bind VAR to a stack-allocated SDL_Rect (integer fields) during BODY."
+  `(cffi:with-foreign-object (,var :int 4)
+     (setf (cffi:mem-aref ,var :int 0) (round ,x)
+           (cffi:mem-aref ,var :int 1) (round ,y)
+           (cffi:mem-aref ,var :int 2) (round ,w)
+           (cffi:mem-aref ,var :int 3) (round ,h))
+     ,@body))
+
+(defun init-video ()
+  "Initialize SDL's video subsystem (and the events subsystem it implies)
+and SDL_ttf."
+  (unless (sdl3:init '(:video))
+    (sdl-error "SDL_Init failed"))
+  (unless (sdl3-ttf:init)
+    (sdl-error "TTF_Init failed")))
+
+(defun quit ()
+  "Shut down SDL_ttf and SDL."
+  (sdl3-ttf:quit)
+  (sdl3:quit))
+
+(defun set-hint (name value)
+  "Set the SDL hint NAME to VALUE (a string)."
+  (sdl3:set-hint name value))
+
+(defun create-window (title width height)
+  "Create a resizable, high-pixel-density window of WIDTH x HEIGHT (in window
+coordinates)."
+  (let ((window (sdl3:create-window title width height
+                                   '(:resizable :high-pixel-density))))
+    (when (cffi:null-pointer-p window)
+      (sdl-error "SDL_CreateWindow failed"))
+    window))
+
+(defun destroy-window (window)
+  "Destroy WINDOW."
+  (sdl3:destroy-window window))
+
+(defun create-renderer (window)
+  "Create a renderer for WINDOW using SDL's preferred driver."
+  (let ((renderer (sdl3:create-renderer window (cffi:null-pointer))))
+    (when (cffi:null-pointer-p renderer)
+      (sdl-error "SDL_CreateRenderer failed"))
+    renderer))
+
+(defun destroy-renderer (renderer)
+  "Destroy RENDERER."
+  (sdl3:destroy-renderer renderer))
+
+(defun set-render-viewport (renderer &optional x y w h)
+  "Restrict drawing to the rectangle X Y W H, or reset it when called with
+no rectangle."
+  (if x
+      (with-int-rect (rect x y w h)
+        (%set-render-viewport renderer rect))
+      (%set-render-viewport renderer (cffi:null-pointer))))
+
+(defun set-window-icon (window surface)
+  "Use SURFACE (a SURFACE struct) as WINDOW's icon."
+  (sdl3:set-window-icon window (surface-pointer surface)))
+
+(defun get-window-title (window)
+  "Return WINDOW's title."
+  (sdl3:get-window-title window))
+
+(defun set-window-title (window title)
+  "Set WINDOW's title."
+  (sdl3:set-window-title window title))
+
+(defun window-fullscreen-p (window)
+  "Return true if WINDOW is fullscreen."
+  (and (member :fullscreen (sdl3:get-window-flags window)) t))
+
+(defun set-window-fullscreen (window fullscreen-p)
+  "Make WINDOW fullscreen or windowed.  SDL3 uses borderless desktop
+fullscreen unless a display mode is set, matching SDL2's :desktop."
+  (sdl3:set-window-fullscreen window (and fullscreen-p t)))
+
+(defun window-borderless-p (window)
+  "Return true if WINDOW has no decorations."
+  (and (member :borderless (sdl3:get-window-flags window)) t))
+
+(defun set-window-bordered (window bordered-p)
+  "Show or hide WINDOW's decorations."
+  (sdl3:set-window-bordered window (and bordered-p t)))
+
+(defun maximize-window (window)
+  "Maximize WINDOW."
+  (sdl3:maximize-window window))
+
+(defun minimize-window (window)
+  "Minimize WINDOW."
+  (sdl3:minimize-window window))
+
+(defun start-text-input (window)
+  "Start delivering text-input and IME events for WINDOW.  Unlike SDL2,
+SDL3 does not enable text input by default."
+  (sdl3:start-text-input window))
+
+(defun set-text-input-area (window x y w h)
+  "Tell the IME where text is being entered, in window coordinates."
+  (sdl3:set-text-input-area window
+                            (make-instance 'sdl3:rect :%x (round x) :%y (round y)
+                                                      :%w (round w) :%h (round h))
+                            0))
+
+(defun get-mouse-state ()
+  "Return the mouse position in window coordinates as two values."
+  (multiple-value-bind (buttons x y) (sdl3:get-mouse-state)
+    (declare (ignore buttons))
+    (values x y)))
+
+(defun show-cursor ()
+  "Show the mouse cursor."
+  (sdl3:show-cursor))
+
+(defun hide-cursor ()
+  "Hide the mouse cursor."
+  (sdl3:hide-cursor))
+
+(defun set-clipboard-text (text)
+  "Put TEXT on the clipboard."
+  (sdl3:set-clipboard-text text))
