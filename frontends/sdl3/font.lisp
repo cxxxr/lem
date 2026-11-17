@@ -16,6 +16,7 @@
            :font-ascent
            :font-descent
            :font-box-drawing-band
+           :glyph-source
            :save-font-size
            :make-font-config
            :font-config-size
@@ -93,7 +94,16 @@ skipped.")
   ;; (TOP . BOTTOM) surface rows covered by U+2502 in the latin fonts, or
   ;; NIL; see box-drawing-band.
   latin-normal-box-band
-  latin-bold-box-band)
+  latin-bold-box-band
+  ;; Copies of the text fonts made before their fallbacks were added, so
+  ;; that TTF_FontHasGlyph on them tells whether the font itself has a glyph.
+  coverage-fonts
+  ;; Pointer address of each text font -> list of (COVERAGE-FONT . ASCENT),
+  ;; the font itself followed by its fallbacks, in the order SDL_ttf tries
+  ;; them; see glyph-source.
+  (fallback-chains (make-hash-table))
+  ;; (address . char-code) -> (ASCENT . OWN-P); memoizes glyph-source.
+  (glyph-sources (make-hash-table :test 'equal)))
 
 (defun save-font-size (font-config &optional (ratio 1))
   (setf (lem:config :sdl2-font-size)
@@ -185,6 +195,33 @@ makes vertical lines meet across rows, as in a terminal."
       (font-latin-bold-box-band font)
       (font-latin-normal-box-band font)))
 
+(defun glyph-source (font ttf-font character)
+  "Return, as values, the ascent of the font that draws CHARACTER when it is
+rendered with TTF-FONT, and whether that is TTF-FONT itself rather than one
+of its fallbacks.  SDL_ttf puts a fallback glyph on the fallback font's own
+baseline (ascent pixels below the surface top), not TTF-FONT's, so the
+caller must anchor the surface with this ascent.  For a font FONT did not
+open (e.g. an attribute's own font) return TTF-FONT's ascent and T."
+  (let* ((address (cffi:pointer-address ttf-font))
+         (chain (gethash address (font-fallback-chains font))))
+    (if (null chain)
+        (values (lem-sdl3/ffi:font-ascent ttf-font) t)
+        (let* ((key (cons address (char-code character)))
+               (source (or (gethash key (font-glyph-sources font))
+                           (setf (gethash key (font-glyph-sources font))
+                                 (let ((link (or (find-if (lambda (link)
+                                                            (lem-sdl3/ffi:font-has-glyph-p
+                                                             (car link) character))
+                                                          chain)
+                                                 (first chain))))
+                                   (cons (cdr link) (eq link (first chain))))))))
+          (values (car source) (cdr source))))))
+
+(defun register-fallback-chain (font ttf-font chain)
+  "Record CHAIN, TTF-FONT's (COVERAGE-FONT . ASCENT) list, in FONT."
+  (setf (gethash (cffi:pointer-address ttf-font) (font-fallback-chains font))
+        chain))
+
 (defgeneric platform-fallback-font-files (platform)
   (:documentation "Return the font files PLATFORM provides for glyphs the
 configured fonts lack, most preferred first.  Files may not exist."))
@@ -265,27 +302,49 @@ system's) at its size, skipping files that do not exist or fail to open."
     ;; font (for the latin fonts), the configured and system fonts, then
     ;; emoji.  The CJK, emoji and braille fonts are only borrowed here; they
     ;; are closed as primaries.
-    (add-fallback-fonts latin-normal-font
-                        (append (list cjk-normal-font) fallback-fonts (list emoji-font)))
-    (add-fallback-fonts latin-bold-font
-                        (append (list cjk-bold-font) fallback-fonts (list emoji-font)))
-    (add-fallback-fonts cjk-normal-font (append fallback-fonts (list emoji-font)))
-    (add-fallback-fonts cjk-bold-font (append fallback-fonts (list emoji-font)))
-    (destructuring-bind (char-width char-height)
-        (get-character-size latin-normal-font)
-      (make-font :latin-normal-font latin-normal-font
-                 :latin-bold-font latin-bold-font
-                 :cjk-normal-font cjk-normal-font
-                 :cjk-bold-font cjk-bold-font
-                 :emoji-font emoji-font
-                 :braille-font braille-font
-                 :fallback-fonts fallback-fonts
-                 :char-width char-width
-                 :char-height char-height
-                 :ascent (lem-sdl3/ffi:font-ascent latin-normal-font)
-                 :descent (lem-sdl3/ffi:font-descent latin-normal-font)
-                 :latin-normal-box-band latin-normal-box-band
-                 :latin-bold-box-band latin-bold-box-band))))
+    (let* ((text-fonts (list latin-normal-font latin-bold-font
+                             cjk-normal-font cjk-bold-font))
+           ;; Made before the fallbacks are added, so they have none.
+           (coverage-fonts (mapcar #'lem-sdl3/ffi:copy-font text-fonts))
+           (coverage (pairlis text-fonts coverage-fonts)))
+      (flet ((link (ttf-font)
+               (cons (or (cdr (assoc ttf-font coverage)) ttf-font)
+                     (lem-sdl3/ffi:font-ascent ttf-font))))
+        (let ((fallbacks
+                (list (cons latin-normal-font
+                            (append (list cjk-normal-font) fallback-fonts (list emoji-font)))
+                      (cons latin-bold-font
+                            (append (list cjk-bold-font) fallback-fonts (list emoji-font)))
+                      (cons cjk-normal-font (append fallback-fonts (list emoji-font)))
+                      (cons cjk-bold-font (append fallback-fonts (list emoji-font))))))
+          ;; Lem picks one font per character type, so a glyph missing from it
+          ;; used to draw as an empty box.  SDL_ttf only consults a font's own
+          ;; fallbacks, not theirs, so each text font gets a flat list: the CJK
+          ;; font (for the latin fonts), the configured and system fonts, then
+          ;; emoji.  The CJK, emoji and braille fonts are only borrowed here;
+          ;; they are closed as primaries.
+          (loop :for (ttf-font . list) :in fallbacks
+                :do (add-fallback-fonts ttf-font list))
+          (destructuring-bind (char-width char-height)
+              (get-character-size latin-normal-font)
+            (let ((font (make-font :latin-normal-font latin-normal-font
+                                   :latin-bold-font latin-bold-font
+                                   :cjk-normal-font cjk-normal-font
+                                   :cjk-bold-font cjk-bold-font
+                                   :emoji-font emoji-font
+                                   :braille-font braille-font
+                                   :fallback-fonts fallback-fonts
+                                   :char-width char-width
+                                   :char-height char-height
+                                   :ascent (lem-sdl3/ffi:font-ascent latin-normal-font)
+                                   :descent (lem-sdl3/ffi:font-descent latin-normal-font)
+                                   :latin-normal-box-band latin-normal-box-band
+                                   :latin-bold-box-band latin-bold-box-band
+                                   :coverage-fonts coverage-fonts)))
+              (loop :for (ttf-font . list) :in fallbacks
+                    :do (register-fallback-chain font ttf-font
+                                                 (mapcar #'link (cons ttf-font list))))
+              font)))))))
 
 (defun close-font (font)
   (lem-sdl3/ffi:close-font (font-latin-normal-font font))
@@ -294,6 +353,7 @@ system's) at its size, skipping files that do not exist or fail to open."
   (lem-sdl3/ffi:close-font (font-cjk-bold-font font))
   (lem-sdl3/ffi:close-font (font-emoji-font font))
   (lem-sdl3/ffi:close-font (font-braille-font font))
+  (mapc #'lem-sdl3/ffi:close-font (font-coverage-fonts font))
   ;; Last: the fonts above use these as fallbacks.
   (mapc #'lem-sdl3/ffi:close-font (font-fallback-fonts font))
   (values))

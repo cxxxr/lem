@@ -204,3 +204,52 @@
           (lambda (b)
             (ok (equal (font:font-box-drawing-band a nil)
                        (font:font-box-drawing-band b nil))))))))))
+
+(deftest narrow-characters-use-the-monospace-font
+  ;; Lem classifies every character it does not otherwise know (Greek,
+  ;; Cyrillic, arrows, math) as :cjk, which drew them with the CJK font in
+  ;; its own style and, being taller, below the row's baseline.
+  (with-ttf ()
+    (call-with-display-for-font
+     14
+     (lambda (display)
+       (let ((font (lem-sdl3/display::display-font display)))
+         (flet ((font-for (character &key bold)
+                  (lem-sdl3/display:get-display-font display
+                                                     :type (lem-core::char-type character)
+                                                     :bold bold
+                                                     :character character)))
+           (testing "one-cell characters use the latin fonts"
+             (dolist (character '(#\α #\Ж #\→ #\∀))
+               (ok (eq (font-for character) (font:font-latin-normal-font font)))
+               (ok (eq (font-for character :bold t) (font:font-latin-bold-font font)))))
+           (testing "wide characters still use the CJK fonts"
+             (dolist (character '(#\日 #\あ #\ㄱ))
+               (ok (eq (font-for character) (font:font-cjk-normal-font font)))
+               (ok (eq (font-for character :bold t) (font:font-cjk-bold-font font)))))))))))
+
+(deftest glyph-ascent-is-that-of-the-font-drawing-the-glyph
+  ;; SDL_ttf puts a fallback glyph on the fallback font's baseline, so a
+  ;; glyph must be anchored with the ascent of the font that has it.
+  (with-ttf ()
+    (call-with-font
+     (font:make-font-config :size 28 :system-fallback nil)
+     (lambda (font)
+       (let* ((latin (font:font-latin-normal-font font))
+              (cjk (font:font-cjk-normal-font font))
+              (latin-ascent (lem-sdl3/ffi:font-ascent latin))
+              (cjk-ascent (lem-sdl3/ffi:font-ascent cjk)))
+         (testing "the fonts' ascents differ, or the test proves nothing"
+           (ok (/= latin-ascent cjk-ascent)))
+         (testing "a glyph the latin font has uses its ascent"
+           (multiple-value-bind (ascent own) (font:glyph-source font latin #\α)
+             (ok (= ascent latin-ascent))
+             (ok own)))
+         (testing "a glyph from the CJK fallback uses the CJK ascent"
+           (multiple-value-bind (ascent own) (font:glyph-source font latin #\日)
+             (ok (= ascent cjk-ascent))
+             (ng own)))
+         (testing "the CJK font's own glyph uses its ascent"
+           (multiple-value-bind (ascent own) (font:glyph-source font cjk #\日)
+             (ok (= ascent cjk-ascent))
+             (ok own))))))))

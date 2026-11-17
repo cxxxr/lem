@@ -24,6 +24,7 @@
    :font-descent
    :font-has-glyph-p
    :add-fallback-font
+   :copy-font
    :glyph-metrics
    :render-text-blended
    :render-text-solid
@@ -247,8 +248,16 @@ surface has been destroyed."
       (sdl-error "Failed to open font ~A" pathname))
     font))
 
+(defun copy-font (font)
+  "Return a new TTF_Font pointer with FONT's file, size and style, but none
+of its fallback fonts.  Close it with CLOSE-FONT."
+  (let ((copy (sdl3-ttf:copy-font font)))
+    (when (cffi:null-pointer-p copy)
+      (sdl-error "Failed to copy font"))
+    copy))
+
 (defun close-font (font)
-  "Close FONT, a pointer returned by OPEN-FONT."
+  "Close FONT, a pointer returned by OPEN-FONT or COPY-FONT."
   (sdl3-ttf:close-font font))
 
 (defun font-ascent (font)

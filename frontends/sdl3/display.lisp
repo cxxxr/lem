@@ -18,6 +18,7 @@
            :display-char-height
            :display-font-ascent
            :display-font-descent
+           :display-glyph-ascent
            :box-drawing-char-p
            :display-box-drawing-band
            :display-focus-p
@@ -193,33 +194,45 @@ e.g. -3 for NotoSansMono at 12pt). |descent| pixels sit below the baseline."
   (and character
        (<= #x2500 (char-code character) #x259f)))
 
-(defun box-drawing-font (display bold character)
-  "Return the monospace font to draw the box-drawing CHARACTER with, or NIL
-if that font lacks the glyph.  Lem classifies these characters as :cjk, but
-the CJK font draws them full-width while Lem gives them one cell, so lines
-and corners do not meet.  Monospace fonts draw them to fill the cell.
-The check also counts the font's fallbacks (see lem-sdl3/font:open-font), so
-a glyph the latin font lacks is drawn by its CJK fallback, as before."
-  (let ((font (if bold
-                  (display-latin-bold-font display)
-                  (display-latin-font display))))
-    (when (lem-sdl3/ffi:font-has-glyph-p font character)
-      font)))
+(defun narrow-non-cjk-char-p (type character)
+  "Return true if CHARACTER, of char-type TYPE, is one Lem classifies as
+:cjk but gives a single cell: Greek, Cyrillic, arrows, math and other
+symbols, box drawing.  Lem calls every character it does not otherwise know
+:cjk, but the CJK font draws these in its own (often full-width) style; the
+monospace font draws them to fit the cell."
+  (and (eq type :cjk)
+       character
+       (not (lem:wide-char-p character))))
+
+(defun display-glyph-ascent (display ttf-font character)
+  "Return the ascent of the font that draws CHARACTER when it is rendered
+with TTF-FONT: TTF-FONT's own, or that of the fallback font providing the
+glyph.  A rendered glyph's baseline lies this many pixels below the top of
+its surface.  The second value is true if TTF-FONT itself has the glyph."
+  (font:glyph-source (display-font display) ttf-font character))
 
 (defun display-box-drawing-band (display character bold)
-  "When CHARACTER is a box-drawing character drawn with the latin font (see
-get-display-font), return that font's (TOP . BOTTOM) box-drawing band, to be
-stretched to the cell height.  Otherwise return NIL."
+  "When CHARACTER is a box-drawing character drawn with the latin font itself
+(see get-display-font), not a fallback, return that font's (TOP . BOTTOM)
+box-drawing band, to be stretched to the cell height.  Otherwise NIL."
   (and (box-drawing-char-p character)
-       (box-drawing-font display bold character)
+       (nth-value 1 (display-glyph-ascent display
+                                          (if bold
+                                              (display-latin-bold-font display)
+                                              (display-latin-font display))
+                                          character))
        (font:font-box-drawing-band (display-font display) bold)))
 
 (defmethod get-display-font ((display display) &key type bold character)
   (check-type type lem-core::char-type)
   (cond ((eq type :control)
          (display-latin-font display))
-        ((and (box-drawing-char-p character)
-              (box-drawing-font display bold character)))
+        ((narrow-non-cjk-char-p type character)
+         ;; The latin fonts fall back to the CJK font and then the others
+         ;; for glyphs they lack.
+         (if bold
+             (display-latin-bold-font display)
+             (display-latin-font display)))
         ((eq type :icon)
          (or (and character (icon-font:icon-font
                              character
