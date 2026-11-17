@@ -74,3 +74,7 @@
  (:class qlot/source/git:source-git
   :initargs (:remote-url "https://github.com/theangelperalta/cl-objc.git")
   :version "git-5b59c1643c66700e007637c658cc966b59551839"))
+("cl-sdl3" .
+ (:class qlot/source/git:source-git
+  :initargs (:remote-url "https://github.com/aiffc/cl-sdl3.git")
+  :version "git-47c90b54715aba23752b70d382a3eb310172cd34"))
