@@ -14,6 +14,7 @@
                "lem-nix-mode"
                "lem-clojure-mode"
                "lem-typst-mode"
+               "lem-terminal"
                "cl-ansi-text"
                "trivial-package-local-nicknames"
                "rove"
@@ -84,6 +85,7 @@
                (:file "interface")
                (:file "attribute")
                (:file "display-cache")
-               (:file "visual-line"))
+               (:file "visual-line")
+               (:file "terminal"))
   :perform (test-op (o c)
                     (symbol-call :rove :run c)))
