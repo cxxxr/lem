@@ -34,9 +34,6 @@
                "lem/extensions"
                "trivial-main-thread")
   :serial t
-  ;; Files not listed yet are copied from frontends/sdl2 and still call
-  ;; cl-sdl2; they are added as they are ported:
-  ;;   image-buffer tree color-picker (widgets)
   :components ((:file "ffi")
                (:file "event")
                (:file "wm")
@@ -57,7 +54,10 @@
                (:file "drawing")
                ;; Provides the default method on lem-sdl3:render, which
                ;; redraw-view-after calls for every view.
-               (:file "graphics"))
+               (:file "graphics")
+               (:file "image-buffer")
+               (:file "tree")
+               (:file "color-picker"))
   :in-order-to ((test-op (test-op "lem-sdl3/tests"))))
 
 (defsystem "lem-sdl3/tests"

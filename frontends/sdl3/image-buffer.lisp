@@ -55,15 +55,15 @@
 (define-key *image-viewer-keymap* "h" 'image-fit-to-height)
 
 (defmethod render :before (texture window (buffer image-buffer))
-  (sdl2:set-render-target (current-renderer) texture)
+  (lem-sdl3/ffi:set-render-target (current-renderer) texture)
   (lem-sdl3/display::set-render-color lem-sdl3/display::*display* (lem-sdl3/display::display-background-color lem-sdl3/display::*display*))
-  (sdl2:with-rects ((rect 0
-                          0
-                          (* (lem-sdl3::char-width)
-                             (window-width window))
-                          (* (lem-sdl3::char-height)
-                             (1- (window-height window)))))
-    (sdl2:render-fill-rect (current-renderer) rect)))
+  (lem-sdl3/ffi:with-frect (rect 0
+                                 0
+                                 (* (lem-sdl3::char-width)
+                                    (window-width window))
+                                 (* (lem-sdl3::char-height)
+                                    (1- (window-height window))))
+    (lem-sdl3/ffi:render-fill-rect (current-renderer) rect)))
 
 (defun scale-buffer-image (buffer scale-offset)
   (clear-drawables buffer)

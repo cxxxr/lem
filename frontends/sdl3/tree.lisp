@@ -128,7 +128,7 @@
                      (text-node-height object))))
 
 (defun load-font ()
-  (sdl2-ttf:open-font
+  (lem-sdl3/ffi:open-font
    (lem-sdl3/resource:get-resource-pathname
     "resources/fonts/NotoSansMono-Regular.ttf")
    (lem-sdl3/font:font-config-size
@@ -136,17 +136,21 @@
      (lem-sdl3/display:current-display)))))
 
 (defun free-tree-surfaces (drawables)
-  "Explicitly free SDL2 surfaces held by text-node instances.
-Cancels autocollect finalizers first to prevent double-free."
+  "Explicitly free the SDL surfaces held by text-node instances."
   (dolist (drawable drawables)
     (when (typep drawable 'text-node)
       (let ((surface (text-node-surface drawable)))
         (when surface
-          (handler-case
-              (progn
-                (trivial-garbage:cancel-finalization surface)
-                (sdl2:free-surface surface))
+          (handler-case (lem-sdl3/ffi:destroy-surface surface)
             (error () nil)))))))
+
+(defun render-node-name (font node)
+  "Render NODE's name in white.  SDL_ttf renders nothing for an empty
+string, so an empty name is drawn as a space to keep a node to lay out."
+  (let ((name (princ-to-string (node-name node))))
+    (lem-sdl3/ffi:render-text-blended font
+                                      (if (string= name "") " " name)
+                                      255 255 255)))
 
 (defun draw (buffer node)
   ;; Free surfaces from previous tree before creating new ones.
@@ -157,14 +161,9 @@ Cancels autocollect finalizers first to prevent double-free."
     (unwind-protect
          (labels ((recursive (node current-x)
                     (let* ((y (round (* (tree-view-buffer-margin-y buffer) (node-y node))))
-                           (surface (sdl2-ttf:render-utf8-blended font
-                                                                  (princ-to-string (node-name node))
-                                                                  255
-                                                                  255
-                                                                  255
-                                                                  0))
-                           (node-width (sdl2:surface-width surface))
-                           (node-height (sdl2:surface-height surface)))
+                           (surface (render-node-name font node))
+                           (node-width (lem-sdl3/ffi:surface-width surface))
+                           (node-height (lem-sdl3/ffi:surface-height surface)))
                       (push (make-instance 'text-node
                                            :surface surface
                                            :x current-x
@@ -180,21 +179,21 @@ Cancels autocollect finalizers first to prevent double-free."
                           (declare (ignore child-width))
                           (push (make-instance 'line-edge
                                                :color (lem:make-color 255 255 255)
-                                               :x0 (+ current-x (sdl2:surface-width surface))
-                                               :y0 (+ y (round (sdl2:surface-height surface) 2))
+                                               :x0 (+ current-x node-width)
+                                               :y0 (+ y (round node-height 2))
                                                :x1 child-x
                                                :y1 (+ child-y (round child-height 2)))
                                 drawables)))
                       (values current-x
                               y
-                              (sdl2:surface-width surface)
-                              (sdl2:surface-height surface)))))
+                              node-width
+                              node-height))))
            (recursive node 0)
            (setf (tree-view-buffer-drawables buffer) drawables)
            (setf (tree-view-buffer-width buffer) (compute-width drawables))
            (setf (tree-view-buffer-height buffer) (compute-height drawables))
            (values))
-      (sdl2-ttf:close-font font))))
+      (lem-sdl3/ffi:close-font font))))
 
 (defmethod render ((text-node text-node) buffer)
   (when (<= (tree-view-buffer-scroll-y buffer)
@@ -203,20 +202,20 @@ Cancels autocollect finalizers first to prevent double-free."
                (text-node-height text-node))
             (tree-view-display-end buffer))
     (let ((texture
-            (sdl2:create-texture-from-surface
+            (lem-sdl3/ffi:create-texture-from-surface
              (lem-sdl3:current-renderer)
              (text-node-surface text-node))))
-      (sdl2:with-rects ((dest-rect (- (text-node-x text-node)
-                                      (tree-view-buffer-scroll-x buffer))
-                                   (- (text-node-y text-node)
-                                      (tree-view-buffer-scroll-y buffer))
-                                   (text-node-width text-node)
-                                   (text-node-height text-node)))
-        (sdl2:render-copy (lem-sdl3:current-renderer) texture :dest-rect dest-rect)
+      (lem-sdl3/ffi:with-frect (dest-rect (- (text-node-x text-node)
+                                             (tree-view-buffer-scroll-x buffer))
+                                          (- (text-node-y text-node)
+                                             (tree-view-buffer-scroll-y buffer))
+                                          (text-node-width text-node)
+                                          (text-node-height text-node))
+        (lem-sdl3/ffi:render-texture (lem-sdl3:current-renderer) texture nil dest-rect)
         (when (eq text-node (tree-view-buffer-active-node buffer))
-          (sdl2:set-render-draw-color (lem-sdl3:current-renderer) 255 255 255 0)
-          (sdl2:render-draw-rect (lem-sdl3:current-renderer) dest-rect)))
-      (sdl2:destroy-texture texture))))
+          (lem-sdl3/ffi:set-render-draw-color (lem-sdl3:current-renderer) 255 255 255)
+          (lem-sdl3/ffi:render-rect (lem-sdl3:current-renderer) dest-rect)))
+      (lem-sdl3/ffi:destroy-texture texture))))
 
 (defmethod render ((line-edge line-edge) buffer)
   (let ((y0 (min (line-edge-y0 line-edge)
@@ -229,15 +228,15 @@ Cancels autocollect finalizers first to prevent double-free."
     (unless (or (< y1 start-y) (< end y0))
       (lem-sdl3/display:set-render-color (lem-sdl3/display:current-display)
                                          (line-edge-color line-edge))
-      (sdl2:render-draw-line (lem-sdl3:current-renderer)
-                             (- (line-edge-x0 line-edge)
-                                start-x)
-                             (- (line-edge-y0 line-edge)
-                                start-y)
-                             (- (line-edge-x1 line-edge)
-                                start-x)
-                             (- (line-edge-y1 line-edge)
-                                start-y)))))
+      (lem-sdl3/ffi:render-line (lem-sdl3:current-renderer)
+                                (- (line-edge-x0 line-edge)
+                                   start-x)
+                                (- (line-edge-y0 line-edge)
+                                   start-y)
+                                (- (line-edge-x1 line-edge)
+                                   start-x)
+                                (- (line-edge-y1 line-edge)
+                                   start-y)))))
 
 (defun render-all (buffer)
   (loop :for drawable :in (tree-view-buffer-drawables buffer)
@@ -317,11 +316,11 @@ Cancels autocollect finalizers first to prevent double-free."
                                (- (tree-view-buffer-height (current-buffer)))))
 
 (defmethod lem-sdl3:render (texture window (buffer tree-view-buffer))
-  (sdl2:set-render-target (lem-sdl3:current-renderer) texture)
+  (lem-sdl3/ffi:set-render-target (lem-sdl3:current-renderer) texture)
   (lem-sdl3/display:set-render-color (lem-sdl3/display:current-display)
                                      (lem-sdl3/display:display-background-color
                                       (lem-sdl3/display:current-display)))
-  (sdl2:render-fill-rect (lem-sdl3:current-renderer) nil)
+  (lem-sdl3/ffi:render-fill-rect (lem-sdl3:current-renderer) nil)
   (render-all buffer))
 
 (defmethod execute ((mode tree-view-mode) (command scroll-down) argument)
