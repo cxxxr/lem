@@ -23,6 +23,7 @@
    :font-ascent
    :font-descent
    :font-has-glyph-p
+   :add-fallback-font
    :glyph-metrics
    :render-text-blended
    :render-text-solid
@@ -260,6 +261,13 @@ surface has been destroyed."
 (defun font-has-glyph-p (font character)
   "Return true if FONT provides a glyph for CHARACTER."
   (sdl3-ttf:font-has-glyph font (char-code character)))
+
+(defun add-fallback-font (font fallback)
+  "Make SDL_ttf draw glyphs FONT lacks with FALLBACK.  Fallbacks are tried in
+the order added, and only one level deep: FALLBACK's own fallbacks are not
+consulted.  FALLBACK must stay open until FONT is closed.  Return true on
+success."
+  (sdl3-ttf:add-fallback-font font fallback))
 
 (defun glyph-metrics (font character)
   "Return CHARACTER's metrics in FONT as values MINX MAXX MINY MAXY ADVANCE

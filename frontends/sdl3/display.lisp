@@ -196,7 +196,9 @@ e.g. -3 for NotoSansMono at 12pt). |descent| pixels sit below the baseline."
   "Return the monospace font to draw the box-drawing CHARACTER with, or NIL
 if that font lacks the glyph.  Lem classifies these characters as :cjk, but
 the CJK font draws them full-width while Lem gives them one cell, so lines
-and corners do not meet.  Monospace fonts draw them to fill the cell."
+and corners do not meet.  Monospace fonts draw them to fill the cell.
+The check also counts the font's fallbacks (see lem-sdl3/font:open-font), so
+a glyph the latin font lacks is drawn by its CJK fallback, as before."
   (let ((font (if bold
                   (display-latin-bold-font display)
                   (display-latin-font display))))

@@ -128,3 +128,79 @@
          (testing "other characters are not stretched"
            (ok (null (lem-sdl3/display:display-box-drawing-band display #\M nil)))
            (ok (null (lem-sdl3/display:display-box-drawing-band display #\日 nil)))))))))
+
+(defun call-with-font (font-config function)
+  (let ((font (font:open-font font-config)))
+    (unwind-protect (funcall function font)
+      (font:close-font font))))
+
+(defun has-glyph-p (ttf-font character)
+  (lem-sdl3/ffi:font-has-glyph-p ttf-font character))
+
+(deftest latin-fonts-fall-back-to-the-cjk-font
+  ;; Lem picks one font per character type; a glyph missing from it used to
+  ;; draw as an empty box.  NotoSansMono has no 日, NotoSansCJK does.
+  (with-ttf ()
+    (call-with-font
+     (font:make-font-config :size 14 :system-fallback nil)
+     (lambda (font)
+       (ok (has-glyph-p (font:font-latin-normal-font font) #\日))
+       (ok (has-glyph-p (font:font-latin-bold-font font) #\日))
+       (testing "the fallback glyph renders"
+         (let ((surface (lem-sdl3/ffi:render-text-blended
+                         (font:font-latin-normal-font font) "日" 255 255 255)))
+           (ok surface)
+           (lem-sdl3/ffi:destroy-surface surface)))))))
+
+(deftest configured-fallback-fonts-cover-missing-glyphs
+  ;; Braille (U+2800..U+28FF) is in the bundled FreeMono only, not in the
+  ;; latin, CJK or emoji fonts.
+  (with-ttf ()
+    (let ((free-mono (lem-sdl3/resource:get-resource-pathname
+                      "resources/fonts/FreeMono.ttf")))
+      (testing "without the fallback the glyph is missing"
+        (call-with-font
+         (font:make-font-config :size 14 :system-fallback nil :fallback-files '())
+         (lambda (font)
+           (ng (has-glyph-p (font:font-latin-normal-font font) #\⠿))
+           (ng (has-glyph-p (font:font-cjk-normal-font font) #\⠿))
+           (ok (null (font:font-fallback-fonts font))))))
+      (testing "with it, every text font can draw the glyph"
+        (call-with-font
+         (font:make-font-config :size 14 :system-fallback nil
+                                :fallback-files (list free-mono))
+         (lambda (font)
+           (ok (= 1 (length (font:font-fallback-fonts font))))
+           (dolist (ttf-font (list (font:font-latin-normal-font font)
+                                   (font:font-latin-bold-font font)
+                                   (font:font-cjk-normal-font font)
+                                   (font:font-cjk-bold-font font)))
+             (ok (has-glyph-p ttf-font #\⠿)))))))))
+
+(deftest missing-fallback-files-are-skipped
+  (with-ttf ()
+    (call-with-font
+     (font:make-font-config :size 14 :system-fallback nil
+                            :fallback-files '("/nonexistent/lem-no-such-font.ttf"))
+     (lambda (font)
+       (ok (null (font:font-fallback-fonts font)))))))
+
+(deftest system-fallback-font-files-exist
+  ;; Which files are listed depends on the machine; all must exist.
+  (with-ttf ()
+    (ok (every #'probe-file (font:system-fallback-font-files)))))
+
+(deftest box-drawing-band-ignores-fallbacks
+  ;; The band is measured on the latin font alone, so it matches the
+  ;; band computed for a font opened without fallbacks.
+  (with-ttf ()
+    (let ((with (font:make-font-config :size 14 :system-fallback t))
+          (without (font:make-font-config :size 14 :system-fallback nil)))
+      (call-with-font
+       with
+       (lambda (a)
+         (call-with-font
+          without
+          (lambda (b)
+            (ok (equal (font:font-box-drawing-band a nil)
+                       (font:font-box-drawing-band b nil))))))))))

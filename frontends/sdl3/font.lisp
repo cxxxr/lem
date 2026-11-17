@@ -10,6 +10,7 @@
            :font-cjk-bold-font
            :font-emoji-font
            :font-braille-font
+           :font-fallback-fonts
            :font-char-width
            :font-char-height
            :font-ascent
@@ -22,10 +23,39 @@
            :change-size
            :open-font
            :close-font
+           :system-fallback-font-files
            :get-font-list))
 (in-package :lem-sdl3/font)
 
 (defparameter *default-font-size* 15)
+
+(defvar *system-fallback-font-files* :unknown
+  "Cache for `system-fallback-font-files': the list of system font files, or
+:UNKNOWN before the first lookup.  Fonts are re-opened on every size or DPI
+change, and finding them can mean running fc-match, so look them up once.")
+
+(defparameter *mac-fallback-font-files*
+  '("/System/Library/Fonts/Menlo.ttc"
+    "/System/Library/Fonts/Apple Symbols.ttf"
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+    "/System/Library/Fonts/Supplemental/STIXGeneral.otf")
+  "macOS fonts used as fallbacks, in order: monospace first, then symbols,
+then broad script coverage.  macOS has no fontconfig by default, so these are
+fixed paths; ones that do not exist are skipped.")
+
+(defparameter *windows-fallback-font-files*
+  '("C:/Windows/Fonts/consola.ttf"
+    "C:/Windows/Fonts/seguisym.ttf"
+    "C:/Windows/Fonts/segoeui.ttf"
+    "C:/Windows/Fonts/Nirmala.ttf"
+    "C:/Windows/Fonts/Nirmala.ttc"
+    "C:/Windows/Fonts/ebrima.ttf"
+    "C:/Windows/Fonts/cambria.ttc")
+  "Windows fonts used as fallbacks, in order; ones that do not exist are
+skipped.")
+
+(defparameter *max-fontconfig-fallback-fonts* 12
+  "How many of fontconfig's sorted monospace matches to use as fallbacks.")
 
 (defun default-font-size () *default-font-size*)
 
@@ -36,7 +66,11 @@
   cjk-normal-file
   cjk-bold-file
   emoji-file
-  braille-file)
+  braille-file
+  ;; Extra font files to fall back to, tried before the system's.
+  fallback-files
+  ;; Whether to also fall back to the system's fonts.
+  system-fallback)
 
 (defstruct font
   latin-normal-font
@@ -45,6 +79,9 @@
   cjk-bold-font
   emoji-font
   braille-font
+  ;; Fonts opened only to be fallbacks of the fonts above (see
+  ;; add-fallback-fonts); closed after them.
+  fallback-fonts
   char-width
   char-height
   ;; Latin-normal-font TTF intrinsic metrics, cached at open-font time so the
@@ -68,7 +105,9 @@
                               cjk-normal-file
                               cjk-bold-file
                               emoji-file
-                              brail-file)
+                              brail-file
+                              (fallback-files (lem:config :sdl3-fallback-fonts))
+                              (system-fallback (lem:config :sdl3-system-fallback-fonts t)))
   (%make-font-config
    :size (lem:config :font-size (or size *default-font-size*))
    :latin-normal-file (or latin-normal-file
@@ -92,7 +131,9 @@
                     :sdl2-emoji-font
                     (get-resource-pathname "resources/fonts/NotoColorEmoji.ttf")))
    :braille-file (or brail-file
-                     (get-resource-pathname "resources/fonts/FreeMono.ttf"))))
+                     (get-resource-pathname "resources/fonts/FreeMono.ttf"))
+   :fallback-files fallback-files
+   :system-fallback system-fallback))
 
 (defun merge-font-config (new old)
   (%make-font-config :size (or (font-config-size new)
@@ -108,7 +149,10 @@
                      :emoji-file (or (font-config-emoji-file new)
                                      (font-config-emoji-file old))
                      :braille-file (or (font-config-braille-file new)
-                                       (font-config-braille-file old))))
+                                       (font-config-braille-file old))
+                     :fallback-files (or (font-config-fallback-files new)
+                                         (font-config-fallback-files old))
+                     :system-fallback (font-config-system-fallback old)))
 
 (defun change-size (font-config size)
   (let ((font-config (copy-font-config font-config)))
@@ -141,6 +185,61 @@ makes vertical lines meet across rows, as in a terminal."
       (font-latin-bold-box-band font)
       (font-latin-normal-box-band font)))
 
+(defgeneric platform-fallback-font-files (platform)
+  (:documentation "Return the font files PLATFORM provides for glyphs the
+configured fonts lack, most preferred first.  Files may not exist."))
+
+(defmethod platform-fallback-font-files (platform)
+  (declare (ignore platform))
+  '())
+
+(defmethod platform-fallback-font-files ((platform lem-sdl3/platform:mac))
+  *mac-fallback-font-files*)
+
+(defmethod platform-fallback-font-files ((platform lem-sdl3/platform:windows))
+  *windows-fallback-font-files*)
+
+(defmethod platform-fallback-font-files ((platform lem-sdl3/platform:linux))
+  ;; fc-match -s sorts fonts by how well they match and drops ones that add
+  ;; no coverage, which is the fallback list fontconfig itself would use.
+  (let ((output (ignore-errors
+                 (uiop:run-program '("fc-match" "-s" "--format=%{file}\\n" "monospace")
+                                   :output :string))))
+    (when output
+      (let ((files (split-sequence:split-sequence #\newline output
+                                                  :remove-empty-subseqs t)))
+        (subseq files 0 (min (length files) *max-fontconfig-fallback-fonts*))))))
+
+(defun system-fallback-font-files ()
+  "Return the existing system font files to fall back to, most preferred
+first.  The result is cached for the session."
+  (when (eq *system-fallback-font-files* :unknown)
+    (setf *system-fallback-font-files*
+          (remove-duplicates
+           (remove-if-not #'probe-file
+                          (platform-fallback-font-files
+                           (lem-sdl3/platform:get-platform)))
+           :test #'equal
+           :from-end t)))
+  *system-fallback-font-files*)
+
+(defun open-fallback-fonts (font-config)
+  "Open the fallback font files FONT-CONFIG names (configured ones, then the
+system's) at its size, skipping files that do not exist or fail to open."
+  (loop :for file :in (append (font-config-fallback-files font-config)
+                              (and (font-config-system-fallback font-config)
+                                   (system-fallback-font-files)))
+        :for font := (and (probe-file file)
+                          (handler-case (lem-sdl3/ffi:open-font file (font-config-size font-config))
+                            (error () nil)))
+        :when font
+          :collect font))
+
+(defun add-fallback-fonts (font fallbacks)
+  "Add FALLBACKS, in order, as FONT's fallback fonts."
+  (dolist (fallback fallbacks)
+    (lem-sdl3/ffi:add-fallback-font font fallback)))
+
 (defun open-font (&optional font-config)
   (let* ((font-config (or font-config (make-font-config)))
          (latin-normal-font (lem-sdl3/ffi:open-font (font-config-latin-normal-file font-config)
@@ -154,7 +253,24 @@ makes vertical lines meet across rows, as in a terminal."
          (emoji-font (lem-sdl3/ffi:open-font (font-config-emoji-file font-config)
                                          (font-config-size font-config)))
          (braille-font (lem-sdl3/ffi:open-font (font-config-braille-file font-config)
-                                           (font-config-size font-config))))
+                                           (font-config-size font-config)))
+         (fallback-fonts (open-fallback-fonts font-config))
+         ;; Measured before fallbacks are added: TTF_FontHasGlyph counts
+         ;; fallbacks, and the band must come from the latin font itself.
+         (latin-normal-box-band (box-drawing-band latin-normal-font))
+         (latin-bold-box-band (box-drawing-band latin-bold-font)))
+    ;; Lem picks one font per character type, so a glyph missing from it
+    ;; used to draw as an empty box.  SDL_ttf only consults a font's own
+    ;; fallbacks, not theirs, so each text font gets a flat list: the CJK
+    ;; font (for the latin fonts), the configured and system fonts, then
+    ;; emoji.  The CJK, emoji and braille fonts are only borrowed here; they
+    ;; are closed as primaries.
+    (add-fallback-fonts latin-normal-font
+                        (append (list cjk-normal-font) fallback-fonts (list emoji-font)))
+    (add-fallback-fonts latin-bold-font
+                        (append (list cjk-bold-font) fallback-fonts (list emoji-font)))
+    (add-fallback-fonts cjk-normal-font (append fallback-fonts (list emoji-font)))
+    (add-fallback-fonts cjk-bold-font (append fallback-fonts (list emoji-font)))
     (destructuring-bind (char-width char-height)
         (get-character-size latin-normal-font)
       (make-font :latin-normal-font latin-normal-font
@@ -163,12 +279,13 @@ makes vertical lines meet across rows, as in a terminal."
                  :cjk-bold-font cjk-bold-font
                  :emoji-font emoji-font
                  :braille-font braille-font
+                 :fallback-fonts fallback-fonts
                  :char-width char-width
                  :char-height char-height
                  :ascent (lem-sdl3/ffi:font-ascent latin-normal-font)
                  :descent (lem-sdl3/ffi:font-descent latin-normal-font)
-                 :latin-normal-box-band (box-drawing-band latin-normal-font)
-                 :latin-bold-box-band (box-drawing-band latin-bold-font)))))
+                 :latin-normal-box-band latin-normal-box-band
+                 :latin-bold-box-band latin-bold-box-band))))
 
 (defun close-font (font)
   (lem-sdl3/ffi:close-font (font-latin-normal-font font))
@@ -177,6 +294,8 @@ makes vertical lines meet across rows, as in a terminal."
   (lem-sdl3/ffi:close-font (font-cjk-bold-font font))
   (lem-sdl3/ffi:close-font (font-emoji-font font))
   (lem-sdl3/ffi:close-font (font-braille-font font))
+  ;; Last: the fonts above use these as fallbacks.
+  (mapc #'lem-sdl3/ffi:close-font (font-fallback-fonts font))
   (values))
 
 (defgeneric get-font-list (platform))

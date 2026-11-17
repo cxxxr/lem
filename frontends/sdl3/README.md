@@ -61,6 +61,39 @@ The SDL3 frontend reads the same settings as the SDL2 frontend
 `:sdl2-cjk-normal-font`, `:sdl2-cjk-bold-font`, `:sdl2-emoji-font`), so an
 existing configuration applies unchanged.
 
+### Fallback fonts
+
+A character the configured fonts lack is drawn with a fallback font instead of
+an empty box. The Latin fonts fall back to the CJK font; all text fonts then
+fall back to any extra fonts you configure, the system's fonts, and the emoji
+font, in that order.
+
+System fonts come from fontconfig (`fc-match -s monospace`) on Linux and from a
+fixed list of fonts shipped with the OS on macOS (Menlo, Apple Symbols, Arial
+Unicode, STIX) and Windows (Consolas, Segoe UI Symbol, Segoe UI, Nirmala UI,
+Ebrima, Cambria).
+
+Two settings control this:
+
+- `:sdl3-fallback-fonts`: a list of extra font files, tried before the
+  system's.
+- `:sdl3-system-fallback-fonts`: set to `nil` to not use system fonts.
+
+For example, in `$HOME/.lem/init.lisp`:
+
+```common-lisp
+#+lem-sdl3
+(setf (lem:config :sdl3-fallback-fonts)
+      '("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf"))
+```
+
+Like the other font settings, these are read when the display is created, so a
+change takes effect the next time Lem starts (`lem:config` saves it).
+
+Scripts that need shaping (for example Devanagari or Tamil) show every
+character, but Lem draws one character per cell, so combining marks are not
+joined.
+
 ### Keyboard layout (Windows / macOS)
 
 If your keyboard is a JIS layout, put the following in `$HOME/.lem/init.lisp`:
