@@ -359,9 +359,10 @@ latter case the exit is reported to the editor thread via FINISH-PROCESS."
           (return))))))
 
 (defun exit-notice (status)
-  (if (minusp status)
-      "[Process exited]"
-      (format nil "[Process exited with code ~D]" status)))
+  (format nil "~A  (M-x terminal-restart to start again)"
+          (if (minusp status)
+              "[Process exited]"
+              (format nil "[Process exited with code ~D]" status))))
 
 (defun append-exit-notice (terminal status)
   "Append the exit notice after the last non-blank line of the final screen."
