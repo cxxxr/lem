@@ -84,6 +84,9 @@ dependency on the TRAMP extension is needed."
          (terminal (terminal:create :cols 80 :rows 24 :buffer buffer
                                     :directory buffer-directory)))
     (setf (buffer-terminal buffer) terminal)
+    ;; A local shell: its working directory is the buffer's directory.
+    ;; Terminals running other commands (e.g. TRAMP's ssh) are not tracked.
+    (setf (buffer-value buffer 'track-directory) t)
     (change-buffer-mode buffer 'terminal-mode)
     buffer))
 
@@ -246,7 +249,17 @@ in Lem (e.g. C-x for nano, or C-q itself)."
   (terminal-mode)
   (adjust-current-point))
 
+(defun sync-buffer-directory (buffer)
+  "Set BUFFER's directory to its shell's current directory, so commands such as
+find-file start where the shell is."
+  (alexandria:when-let* ((terminal (and (buffer-value buffer 'track-directory)
+                                        (buffer-terminal buffer)))
+                         (directory (terminal:process-directory terminal)))
+    (unless (equal directory (buffer-directory buffer))
+      (setf (buffer-directory buffer) directory))))
+
 (defmethod execute ((mode terminal-mode) command argment)
+  (sync-buffer-directory (current-buffer))
   (cond
     ((member command *bypass-commands* :test #'typep)
      (call-next-method))

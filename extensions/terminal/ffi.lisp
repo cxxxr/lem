@@ -144,6 +144,10 @@ the PTY already hung up (returns 0)."
   "Interrupt a blocked TERMINAL-PROCESS-INPUT-WAIT from another thread."
   (terminal :pointer))
 
+(cffi:defcfun ("terminal_pid" terminal-pid) :int
+  "Return the process id of the terminal's child process."
+  (terminal :pointer))
+
 (cffi:defcfun ("terminal_eof_p" %terminal-eof-p) :int
   (terminal :pointer))
 
