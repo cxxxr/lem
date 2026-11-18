@@ -36,6 +36,8 @@
                "trivial-main-thread")
   :serial t
   :components ((:file "ffi")
+               (:file "ffi-freetype")
+               (:file "ffi-harfbuzz")
                (:file "event")
                (:file "wm")
                (:file "resource")
@@ -70,5 +72,6 @@
                              (:file "event")
                              (:file "keyboard")
                              (:file "font")
-                             (:file "drawing"))))
+                             (:file "drawing")
+                             (:file "ffi-shaping"))))
   :perform (test-op (op c) (symbol-call :rove '#:run c)))
