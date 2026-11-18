@@ -155,3 +155,27 @@ Returns T on EOF, NIL on timeout."
                                     (lem-terminal/terminal:process-directory terminal))
                     :do (sleep 0.02)))
           (skip "/proc is not available")))))
+
+(deftest trailing-blanks-are-trimmed
+  (let ((plain (lem:make-attribute :foreground "white"))
+        (bar (lem:make-attribute :foreground "white" :background "blue")))
+    (testing "invisible padding is dropped"
+      (multiple-value-bind (chars attrs)
+          (lem-terminal/terminal::trim-trailing-blanks
+           "$ ls      " (list (list 0 10 plain)))
+        (ok (equal "$ ls" chars))
+        (ok (equal (list (list 0 4 plain)) attrs))))
+    (testing "spaces with a background are kept"
+      (multiple-value-bind (chars attrs)
+          (lem-terminal/terminal::trim-trailing-blanks
+           "ab  cd    " (list (list 0 2 plain) (list 2 6 bar) (list 6 10 plain)))
+        (ok (equal "ab  cd" chars))
+        (ok (equal (list (list 0 2 plain) (list 2 6 bar)) attrs)))
+      (multiple-value-bind (chars attrs)
+          (lem-terminal/terminal::trim-trailing-blanks
+           "ab   " (list (list 0 2 plain) (list 2 5 bar)))
+        (ok (equal "ab   " chars))
+        (ok (= 2 (length attrs)))))
+    (testing "a blank row becomes empty"
+      (ok (equal "" (lem-terminal/terminal::trim-trailing-blanks
+                     "    " (list (list 0 4 plain))))))))
