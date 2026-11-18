@@ -3,11 +3,19 @@
         :lem)
   (:export :get-code
            :char-to-key
-           :get-key-from-name))
+           :get-key-from-name
+           :register-terminfo-keys))
 (in-package :lem-ncurses/key)
 
 (defvar *keycode-table* (make-hash-table))
 (defvar *keyname-table* (make-hash-table :test 'equal))
+
+(defparameter *terminfo-key-syms*
+  '(("UP" . "Up") ("DN" . "Down") ("LFT" . "Left") ("RIT" . "Right")
+    ("HOM" . "Home") ("END" . "End") ("NXT" . "PageDown") ("PRV" . "PageUp")
+    ("DC" . "Delete") ("IC" . "Insert"))
+  "Terminfo extended key names (kUP5, kLFT3, ...) without the leading k and
+the trailing modifier digit, mapped to Lem key syms.")
 
 (defun defkeycode (name code &optional key)
   (setf (gethash name *keyname-table*) code)
@@ -24,6 +32,38 @@
 
 (defun get-key-from-name (name)
   (char-to-key (code-char (get-code name))))
+
+(defun terminfo-name-to-key (name)
+  "Return the Lem key for a terminfo extended key NAME such as kUP5 (C-Up) or
+kLFT3 (M-Left), or NIL.  The trailing digit is xterm's modifier parameter:
+1 + (Shift 1, Alt 2, Ctrl 4)."
+  (let* ((length (length name))
+         (modifier (and (> length 2)
+                        (char= #\k (char name 0))
+                        (digit-char-p (char name (1- length)))))
+         (sym (and modifier
+                   (cdr (assoc (subseq name 1 (1- length)) *terminfo-key-syms*
+                               :test #'string=)))))
+    (when (and sym (<= 2 modifier 8))
+      (let ((bits (1- modifier)))
+        (make-key :shift (logbitp 0 bits)
+                  :meta (logbitp 1 bits)
+                  :ctrl (logbitp 2 bits)
+                  :sym sym)))))
+
+(defun register-terminfo-keys ()
+  "Map the codes ncurses assigned to modified cursor and editing keys.
+ncurses numbers these extended keys at run time, in the order the terminfo
+entry defines them, so the codes differ between terminals and ncurses
+versions (e.g. C-Up is 566 in one and 575 in another) and cannot be
+hard-coded.  Ask ncurses for each code's name instead.  Must be called after
+the terminal is initialized."
+  (loop :for code :from #o1000 :below 1024
+        :for pointer := (charms/ll:keyname code)
+        :unless (cffi:null-pointer-p pointer)
+          :do (let ((key (terminfo-name-to-key (cffi:foreign-string-to-lisp pointer))))
+                (when key
+                  (setf (gethash code *keycode-table*) key)))))
 
 (defkeycode "C-@" 0 (make-key :ctrl t :sym "@"))
 (defkeycode "C-a" 1 (make-key :ctrl t :sym "a"))
