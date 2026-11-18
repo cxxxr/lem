@@ -21,9 +21,10 @@
 ;;; config is read when shaping first draws and again after a font change,
 ;;; not per run: lem:config reads the settings file on every call.
 
-(defvar *use-shaping* nil
+(defvar *use-shaping* t
   "When true, plain text runs are shaped with HarfBuzz and drawn from the
-glyph atlas, if FreeType and HarfBuzz are installed.")
+glyph atlas, if FreeType and HarfBuzz are installed.  Set it to NIL to draw
+each character with SDL_ttf instead.")
 
 (defvar *atlas* nil
   "The glyph atlas of the display's renderer, or NIL when shaping is not
