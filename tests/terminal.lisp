@@ -106,3 +106,23 @@ Returns T on EOF, NIL on timeout."
   (with-test-terminal (viscus "printf 'main'; printf '\\033[?1049h\\033[Halt'; printf '\\033[?1049l'")
     (ok (drain-until-eof viscus))
     (ok (equal "main" (row-string viscus 0)))))
+
+(defun render-row-text (viscus row &key (cols 80))
+  "Render screen ROW the way the terminal buffer does and return the line text."
+  (let ((terminal (make-instance 'lem-terminal/terminal::terminal
+                                 :id *test-terminal-id* :viscus viscus
+                                 :rows 24 :cols cols :buffer nil))
+        (buffer (lem:make-buffer "*terminal render test*" :temporary t)))
+    (unwind-protect
+         (let ((line (lem:point-line (lem:buffer-point buffer))))
+           (cffi:with-foreign-object (buf '(:struct ffi::cell-data) cols)
+             (lem-terminal/terminal::render-row-direct
+              terminal line cols row buf
+              (cffi:foreign-type-size '(:struct ffi::cell-data))))
+           (lem:line-string (lem:buffer-point buffer)))
+      (lem:delete-buffer buffer))))
+
+(deftest wide-characters-are-not-followed-by-a-space
+  (with-test-terminal (viscus "printf 'あい-abc'")
+    (ok (drain-until-eof viscus))
+    (ok (equal "あい-abc" (string-right-trim " " (render-row-text viscus 0))))))
