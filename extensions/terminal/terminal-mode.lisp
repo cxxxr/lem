@@ -249,9 +249,13 @@ process has already exited (so there is nothing to send input to)."
      (terminal-input))))
 
 (defun resize-terminal (terminal window)
-  (terminal:resize terminal
-                   :rows (1- (window-height window))
-                   :cols (window-width window)))
+  "Fit TERMINAL to the smallest window showing WINDOW's buffer, so no window
+loses the bottom rows (where the prompt is) when the buffer is shown in
+windows of different sizes."
+  (let ((windows (adjoin window (get-buffer-windows (window-buffer window)))))
+    (terminal:resize terminal
+                     :rows (reduce #'min windows :key (lambda (w) (1- (window-height w))))
+                     :cols (reduce #'min windows :key #'window-width))))
 
 (define-command terminal-resize () ()
   (alexandria:when-let ((terminal (get-current-terminal))
