@@ -14,6 +14,7 @@
            :update
            :input-character
            :input-key
+           :paste-string
            :resize
            :adjust-point
            :scrollback-count
@@ -658,6 +659,30 @@ and its damage callbacks, which race with RENDER and input otherwise."
       (ffi::terminal-input-key (terminal-viscus terminal)
                                key
                                mod))))
+
+(defun paste-text (string)
+  "Return STRING with line breaks as a terminal sends them when pasting:
+CR, like xterm, rather than LF."
+  (with-output-to-string (out)
+    (loop :with previous := nil
+          :for char :across string
+          :do (cond ((char= char #\Newline)
+                     (unless (eql previous #\Return)
+                       (write-char #\Return out)))
+                    (t (write-char char out)))
+              (setf previous char))))
+
+(defmethod paste-string ((terminal terminal) string)
+  "Send STRING to TERMINAL as pasted text.  When the program has enabled
+bracketed paste mode it receives the text between ESC[200~ and ESC[201~, so a
+shell inserts a multi-line paste instead of running its first line."
+  (unless (process-exited-p terminal)
+    (bt2:with-lock-held ((terminal-io-lock terminal))
+      (let ((viscus (terminal-viscus terminal)))
+        (ffi::terminal-paste-start viscus)
+        (loop :for char :across (paste-text string)
+              :do (ffi::terminal-input-char viscus (char-code char) 0))
+        (ffi::terminal-paste-end viscus)))))
 
 (defun same-size-p (terminal rows cols)
   (and (= (terminal-rows terminal) rows)
