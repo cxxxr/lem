@@ -10,6 +10,9 @@
 ;;   and causes the display confliction by two threads)
 (defvar *padwin* nil)
 
+(defparameter *paste-end* #(27 91 50 48 49 126)
+  "ESC [ 2 0 1 ~, which ends a bracketed paste.")
+
 (defun getch ()
   (unless *padwin*
     (setf *padwin* (charms/ll:newpad 1 1))
@@ -40,6 +43,49 @@
     (handler-case (schar (babel:octets-to-string vec :encoding :utf-8) 0)
       (babel-encodings:character-decoding-error ()
         (code-char code)))))
+
+(defun read-pasted-text ()
+  "Read a bracketed paste after its ESC[200~ up to ESC[201~ and return it as
+a string.  Line breaks arrive as CR and are returned as newlines.  Stops at
+a second of silence, in case the end marker is lost."
+  (let ((octets (make-array 256 :element-type '(unsigned-byte 8)
+                                :adjustable t :fill-pointer 0))
+        (end-length (length *paste-end*)))
+    (with-getch-input-timeout (1000)
+      (loop :for code := (getch)
+            :until (= code -1)
+            :when (<= 0 code 255)
+              :do (vector-push-extend (if (= code 13) 10 code) octets)
+                  (when (and (>= (fill-pointer octets) end-length)
+                             (equalp *paste-end*
+                                     (subseq octets (- (fill-pointer octets) end-length))))
+                    (decf (fill-pointer octets) end-length)
+                    (return))))
+    (babel:octets-to-string (coerce octets '(simple-array (unsigned-byte 8) (*)))
+                            :encoding :utf-8 :errorp nil)))
+
+(defun paste-event (text)
+  "An event that pastes TEXT with the mode at point, as the server frontend
+does for clipboard pastes: a terminal buffer sends it to its program as a
+bracketed paste, other buffers insert it as one yank."
+  (lambda ()
+    ;; Function events run outside the command loop, so add the undo
+    ;; boundaries and the redisplay a command would get.
+    (let ((buffer (current-buffer)))
+      (buffer-undo-boundary buffer)
+      (paste-using-mode (ensure-mode-object
+                         (current-major-mode-at-point (current-point)))
+                        text)
+      (buffer-undo-boundary buffer))
+    (redraw-display)))
+
+(defun csi\[2 ()
+  "After ESC [ 2: a bracketed paste (ESC[200~) or something we don't handle."
+  (if (and (= (getch) #.(char-code #\0))
+           (= (getch) #.(char-code #\0))
+           (= (getch) #.(char-code #\~)))
+      (paste-event (read-pasted-text))
+      (get-key-from-name "escape")))
 
 (defun get-key (code)
   (let ((nbytes (utf8-bytes code)))
@@ -139,6 +185,8 @@
                                                    #'getch))
                               (#.(char-code #\1)
                                  (csi\[1))
+                              (#.(char-code #\2)
+                                 (csi\[2))
                               (t (get-key-from-name "escape")))))
                          (t
                           (let ((key (get-key code)))
