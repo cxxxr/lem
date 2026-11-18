@@ -49,6 +49,8 @@ ones still in use are recreated on the next frame.")
     (setf *engine* nil)))
 
 (defun text-engine-active-p ()
+  "Return true if glyphs should be drawn with the text engine: it is enabled
+and has been created for the display's renderer."
   (and *use-text-engine* *engine* t))
 
 (defun clear-text-cache ()
