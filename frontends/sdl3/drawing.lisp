@@ -3,6 +3,7 @@
         :lem-core/display)
   (:local-nicknames (:display :lem-sdl3/display)
                     (:text-engine :lem-sdl3/text-engine)
+                    (:text-shaping :lem-sdl3/text-shaping)
                     (:view :lem-sdl3/view)))
 (in-package :lem-sdl3/drawing)
 
@@ -365,13 +366,49 @@ widths, for the multi-character text run DRAWING-OBJECT."
           :collect (object-width letter display) :into widths
           :finally (return (values letters widths)))))
 
+(defun shaped-run-p (drawing-object display)
+  "Return true if DRAWING-OBJECT's glyphs are drawn as one shaped run:
+shaping is on and has fonts, and the object is plain text in the display's
+own fonts with no box-drawing character (those keep the band stretch)."
+  (let ((string (text-object-string drawing-object)))
+    (and (text-shaping:shaping-active-p)
+         (plain-text-object-p drawing-object)
+         (plusp (length string))
+         (not (member (text-object-type drawing-object) '(:emoji :icon)))
+         (null (lem-core:attribute-font (text-object-attribute drawing-object)))
+         (display:display-shaping-chain display (display:display-latin-font display))
+         (notany #'display:box-drawing-char-p string))))
+
+(defun draw-shaped-run (drawing-object x bottom-y display)
+  "Draw DRAWING-OBJECT's glyphs as one shaped run from X, on the row above
+BOTTOM-Y.  Each character is shaped with the font get-display-font picks
+for it, falling back like SDL_ttf would."
+  (let* ((attribute (text-object-attribute drawing-object))
+         (type (text-object-type drawing-object))
+         (bold (and attribute (lem:attribute-bold attribute) t))
+         (latin-chain (display:display-shaping-chain display (display:display-latin-font display))))
+    (text-shaping:draw-shaped-text
+     (text-object-string drawing-object)
+     (lambda (character)
+       (or (display:display-shaping-chain
+            display
+            (display:get-display-font display :type type :bold bold :character character))
+           latin-chain))
+     (cons type bold)
+     x
+     (- bottom-y (abs (display:display-font-descent display)))
+     (display:display-char-width display)
+     (lem-core:attribute-foreground-with-reverse (glyph-attribute drawing-object display)))))
+
 (defun draw-text-object-phase (drawing-object x bottom-y display view phase)
   "Render the text-object DRAWING-OBJECT for one of the two-pass phases
 (:BG or :GLYPH).  PHASE :BG paints backgrounds, cursors and underlines for
 every cell of the run; PHASE :GLYPH blits each glyph at its natural surface
 width so the rasterizer's right-edge anti-aliasing tail is preserved."
   (let ((string (text-object-string drawing-object)))
-    (cond ((<= (length string) 1)
+    (cond ((and (eq phase :glyph) (shaped-run-p drawing-object display))
+           (draw-shaped-run drawing-object x bottom-y display))
+          ((<= (length string) 1)
            (draw-text-glyph-surface drawing-object x bottom-y display view
                                     (object-width drawing-object display)
                                     :clip t :phase phase))

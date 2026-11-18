@@ -49,6 +49,7 @@
                (:file "icon")
                (:file "text-surface-cache")
                (:file "text-engine")
+               (:file "text-shaping")
                (:file "log")
                (:file "sdl3")
                (:file "icon-font")

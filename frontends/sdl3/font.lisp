@@ -17,6 +17,7 @@
            :font-descent
            :font-box-drawing-band
            :glyph-source
+           :font-shaping-chain
            :save-font-size
            :make-font-config
            :font-config-size
@@ -103,7 +104,13 @@ skipped.")
   ;; them; see glyph-source.
   (fallback-chains (make-hash-table))
   ;; (address . char-code) -> (ASCENT . OWN-P); memoizes glyph-source.
-  (glyph-sources (make-hash-table :test 'equal)))
+  (glyph-sources (make-hash-table :test 'equal))
+  ;; The same font files opened for shaping (lem-sdl3/shaper), or NIL when
+  ;; FreeType or HarfBuzz is missing.
+  (shaping-fonts '())
+  ;; Pointer address of each text font -> the shaping fonts to draw its
+  ;; text with, in fallback order; see font-shaping-chain.
+  (shaping-chains (make-hash-table)))
 
 (defun save-font-size (font-config &optional (ratio 1))
   (setf (lem:config :sdl2-font-size)
@@ -217,6 +224,44 @@ open (e.g. an attribute's own font) return TTF-FONT's ascent and T."
                                    (cons (cdr link) (eq link (first chain))))))))
           (values (car source) (cdr source))))))
 
+(defun font-shaping-chain (font ttf-font)
+  "Return the shaping fonts for text drawn with TTF-FONT, one of FONT's text
+fonts: the same file first, then the fonts SDL_ttf falls back to for it,
+in the same order (colour emoji excepted).  Return NIL for other fonts, or
+when shaping is not available."
+  (gethash (cffi:pointer-address ttf-font) (font-shaping-chains font)))
+
+(defun open-shaping-fonts (font font-config fallback-files)
+  "Open FONT's text font files and FALLBACK-FILES for shaping and record
+each text font's chain.  If FreeType or HarfBuzz is missing, or any file
+fails to open, FONT gets no chains and text is drawn as before."
+  (when (and (lem-sdl3/ffi-freetype:available-p) (lem-sdl3/ffi-harfbuzz:available-p))
+    (let ((opened '()))
+      (flet ((open-file (file)
+               (let ((shaping-font (lem-sdl3/shaper:open-shaping-font
+                                    file (font-config-size font-config))))
+                 (push shaping-font opened)
+                 shaping-font)))
+        (handler-case
+            (let* ((latin-normal (open-file (font-config-latin-normal-file font-config)))
+                   (latin-bold (open-file (font-config-latin-bold-file font-config)))
+                   (cjk-normal (open-file (font-config-cjk-normal-file font-config)))
+                   (cjk-bold (open-file (font-config-cjk-bold-file font-config)))
+                   (braille (open-file (font-config-braille-file font-config)))
+                   (fallbacks (mapcar #'open-file fallback-files)))
+              (loop :for (ttf-font . chain)
+                      :in (list (list* (font-latin-normal-font font) latin-normal cjk-normal fallbacks)
+                                (list* (font-latin-bold-font font) latin-bold cjk-bold fallbacks)
+                                (list* (font-cjk-normal-font font) cjk-normal fallbacks)
+                                (list* (font-cjk-bold-font font) cjk-bold fallbacks)
+                                (list* (font-braille-font font) braille fallbacks))
+                    :do (setf (gethash (cffi:pointer-address ttf-font) (font-shaping-chains font))
+                              chain))
+              (setf (font-shaping-fonts font) opened))
+          (error ()
+            (mapc #'lem-sdl3/shaper:close-shaping-font opened)
+            (clrhash (font-shaping-chains font))))))))
+
 (defun register-fallback-chain (font ttf-font chain)
   "Record CHAIN, TTF-FONT's (COVERAGE-FONT . ASCENT) list, in FONT."
   (setf (gethash (cffi:pointer-address ttf-font) (font-fallback-chains font))
@@ -260,15 +305,20 @@ first.  The result is cached for the session."
            :from-end t)))
   *system-fallback-font-files*)
 
+(defun fallback-font-files (font-config)
+  "Return the existing fallback font files FONT-CONFIG names: configured
+ones, then the system's."
+  (remove-if-not #'probe-file
+                 (append (font-config-fallback-files font-config)
+                         (and (font-config-system-fallback font-config)
+                              (system-fallback-font-files)))))
+
 (defun open-fallback-fonts (font-config)
   "Open the fallback font files FONT-CONFIG names (configured ones, then the
-system's) at its size, skipping files that do not exist or fail to open."
-  (loop :for file :in (append (font-config-fallback-files font-config)
-                              (and (font-config-system-fallback font-config)
-                                   (system-fallback-font-files)))
-        :for font := (and (probe-file file)
-                          (handler-case (lem-sdl3/ffi:open-font file (font-config-size font-config))
-                            (error () nil)))
+system's) at its size, skipping files that fail to open."
+  (loop :for file :in (fallback-font-files font-config)
+        :for font := (handler-case (lem-sdl3/ffi:open-font file (font-config-size font-config))
+                       (error () nil))
         :when font
           :collect font))
 
@@ -344,9 +394,11 @@ system's) at its size, skipping files that do not exist or fail to open."
               (loop :for (ttf-font . list) :in fallbacks
                     :do (register-fallback-chain font ttf-font
                                                  (mapcar #'link (cons ttf-font list))))
+              (open-shaping-fonts font font-config (fallback-font-files font-config))
               font)))))))
 
 (defun close-font (font)
+  (mapc #'lem-sdl3/shaper:close-shaping-font (font-shaping-fonts font))
   (lem-sdl3/ffi:close-font (font-latin-normal-font font))
   (lem-sdl3/ffi:close-font (font-latin-bold-font font))
   (lem-sdl3/ffi:close-font (font-cjk-normal-font font))

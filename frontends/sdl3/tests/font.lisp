@@ -253,3 +253,21 @@
            (multiple-value-bind (ascent own) (font:glyph-source font cjk #\日)
              (ok (= ascent cjk-ascent))
              (ok own))))))))
+
+(deftest text-fonts-have-shaping-chains
+  ;; Each text font is shaped with the same file first, then the fonts
+  ;; SDL_ttf falls back to for it, in the same order.
+  (if (and (lem-sdl3/ffi-freetype:available-p) (lem-sdl3/ffi-harfbuzz:available-p))
+      (with-ttf ()
+        (call-with-font
+         (font:make-font-config :size 14 :system-fallback nil :fallback-files '())
+         (lambda (font)
+           (let ((latin (font:font-shaping-chain font (font:font-latin-normal-font font)))
+                 (cjk (font:font-shaping-chain font (font:font-cjk-normal-font font))))
+             (ok (= 2 (length latin)))
+             (ok (eq (second latin) (first cjk)))
+             (ok (= 1 (length cjk)))
+             (ok (lem-sdl3/shaper:shaping-font-covers-p (first latin) #\a))
+             (ok (lem-sdl3/shaper:shaping-font-covers-p (first cjk) #\日))
+             (ok (null (font:font-shaping-chain font (font:font-emoji-font font))))))))
+      (skip "FreeType or HarfBuzz is not installed")))
