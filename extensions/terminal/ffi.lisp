@@ -158,6 +158,20 @@ latin-1 rather than signalling, since this runs on the I/O thread."
       (error ()
         (cffi:foreign-string-to-lisp pointer :encoding :iso-8859-1)))))
 
+(cffi:defcfun ("terminal_cwd" %terminal-cwd) :int
+  (terminal :pointer)
+  (buf :pointer)
+  (size :int))
+
+(defun terminal-cwd (terminal)
+  "Return the current working directory of TERMINAL's child process as a
+string, or NIL when the OS cannot tell (see terminal_cwd in terminal.c)."
+  (cffi:with-foreign-pointer (buf 4096 size)
+    (let ((len (%terminal-cwd terminal buf size)))
+      (when (plusp len)
+        (handler-case (cffi:foreign-string-to-lisp buf :count len :encoding :utf-8)
+          (error () nil))))))
+
 (cffi:defcfun ("terminal_pid" terminal-pid) :int
   "Return the process id of the terminal's child process."
   (terminal :pointer))

@@ -208,14 +208,12 @@ and the exit notice stay in the buffer.")))
 (defun process-directory (terminal)
   "Return the current directory of TERMINAL's child process (the shell) as a
 directory namestring, or NIL when it is unknown: the process has exited, or
-the OS has no /proc/PID/cwd (only Linux is supported for now)."
+the OS cannot tell (supported: Linux, macOS, FreeBSD)."
   (unless (or (terminal-dead terminal)
               (process-exited-p terminal))
-    (let ((pid (ffi::terminal-pid (terminal-viscus terminal))))
-      (when (plusp pid)
-        (alexandria:when-let ((directory (ignore-errors
-                                          (truename (format nil "/proc/~D/cwd/" pid)))))
-          (namestring directory))))))
+    (alexandria:when-let ((cwd (ffi::terminal-cwd (terminal-viscus terminal))))
+      (uiop:native-namestring (uiop:ensure-directory-pathname
+                               (uiop:parse-native-namestring cwd))))))
 
 (defun mark-all-rows-dirty (terminal)
   "Mark every row as dirty so the next render redraws the full screen."
