@@ -1,0 +1,65 @@
+name: Terminal portability check
+
+# Builds terminal.so with `make terminal-lib` and runs a C smoke test of the
+# native helper (cwd lookup, title, alternate screen, exit status) on Linux,
+# macOS and FreeBSD.
+
+on:
+  push:
+    branches:
+      - ci/terminal-portability
+  workflow_dispatch:
+
+jobs:
+  unix:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL and libvterm (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sbcl libvterm-dev
+
+      - name: Install SBCL and libvterm (macOS)
+        if: runner.os == 'macOS'
+        run: brew install sbcl libvterm
+
+      - name: Build terminal.so
+        run: make terminal-lib && find extensions/terminal/lib -name terminal.so | grep .
+
+      - name: Smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cc -Wall -o smoke .github/terminal-smoke/smoke.c -lvterm -lutil
+          ./smoke
+
+      - name: Smoke test (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          prefix="$(brew --prefix libvterm)"
+          cc -Wall -I"$prefix/include" -L"$prefix/lib" -o smoke .github/terminal-smoke/smoke.c -lvterm
+          ./smoke
+
+  freebsd:
+    name: freebsd
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and smoke test in FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: pkg install -y sbcl libvterm gmake
+          run: |
+            gmake terminal-lib
+            find extensions/terminal/lib -name terminal.so | grep .
+            cc -Wall -I/usr/local/include -L/usr/local/lib -o smoke .github/terminal-smoke/smoke.c -lvterm -lutil
+            ./smoke
