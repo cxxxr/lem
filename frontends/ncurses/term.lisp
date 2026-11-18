@@ -468,12 +468,28 @@
   ;; for mouse
   (when (= *mouse-mode* 1)
     (enable-mouse))
+  (enable-bracketed-paste)
   t)
 
 (defun term-set-tty (tty-name)
   (setf *tty-name* tty-name))
 
+(defun write-escape-sequence (sequence)
+  "Write SEQUENCE to the terminal as is, the way UPDATE-CURSOR-SHAPE does."
+  (uiop:run-program (list "printf" "%s" sequence)
+                    :output :interactive
+                    :ignore-error-status t))
+
+(defun enable-bracketed-paste ()
+  "Ask the terminal to wrap pasted text in ESC[200~ ... ESC[201~, so a paste
+arrives as one piece instead of as typed keys (see LEM-NCURSES/INPUT)."
+  (write-escape-sequence (format nil "~C[?2004h" #\Esc)))
+
+(defun disable-bracketed-paste ()
+  (write-escape-sequence (format nil "~C[?2004l" #\Esc)))
+
 (defun term-finalize ()
+  (disable-bracketed-paste)
   (when *term-io*
     (fclose *term-io*)
     (setf *term-io* nil))
