@@ -59,6 +59,13 @@ frontends; lower values give smoother terminal output on fast frontends.
 Read with :global scope because it is consulted from the terminal I/O and
 render-timer threads, which have no current-buffer context.")
 
+(define-editor-variable terminal-title-as-buffer-name t
+  "When non-NIL, a terminal buffer is renamed after the window title its
+program sets (e.g. bash's \"user@host: ~/dir\"), as \"*Terminal: TITLE*\".")
+
+(defparameter *bell-interval-seconds* 1
+  "Minimum seconds between two bell notices from the same terminal.")
+
 (defparameter *attribute-cache-limit* 4096
   "Maximum entries in a terminal's attribute cache.  When exceeded the cache
 is cleared wholesale — cheaper than maintaining LRU bookkeeping on the
@@ -173,6 +180,9 @@ faster than it (and a slow frontend like the websocket) can keep up.")
                      :documentation "GET-INTERNAL-REAL-TIME when the last render
 tick finished.  ARM-RENDER-TIMER waits only for what remains of the throttle
 interval since then, so sparse output (a keystroke echo) renders at once.")
+   (last-bell-time :initform nil
+                   :accessor terminal-last-bell-time
+                   :documentation "GET-UNIVERSAL-TIME of the last bell notice.")
    (render-timer-armed :initform nil
                        :accessor terminal-render-timer-armed
                        :type boolean
@@ -807,11 +817,51 @@ shell inserts a multi-line paste instead of running its first line."
       (cffi:with-foreign-slots ((ffi::row) oldpos (:struct ffi::vterm-pos))
         (mark-rows-dirty terminal ffi::row (1+ ffi::row))))))
 
+(defun title-buffer-name (title)
+  (if (string= title "")
+      "*Terminal*"
+      (format nil "*Terminal: ~A*" title)))
+
+(defun apply-title (terminal title)
+  "Editor-thread side of a title change: rename the terminal buffer."
+  (let ((buffer (terminal-buffer terminal)))
+    (when (and (not (terminal-dead terminal))
+               (variable-value 'terminal-title-as-buffer-name :global)
+               (not (deleted-buffer-p buffer)))
+      (let ((name (title-buffer-name title)))
+        (unless (string= name (buffer-name buffer))
+          (buffer-rename buffer (unique-buffer-name name)))))))
+
 (defun cb-settermprop (prop val id)
-  (declare (ignore prop val id)))
+  "Runs on the I/O thread.  Only the window title is used; the C side reports
+it once all of its fragments have arrived."
+  (declare (ignore val))
+  (let ((terminal (find-terminal-by-id id)))
+    (when (and terminal (eq prop :vterm_prop_title))
+      (let ((title (ffi::terminal-title (terminal-viscus terminal))))
+        (send-event (lambda () (apply-title terminal title)))))))
+
+(defun notify-bell (terminal)
+  "Editor-thread side of a bell: tell the user when the terminal is not on
+screen, e.g. a long command that rings the bell when it finishes.  A bell in
+a visible terminal (bash's failed completion, ...) is left silent."
+  (let ((buffer (terminal-buffer terminal)))
+    (when (and (not (terminal-dead terminal))
+               (not (deleted-buffer-p buffer))
+               (null (get-buffer-windows buffer)))
+      (message "Bell in ~A" (buffer-name buffer)))))
 
 (defun cb-bell (id)
-  (declare (ignore id)))
+  "Runs on the I/O thread.  Rate-limited so a program printing BEL in a loop
+cannot flood the editor's event queue."
+  (let ((terminal (find-terminal-by-id id))
+        (now (get-universal-time)))
+    (when (and terminal
+               (or (null (terminal-last-bell-time terminal))
+                   (>= (- now (terminal-last-bell-time terminal))
+                       *bell-interval-seconds*)))
+      (setf (terminal-last-bell-time terminal) now)
+      (send-event (lambda () (notify-bell terminal))))))
 
 (defun cb-resize (rows cols id)
   (let ((terminal (find-terminal-by-id id)))
