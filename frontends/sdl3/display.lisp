@@ -3,6 +3,7 @@
   (:local-nicknames (:font :lem-sdl3/font)
                     (:icon-font :lem-sdl3/icon-font)
                     (:text-surface-cache :lem-sdl3/text-surface-cache)
+                    (:text-engine :lem-sdl3/text-engine)
                     (:utils :lem-sdl3/utils))
   (:export :with-display
            :display
@@ -410,6 +411,8 @@ event handler pattern in `on-windowevent')."
 
 (defmethod change-font ((display display) font-config &optional (save-font-size-p t))
   (let ((font-config (font:merge-font-config font-config (display-font-config display))))
+    ;; Cached texts refer to the fonts being closed.
+    (text-engine:clear-text-cache)
     (font:close-font (display-font display))
     (let ((font (font:open-font font-config)))
       (setf (display-char-width display) (font:font-char-width font)

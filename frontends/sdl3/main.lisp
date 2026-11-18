@@ -204,6 +204,7 @@ single :windowevent; SDL3 gives each its own event type."
        (unwind-protect
             (let ((renderer (ffi:create-renderer window)))
               (init-application-icon window)
+              (lem-sdl3/text-engine:start-text-engine renderer)
               (unwind-protect
                    (multiple-value-bind (renderer-width renderer-height)
                        (ffi:get-render-output-size renderer)
@@ -226,6 +227,7 @@ single :windowevent; SDL3 gives each its own event type."
                        (ffi:start-text-input window)
                        (funcall function)
                        (event-loop display)))
+                (lem-sdl3/text-engine:stop-text-engine)
                 (ffi:destroy-renderer renderer)))
          (ffi:destroy-window window))))))
 
