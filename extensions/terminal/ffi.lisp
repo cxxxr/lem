@@ -91,7 +91,8 @@
   (cb_bell :pointer)
   (cb_resize :pointer)
   (cb_sb_pushline :pointer)
-  (cb_sb_popline :pointer))
+  (cb_sb_popline :pointer)
+  (cb_sb_clear :pointer))
 
 (defun terminal-new (directory id rows cols &key program argv)
   "Create a new terminal PTY running PROGRAM with ARGV.
@@ -114,7 +115,8 @@ in DIRECTORY (via 'cd <directory>; <shell>')."
                    (cffi:callback cb-bell)
                    (cffi:callback cb-resize)
                    (cffi:callback cb-sb-pushline)
-                   (cffi:callback cb-sb-popline))))
+                   (cffi:callback cb-sb-popline)
+                   (cffi:callback cb-sb-clear))))
 
 (cffi:defcfun ("terminal_delete" terminal-delete) :void
   (terminal :pointer))
@@ -319,6 +321,7 @@ when it was killed by a signal, or -1 when unknown."
 (defvar *resize-callback* nil)
 (defvar *sb-pushline-callback* nil)
 (defvar *sb-popline-callback* nil)
+(defvar *sb-clear-callback* nil)
 
 (defun set-callbacks (&key damage
                            moverect
@@ -327,7 +330,8 @@ when it was killed by a signal, or -1 when unknown."
                            bell
                            resize
                            sb-pushline
-                           sb-popline)
+                           sb-popline
+                           sb-clear)
   (setf *damage-callback* damage
         *moverect-callback* moverect
         *movecursor-callback* movecursor
@@ -335,7 +339,8 @@ when it was killed by a signal, or -1 when unknown."
         *bell-callback* bell
         *resize-callback* resize
         *sb-pushline-callback* sb-pushline
-        *sb-popline-callback* sb-popline)
+        *sb-popline-callback* sb-popline
+        *sb-clear-callback* sb-clear)
   (values))
 
 (cffi:defcallback cb-damage :int ((rect (:pointer (:struct vterm-rect))) (id :int))
@@ -383,4 +388,9 @@ when it was killed by a signal, or -1 when unknown."
 (cffi:defcallback cb-sb-popline :int ((cols :int) (cells :pointer) (id :int))
   (when *sb-popline-callback*
     (funcall *sb-popline-callback* cols cells id))
+  0)
+
+(cffi:defcallback cb-sb-clear :int ((id :int))
+  (when *sb-clear-callback*
+    (funcall *sb-clear-callback* id))
   0)

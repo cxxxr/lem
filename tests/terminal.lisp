@@ -196,3 +196,29 @@ Returns T on EOF, NIL on timeout."
     (ok (= 1 (cell-slot viscus 0 1 'ffi::default-bg)))
     (ok (= 1 (cell-slot viscus 0 2 'ffi::default-fg)))
     (ok (= 0 (cell-slot viscus 0 2 'ffi::default-bg)))))
+
+(defun scrollback-count-after (script)
+  "Run SCRIPT in a registered terminal (so the scrollback callbacks reach it)
+and return how many scrollback lines it kept."
+  (let* ((id 424242)
+         (viscus (ffi::terminal-new "" id 24 80
+                                    :program "/bin/sh"
+                                    :argv (list "/bin/sh" "-c" script)))
+         (terminal (make-instance 'lem-terminal/terminal::terminal
+                                  :id id :viscus viscus
+                                  :rows 24 :cols 80 :buffer nil)))
+    (setf (lem-terminal/terminal::terminal-scrollback-ring terminal)
+          (make-array 100 :initial-element nil))
+    (lem-terminal/terminal::add-terminal terminal)
+    (unwind-protect
+         (progn (drain-until-eof viscus)
+                (lem-terminal/terminal:scrollback-count terminal))
+      (lem-terminal/terminal::remove-terminal terminal)
+      (ffi::terminal-delete viscus))))
+
+(deftest clear-discards-scrollback
+  (if (library-available-p)
+      (progn
+        (ok (plusp (scrollback-count-after "seq 1 60")))
+        (ok (zerop (scrollback-count-after "seq 1 60; printf '\\033[3J'"))))
+      (skip "terminal.so is not built")))
