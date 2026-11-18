@@ -168,6 +168,11 @@ IO-LOCK and never held while acquiring it.")
 rendering is paced through it: it fires on the editor thread, renders, then
 re-arms only if more output arrived — so the editor is never asked to render
 faster than it (and a slow frontend like the websocket) can keep up.")
+   (last-render-time :initform 0
+                     :accessor terminal-last-render-time
+                     :documentation "GET-INTERNAL-REAL-TIME when the last render
+tick finished.  ARM-RENDER-TIMER waits only for what remains of the throttle
+interval since then, so sparse output (a keystroke echo) renders at once.")
    (render-timer-armed :initform nil
                        :accessor terminal-render-timer-armed
                        :type boolean
@@ -245,7 +250,17 @@ flooding a slow frontend and stalling the editor."
                          (setf (terminal-render-timer terminal)
                                (make-timer (lambda () (render-tick terminal))
                                            :name "terminal-render")))))
-          (start-timer timer (variable-value 'terminal-render-throttle-ms :global)))))))
+          (start-timer timer (render-delay-ms terminal)))))))
+
+(defun render-delay-ms (terminal)
+  "Milliseconds to wait before the next render: the rest of the throttle
+interval since the previous render finished, at least 1 (a timer started
+with 0 ms never fires)."
+  (let ((elapsed-ms (floor (* 1000 (- (get-internal-real-time)
+                                      (terminal-last-render-time terminal)))
+                           internal-time-units-per-second)))
+    (max 1 (- (variable-value 'terminal-render-throttle-ms :global)
+              elapsed-ms))))
 
 (defun render-tick (terminal)
   "Editor-thread render, driven by ARM-RENDER-TIMER.  Reads vterm state under
@@ -259,7 +274,8 @@ the render, so a settled terminal stops ticking (no idle flush)."
              (not (terminal-copy-mode terminal))
              (any-rows-dirty-p terminal))
     (bt2:with-lock-held ((terminal-io-lock terminal))
-      (render terminal)))
+      (render terminal))
+    (setf (terminal-last-render-time terminal) (get-internal-real-time)))
   ;; Output parsed during the render (or while paused) re-arms the next tick.
   (arm-render-timer terminal))
 
