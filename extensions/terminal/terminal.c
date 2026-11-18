@@ -194,6 +194,10 @@ struct terminal *terminal_new(int id,
   vterm_set_utf8(vterm, 1);
 
   VTermScreen *screen = vterm_obtain_screen(vterm);
+  /* Full-screen programs (less, vi, top, ...) switch to the alternate screen
+     and expect the original one back on exit; without this their last frame
+     overwrote the shell output and leaked into the scrollback. */
+  vterm_screen_enable_altscreen(screen, 1);
 
   struct terminal *terminal = malloc(sizeof(struct terminal));
   if (terminal == NULL) {
