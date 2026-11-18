@@ -222,3 +222,8 @@ and return how many scrollback lines it kept."
         (ok (plusp (scrollback-count-after "seq 1 60")))
         (ok (zerop (scrollback-count-after "seq 1 60; printf '\\033[3J'"))))
       (skip "terminal.so is not built")))
+
+(deftest window-title-is-recorded
+  (with-test-terminal (viscus "printf '\\033]0;first\\007'; printf '\\033]2;日本語 title\\007'")
+    (ok (drain-until-eof viscus))
+    (ok (equal "日本語 title" (ffi::terminal-title viscus)))))
