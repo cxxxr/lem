@@ -32,7 +32,7 @@
 (defvar *terminals* '()
   "All live terminals, used by callbacks to locate their Lisp object by id.")
 
-(defparameter *scrollback-limit* 500
+(defparameter *scrollback-limit* 5000
   "Maximum number of scrollback lines stored in the ring buffer.")
 
 (defparameter *write-timeout-ms* 12
@@ -370,11 +370,17 @@ and free the native state.  Safe to call more than once."
       (ffi::terminal-delete (terminal-viscus terminal)))))
 
 (defmethod copy-mode-on ((terminal terminal))
-  (setf (terminal-copy-mode terminal) t))
+  "Freeze rendering and show the scrollback above the screen, so the whole
+history can be browsed and copied with ordinary Lem commands."
+  (setf (terminal-copy-mode terminal) t)
+  (activate-scrollback terminal))
 
 (defmethod copy-mode-off ((terminal terminal))
   (setf (terminal-copy-mode terminal) nil)
-  ;; Flush any output that accumulated (and was left unrendered) during copy mode.
+  (deactivate-scrollback terminal)
+  ;; Redraw the whole screen: output that arrived during copy mode was left
+  ;; unrendered, and leaving copy mode may have left the buffer edited.
+  (mark-all-rows-dirty terminal)
   (arm-render-timer terminal))
 
 (defun fix-blue-color (color)
@@ -472,23 +478,42 @@ that may be edited by the user or watched by other features."
     (setf (getf (line:line-plist line-obj) :attribute)
           (nreverse attrs))))
 
+(defun buffer-view-points (buffer)
+  "Return the buffer point and the view points of every window showing BUFFER."
+  (cons (buffer-point buffer)
+        (mapcar #'window-view-point (get-buffer-windows buffer))))
+
+(defun point-positions (points)
+  "Return the (line-number . charpos) of each of POINTS."
+  (mapcar (lambda (point)
+            (cons (line-number-at-point point) (point-charpos point)))
+          points))
+
+(defun shift-points-by-lines (points positions delta)
+  "Move each of POINTS to its entry of POSITIONS, DELTA lines further down."
+  (loop :for point :in points
+        :for (line-number . charpos) :in positions
+        :do (move-to-line point (+ line-number delta))
+            (line-start point)
+            (character-offset point (min charpos (length (line-string point))))))
+
 (defun deactivate-scrollback (terminal)
   "Remove scrollback lines from the buffer, keeping only terminal rows.
 Called when transitioning from scrollback-active to normal view."
   (when (terminal-scrollback-active terminal)
     (setf (terminal-scrollback-active terminal) nil)
     (let* ((buffer (terminal-buffer terminal))
-           (point (buffer-point buffer))
            (rows (terminal-rows terminal))
            (nlines (buffer-nlines buffer)))
       (when (> nlines rows)
         (with-buffer-read-only buffer nil
           ;; Delete all lines before the terminal area
-          (buffer-start point)
-          (with-point ((end point))
+          (with-point ((start (buffer-point buffer))
+                       (end (buffer-point buffer)))
+            (buffer-start start)
             (move-to-line end (1+ (- nlines rows)))
             (line-start end)
-            (delete-between-points point end)))))))
+            (delete-between-points start end)))))))
 
 (defun activate-scrollback (terminal)
   "Insert scrollback lines from the ring buffer into the buffer above the terminal rows."
@@ -512,10 +537,16 @@ Called when transitioning from scrollback-active to normal view."
       (when combined
         (setf (terminal-scrollback-active terminal) t)
         (let* ((buffer (terminal-buffer terminal))
-               (point (buffer-point buffer)))
+               (points (buffer-view-points buffer))
+               (positions (point-positions points))
+               (count (count #\Newline combined)))
           (with-buffer-read-only buffer nil
-            (buffer-start point)
-            (insert-string point combined)))))))
+            (with-point ((start (buffer-point buffer)))
+              (buffer-start start)
+              (insert-string start combined)))
+          ;; Keep the cursor and every window on the rows they showed, so the
+          ;; history appears above the screen instead of replacing it.
+          (shift-points-by-lines points positions count))))))
 
 (defun snap-to-bottom (terminal)
   "Reset view of every window showing the terminal buffer to the terminal area."
