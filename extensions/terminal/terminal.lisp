@@ -851,6 +851,15 @@ so only the final Lisp string is allocated here."
           (decf (scrollback-count terminal))))
       (mark-all-rows-dirty terminal))))
 
+(defun cb-sb-clear (id)
+  "Discard the stored scrollback (ESC[3J, sent by `clear').  Runs on the I/O
+thread while parsing, under IO-LOCK like the other scrollback callbacks."
+  (let ((terminal (find-terminal-by-id id)))
+    (when terminal
+      (fill (terminal-scrollback-ring terminal) nil)
+      (setf (terminal-scrollback-head terminal) 0
+            (scrollback-count terminal) 0))))
+
 (ffi::set-callbacks :damage 'cb-damage
                     :moverect 'cb-moverect
                     :movecursor 'cb-movecursor
@@ -858,4 +867,5 @@ so only the final Lisp string is allocated here."
                     :bell 'cb-bell
                     :resize 'cb-resize
                     :sb-pushline 'cb-sb-pushline
-                    :sb-popline 'cb-sb-popline)
+                    :sb-popline 'cb-sb-popline
+                    :sb-clear 'cb-sb-clear)
