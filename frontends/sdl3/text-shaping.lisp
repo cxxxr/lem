@@ -17,7 +17,9 @@
 ;;; centres CJK and fallback glyphs in their cells.
 ;;;
 ;;; OpenType features come from the :sdl3-font-features config, a list of
-;;; HarfBuzz feature strings; '("-liga" "-calt") turns ligatures off.
+;;; HarfBuzz feature strings; '("-liga" "-calt") turns ligatures off.  The
+;;; config is read when shaping first draws and again after a font change,
+;;; not per run: lem:config reads the settings file on every call.
 
 (defvar *use-shaping* nil
   "When true, plain text runs are shaped with HarfBuzz and drawn from the
@@ -31,31 +33,31 @@ available.")
   "The shaped runs drawn so far.")
 
 (defvar *font-features* nil
-  "The :sdl3-font-features config last parsed, and its foreign array and
-length, as a list (STRINGS ARRAY COUNT).")
+  "The parsed :sdl3-font-features config as a list (ARRAY COUNT), or NIL
+until it is next read.")
 
 (defun start-shaping (renderer)
   "Create the glyph atlas for RENDERER if FreeType and HarfBuzz are there."
   (when (and (lem-sdl3/ffi-freetype:available-p) (hb:available-p))
     (setf *atlas* (atlas:make-glyph-atlas renderer))))
 
+(defun free-features ()
+  (when *font-features*
+    (hb:free-features (first *font-features*))
+    (setf *font-features* nil)))
+
 (defun clear-shaping ()
-  "Forget all shaped runs and atlas glyphs.  Call this before closing a
-font they use."
+  "Forget all shaped runs and atlas glyphs, and read the font features
+config again on the next draw.  Call this before closing a font they use."
   (when *atlas*
     (atlas:flush-glyphs *atlas*)
     (atlas:clear-glyph-atlas *atlas*))
-  (shaper:clear-shaping-cache *shaping-cache*))
-
-(defun free-features ()
-  (when *font-features*
-    (hb:free-features (second *font-features*))
-    (setf *font-features* nil)))
+  (shaper:clear-shaping-cache *shaping-cache*)
+  (free-features))
 
 (defun stop-shaping ()
   "Free the glyph atlas and everything shaped, before the renderer goes."
   (clear-shaping)
-  (free-features)
   (when *atlas*
     (atlas:destroy-glyph-atlas *atlas*)
     (setf *atlas* nil)))
@@ -66,20 +68,18 @@ atlas exists."
   (and *use-shaping* *atlas* t))
 
 (defun features ()
-  "Return the parsed :sdl3-font-features as values ARRAY and COUNT.  When
-the config changes, it is parsed again and shaped runs are forgotten.  A
-feature HarfBuzz cannot parse is reported and the config ignored."
-  (let ((strings (lem:config :sdl3-font-features '())))
-    (unless (and *font-features* (equal strings (first *font-features*)))
-      (free-features)
-      (shaper:clear-shaping-cache *shaping-cache*)
-      (multiple-value-bind (array count)
-          (handler-case (hb:parse-features strings)
-            (error (condition)
-              (lem:message "~A" condition)
-              (hb:parse-features '())))
-        (setf *font-features* (list strings array count))))
-    (values (second *font-features*) (third *font-features*))))
+  "Return the parsed :sdl3-font-features as values ARRAY and COUNT, reading
+the config if it has not been read since shaping started or the font last
+changed.  A feature HarfBuzz cannot parse is reported and the config
+ignored."
+  (unless *font-features*
+    (multiple-value-bind (array count)
+        (handler-case (hb:parse-features (lem:config :sdl3-font-features '()))
+          (error (condition)
+            (lem:message "~A" condition)
+            (hb:parse-features '())))
+      (setf *font-features* (list array count))))
+  (values (first *font-features*) (second *font-features*)))
 
 (defun draw-shaped-text (string chain-function cache-key x baseline cell-width color)
   "Draw STRING with its first cell at X, on the row whose baseline is at
