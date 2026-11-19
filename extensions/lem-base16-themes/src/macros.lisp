@@ -46,12 +46,12 @@
         :foreground ,(color :base0A) :background ,(color :base01))
 
        ;; Paren coloring
-       (lem-lisp-mode/paren-coloring:paren-color-1 :foreground ,(color :base08))
-       (lem-lisp-mode/paren-coloring:paren-color-2 :foreground ,(color :base09))
-       (lem-lisp-mode/paren-coloring:paren-color-3 :foreground ,(color :base0A))
-       (lem-lisp-mode/paren-coloring:paren-color-4 :foreground ,(color :base0B))
-       (lem-lisp-mode/paren-coloring:paren-color-5 :foreground ,(color :base0C))
-       (lem-lisp-mode/paren-coloring:paren-color-6 :foreground ,(color :base0D))
+       (lem:paren-color-1 :foreground ,(color :base08))
+       (lem:paren-color-2 :foreground ,(color :base09))
+       (lem:paren-color-3 :foreground ,(color :base0A))
+       (lem:paren-color-4 :foreground ,(color :base0B))
+       (lem:paren-color-5 :foreground ,(color :base0C))
+       (lem:paren-color-6 :foreground ,(color :base0D))
 
        ;; Document
        (lem:document-header1-attribute :foreground ,(color :base0D) :bold t)
