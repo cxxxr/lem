@@ -129,3 +129,34 @@ order."
     (lem-core:set-cursor-attribute attribute)
     (ok (equal (mapcar #'first (bg-phase-calls "ab" attribute))
                '(drawing::draw-text-glyph-surface drawing::draw-text-glyph-surface)))))
+
+;;; Underlines are one point thick at the display's scale, drawn inside the
+;;; bottom of the cell and exactly as wide as the run.
+
+(defclass stub-scaled-display (stub-grid-display)
+  ((scale :initarg :scale :reader display::display-scale)))
+
+(defun underline-rects (scale)
+  (let ((display (make-instance 'stub-scaled-display
+                                :char-height 17 :char-width 9 :scale scale)))
+    (mapcar #'rest
+            (call-recording '(drawing::draw-rect)
+                            (lambda ()
+                              (drawing::draw-underline display 10 33 45 17
+                                                       (lem:make-attribute :underline t :foreground "#aabbcc")))))))
+
+(deftest underline-scales-with-the-display
+  (flet ((box (rect) (subseq rect 1 5)))
+    (ok (equal (mapcar #'box (underline-rects '(1 1))) '((10 49 45 1)))
+        "one pixel at 1x")
+    (ok (equal (mapcar #'box (underline-rects '(2 2))) '((10 48 45 2)))
+        "two pixels at 2x")
+    (ok (equal (mapcar #'box (underline-rects '(3/2 3/2))) '((10 48 45 2)))
+        "rounded at fractional scales"))
+  (ok (null (call-recording '(drawing::draw-rect)
+                            (lambda ()
+                              (drawing::draw-underline
+                               (make-instance 'stub-scaled-display
+                                              :char-height 17 :char-width 9 :scale '(2 2))
+                               0 0 9 17 (lem:make-attribute :background "#112233")))))
+      "no underline without the attribute"))

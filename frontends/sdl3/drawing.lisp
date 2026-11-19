@@ -345,20 +345,22 @@ the background phase draws anything."
     (when (member phase '(:bg :both))
       (draw-underline display x y cell-width cell-height attribute))))
 
+(defun underline-thickness (display)
+  "The pixel thickness of a text underline: one point at DISPLAY's scale,
+so it doesn't thin out on high-DPI displays."
+  (max 1 (round (second (display:display-scale display)))))
+
 (defun draw-underline (display x y width height attribute)
-  "Draw ATTRIBUTE's underline, if it has one, along the bottom row of the
+  "Draw ATTRIBUTE's underline, if it has one, along the bottom of the
 WIDTH × HEIGHT box at (X, Y)."
   (let ((underline (and attribute (lem:attribute-underline attribute))))
     (when underline
-      (display:render-line display
-                           x
-                           (1- (+ y height))
-                           (+ x width)
-                           (1- (+ y height))
-                           :color (if (eq underline t)
-                                      (lem-core:attribute-foreground-color attribute)
-                                      (or (lem:parse-color underline)
-                                          (lem-core:attribute-foreground-color attribute)))))))
+      (let ((thickness (underline-thickness display)))
+        (draw-rect display x (- (+ y height) thickness) width thickness
+                   (if (eq underline t)
+                       (lem-core:attribute-foreground-color attribute)
+                       (or (lem:parse-color underline)
+                           (lem-core:attribute-foreground-color attribute))))))))
 
 (defun draw-run-background (drawing-object x bottom-y display)
   "Paint the background and underline of the whole text run DRAWING-OBJECT
