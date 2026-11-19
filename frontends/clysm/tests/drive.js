@@ -74,6 +74,14 @@ module.exports = (win, app) => {
       const text = await lisp('(lem:buffer-text (lem:current-buffer))');
       check('typing', text === '"(hello world)\n日本語"', text);
       check('typing shown', (await screen()).includes('(hello world)'));
+      // Japanese takes the columns Lem gives it (2 a character), whatever its font
+      const wideDrift = await js(`(() => {
+        const spans = [...document.querySelectorAll('.lem-line > span.lem-wide')];
+        if (!spans.length) return 'no wide text';
+        return spans.map((span) => { const r = document.createRange(); r.selectNodeContents(span);
+                                     return Math.abs(r.getBoundingClientRect().width - parseFloat(span.style.width)); })
+                    .every((d) => d < 1) ? 'ok' : 'drift'; })()`);
+      check('wide characters in their columns', wideDrift === 'ok', wideDrift);
 
       await command('list-buffers');
       check('list-buffers', (await screen()).includes('Buffer') &&

@@ -108,6 +108,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #1d1f21; }
 .lem-line > span.lem-image { overflow: visible; z-index: 1; }
 .lem-line > span.lem-image > img { display: block; image-rendering: auto; }
 .lem-line > span { position: absolute; top: 0; height: 100%; overflow: hidden; }
+/* a character wider than a column, in a box of its columns (display.lisp) */
+.lem-line > span.lem-wide > span { display: inline-block; text-align: center; overflow: visible; }
 /* the keys are typed here; it stays at the cursor for input methods */
 .lem-input { position: absolute; z-index: 20; width: 1px; padding: 0; margin: 0; border: 0;
              outline: none; resize: none; overflow: hidden; background: transparent; color: transparent;
