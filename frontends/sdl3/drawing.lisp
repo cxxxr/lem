@@ -342,19 +342,36 @@ the background phase draws anything."
                                           texture
                                           nil
                                           dst-rect))))))
-    (when (and (member phase '(:bg :both))
-               attribute
-               (lem:attribute-underline attribute))
+    (when (member phase '(:bg :both))
+      (draw-underline display x y cell-width cell-height attribute))))
+
+(defun draw-underline (display x y width height attribute)
+  "Draw ATTRIBUTE's underline, if it has one, along the bottom row of the
+WIDTH × HEIGHT box at (X, Y)."
+  (let ((underline (and attribute (lem:attribute-underline attribute))))
+    (when underline
       (display:render-line display
                            x
-                           (1- (+ y cell-height))
-                           (+ x cell-width)
-                           (1- (+ y cell-height))
-                           :color (let ((underline (lem:attribute-underline attribute)))
-                                    (if (eq underline t)
-                                        (lem-core:attribute-foreground-color attribute)
-                                        (or (lem:parse-color underline)
-                                            (lem-core:attribute-foreground-color attribute))))))))
+                           (1- (+ y height))
+                           (+ x width)
+                           (1- (+ y height))
+                           :color (if (eq underline t)
+                                      (lem-core:attribute-foreground-color attribute)
+                                      (or (lem:parse-color underline)
+                                          (lem-core:attribute-foreground-color attribute)))))))
+
+(defun draw-run-background (drawing-object x bottom-y display)
+  "Paint the background and underline of the whole text run DRAWING-OBJECT
+with one fill and one line.  lem-core splits runs by character type, so
+every letter of a plain run has the run's attribute and the row height, and
+this covers the same pixels as painting each letter's cell."
+  (let* ((attribute (text-object-attribute drawing-object))
+         (width (object-width drawing-object display))
+         (height (object-height drawing-object display))
+         (y (- bottom-y height)))
+    (draw-rect display x y width height
+               (lem-core:attribute-background-with-reverse attribute))
+    (draw-underline display x y width height attribute)))
 
 (defun text-object-letter-objects-and-widths (drawing-object display)
   "Return two parallel lists: per-character letter-objects and their cell
@@ -403,12 +420,16 @@ for it, falling back like SDL_ttf would."
 
 (defun draw-text-object-phase (drawing-object x bottom-y display view phase)
   "Render the text-object DRAWING-OBJECT for one of the two-pass phases
-(:BG or :GLYPH).  PHASE :BG paints backgrounds, cursors and underlines for
-every cell of the run; PHASE :GLYPH blits each glyph at its natural surface
+(:BG or :GLYPH).  PHASE :BG paints the run's background and underline in
+one fill, or each cell's for a cursor run; PHASE :GLYPH blits each glyph at its natural surface
 width so the rasterizer's right-edge anti-aliasing tail is preserved."
   (let ((string (text-object-string drawing-object)))
     (cond ((and (eq phase :glyph) (shaped-run-p drawing-object display))
            (draw-shaped-run drawing-object x bottom-y display))
+          ((and (eq phase :bg)
+                (< 1 (length string))
+                (not (lem-core:cursor-attribute-p (text-object-attribute drawing-object))))
+           (draw-run-background drawing-object x bottom-y display))
           ((<= (length string) 1)
            (draw-text-glyph-surface drawing-object x bottom-y display view
                                     (object-width drawing-object display)

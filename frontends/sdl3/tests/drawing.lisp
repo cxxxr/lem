@@ -73,3 +73,59 @@
         (obj   (make-text-object "py")))
     (ok (= (drawing::object-height obj small) 14))
     (ok (= (drawing::object-height obj large) 28))))
+
+;;; The :bg phase of a multi-character run paints one rectangle and one
+;;; underline across the run instead of one per letter (a per-letter loop
+;;; was ~1600 fills and ~0.7 ms of throwaway letter objects per full
+;;; redraw).  Cursor runs keep the per-cell path, which records the cursor
+;;; position and draws bar and underline cursors per cell.
+
+(defclass stub-grid-display (stub-display)
+  ((char-width :initarg :char-width :reader display::display-char-width)))
+
+(defun call-recording (names function)
+  "Call FUNCTION with the functions NAMES encapsulated so they record their
+arguments instead of drawing; return the recorded (name . args) calls in
+order."
+  (let ((calls '()))
+    (dolist (name names)
+      (let ((name name))
+        (sb-int:encapsulate name 'record
+                            (lambda (original &rest args)
+                              (declare (ignore original))
+                              (push (cons name args) calls)))))
+    (unwind-protect (funcall function)
+      (dolist (name names)
+        (sb-int:unencapsulate name 'record)))
+    (nreverse calls)))
+
+(defun bg-phase-calls (string attribute)
+  (let ((display (make-instance 'stub-grid-display :char-height 17 :char-width 9))
+        (object (make-instance 'lem-core/display:text-object
+                               :string string :attribute attribute :type :latin)))
+    (call-recording '(drawing::draw-rect
+                      drawing::draw-underline
+                      drawing::draw-text-glyph-surface)
+                    (lambda ()
+                      (drawing::draw-text-object-phase object 10 50 display nil :bg)))))
+
+(deftest run-background-is-one-fill
+  (let* ((attribute (lem:make-attribute :background "#112233" :underline t))
+         (calls (bg-phase-calls "hello" attribute)))
+    (ok (equal (mapcar #'first calls)
+               '(drawing::draw-rect drawing::draw-underline))
+        "one fill and one underline for the run")
+    (destructuring-bind (display x y width height color) (rest (first calls))
+      (declare (ignore display color))
+      (ok (equal (list x y width height) '(10 33 45 17))
+          "the fill covers every cell of the run"))
+    (destructuring-bind (display x y width height underline-attribute) (rest (second calls))
+      (declare (ignore display))
+      (ok (equal (list x y width height) '(10 33 45 17)))
+      (ok (eq underline-attribute attribute)))))
+
+(deftest cursor-run-background-stays-per-cell
+  (let ((attribute (lem:make-attribute :background "#112233")))
+    (lem-core:set-cursor-attribute attribute)
+    (ok (equal (mapcar #'first (bg-phase-calls "ab" attribute))
+               '(drawing::draw-text-glyph-surface drawing::draw-text-glyph-surface)))))
