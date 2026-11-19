@@ -132,12 +132,16 @@ if a bottom-side window already exists, switch its buffer instead."
       (setf (frame-bottomside-window frame) nil)
       (balance-windows))))
 
-(defun resize-bottomside-window (window height)
-  "resize the bottom-side WINDOW to HEIGHT lines and reposition it."
+(defun place-bottomside-window (window height)
+  "Give the bottom-side WINDOW HEIGHT lines, at the bottom of the display."
   (check-type window bottomside-window)
   (let ((frame (current-frame)))
     (window-set-size window (max-window-width frame) height)
     (window-set-pos window
                     (topleft-window-x frame)
-                    (- (display-height) height))
-    (balance-windows)))
+                    (- (display-height) height))))
+
+(defun resize-bottomside-window (window height)
+  "resize the bottom-side WINDOW to HEIGHT lines and reposition it."
+  (place-bottomside-window window height)
+  (balance-windows))

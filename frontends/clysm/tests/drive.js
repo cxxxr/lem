@@ -365,6 +365,16 @@ module.exports = (win, app) => {
           return spans.some((s, i) => i > 0 && s[0] < spans[i - 1][1] - 0.5);
         }))()`);
         check('modelines do not overlap', !overlaps);
+        // the input of Claude keeps its height when the screen changes (larger text: fewer lines)
+        const inputHeight = () => lisp('(lem:window-height (first (lem:get-buffer-windows (lem-clysm::session-input (first lem-clysm::*claude-sessions*)))))');
+        const before = await inputHeight();
+        await lisp('(lem:send-event (lambda () (lem-clysm::set-font-size (+ lem-clysm::*font-size* 4))))');
+        await sleep(800);
+        const after = await inputHeight();
+        await lisp('(lem:send-event (lambda () (lem-clysm::set-font-size (- lem-clysm::*font-size* 4))))');
+        await sleep(800);
+        check('claude input keeps its height on resize', before === after && (await inputHeight()) === before,
+              `${before} ${after} ${await inputHeight()}`);
         await lisp('(setf lem-clysm:*claude-allow-bypass-permissions* nil)');
         await lisp('(lem:send-event (lambda () (lem-core/commands/window:delete-other-windows)))');
       }
