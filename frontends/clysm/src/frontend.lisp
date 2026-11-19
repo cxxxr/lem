@@ -13,8 +13,10 @@
 
 (ui:defcomponent screen ()
   (:div :class "lem-screen"
-        :style (format nil "color:~A;background:~A;--lem-background:~A;font-size:~Apx;--lem-line-height:~A;"
-                       *foreground* *background* *background* *font-size* (px *char-height*))
+        :style (format nil "color:~A;background:~A;--lem-foreground:~A;--lem-background:~A;~
+                            --lem-accent:~A;font-size:~Apx;--lem-line-height:~A;"
+                       *foreground* *background* *foreground* *background*
+                       *accent* *font-size* (px *char-height*))
         :on-mount (lambda (node) (setf *screen-element* node))
         :on-mousedown #'on-mouse-down
         :on-mouseup #'on-mouse-up
@@ -61,6 +63,18 @@
 
 (defvar *container* "#lem" "Where the screen is put on the page.")
 
+(defun measure-when-fonts-loaded ()
+  "Measure the cells again when the font of the text is loaded (fonts/ of
+lem.css): the screen is measured at first with the font that replaces it."
+  (let ((fonts (js:get (ui::backend-document ui:*backend*) "fonts")))
+    (when (js:js-value-p fonts)
+      (dolist (style '("" "bold "))
+        (js:call (js:call fonts "load" (format nil "~A~Apx 'JetBrains Mono'" style *font-size*))
+                 "then" (lambda (loaded)
+                          (declare (ignore loaded))
+                          (resized)
+                          nil))))))
+
 (defun start-screen ()
   (ui:mount (screen) *container*)
   (ui:flush)
@@ -69,7 +83,8 @@
                                                       (declare (ignore event))
                                                       (resized)
                                                       nil))
-  (measure))
+  (measure)
+  (measure-when-fonts-loaded))
 
 (sys::%defvar-host *show-exited*
   (js:eval "(container) => { window.close();
@@ -122,9 +137,23 @@
       (clrhash *style-cache*)
       (setf *background* color))))
 
+(defun accent-color ()
+  "The colour of the selected item of a popup menu (that of the theme), or
+of the cursor."
+  (flet ((background (symbol)
+           (let ((attribute (and symbol (lem:ensure-attribute symbol nil))))
+             (and attribute (color-string (lem:attribute-background attribute))))))
+    (or (background (find-symbol "POPUP-MENU-ATTRIBUTE" "LEM/POPUP-MENU"))
+        (background 'lem:cursor))))
+
 (defmethod lem-if:will-update-display ((implementation clysm))
-  ;; attributes are changed in place (e.g. the cursor's colour)
-  (clrhash *style-cache*))
+  ;; attributes are changed in place (e.g. the cursor's colour), and made
+  ;; again for a new theme
+  (clrhash *style-cache*)
+  (setf *attribute-classes* nil)
+  (let ((accent (or (accent-color) *foreground*)))
+    (unless (equal accent *accent*)
+      (setf *accent* accent))))
 
 ;;; ---- the display
 
@@ -198,6 +227,8 @@
 
 (defmethod lem-if:update-display ((implementation clysm))
   (mapc #'update-role *views*)
+  (update-joins *views*)
+  (mapc #'update-scroll *views*)
   (mapc #'publish-view *views*)
   (let* ((window (lem:current-window))
          (view (lem:window-view window)))
