@@ -8,6 +8,8 @@
    :end-of-defun-function
    :fold-region-function
    :fold-toggle-at-point
+   :fold-all
+   :toggle-fold-all
    :unfold-all
    :comment-region
    :uncomment-region
@@ -97,6 +99,7 @@
 (define-key *language-mode-keymap* "C-M-a" 'beginning-of-defun)
 (define-key *language-mode-keymap* "C-M-e" 'end-of-defun)
 (define-key *language-mode-keymap* "C-c Tab" 'fold-or-indent-or-complete)
+(define-key *language-mode-keymap* "C-c Shift-Tab" 'toggle-fold-all)
 (define-key *language-mode-keymap* "Tab" 'indent-line-and-complete-symbol)
 (define-key *global-keymap* "C-j" 'newline-and-indent)
 (define-key *global-keymap* "M-j" 'newline-and-indent)
@@ -126,7 +129,67 @@
         (funcall fn (current-point) n)
         (beginning-of-defun-1 (- n)))))
 
-(defun fold-region-default (point)
+(defun blank-before-p (point)
+  "Whether nothing but blanks precedes POINT on its line."
+  (with-point ((start point))
+    (line-start start)
+    (zerop (length (string-trim '(#\Space #\Tab) (points-to-string start point))))))
+
+(defun bracket-fold-region (point)
+  "Return (values start end) folding the first bracket on the line of POINT
+that closes on a later line (brackets in strings and comments do not count),
+or NIL.  When the closing bracket begins its line (C's }), that line stays
+shown; otherwise (Lisp's ...)) the lines are folded through it."
+  (with-point ((p point)
+               (limit point))
+    (line-start p)
+    (line-end limit)
+    (loop :while (point< p limit)
+          :do (let ((char (character-at p)))
+                (when (and char
+                           (syntax-open-paren-char-p char)
+                           (not (in-string-or-comment-p p)))
+                  (with-point ((close p))
+                    (when (and (scan-lists close 1 0 t)
+                               (not (same-line-p close p)))
+                      (let ((start (copy-point p :temporary))
+                            (end (copy-point close :temporary)))
+                        (line-start start)
+                        (with-point ((bracket close))
+                          (character-offset bracket -1)
+                          (if (blank-before-p bracket)
+                              (line-start end)
+                              (line-end end)))
+                        ;; (something to hide: a line between, or the closing one)
+                        (with-point ((next start))
+                          (when (and (line-offset next 1) (point< next end))
+                            (return-from bracket-fold-region (values start end)))))))))
+              (character-offset p 1))))
+
+(defun line-indentation (point)
+  (with-point ((p point))
+    (back-to-indentation p)
+    (point-charpos p)))
+
+(defun indentation-fold-region (point)
+  "Return (values start end) folding the lines under the line of POINT that
+are indented more than it (Python, YAML...), or NIL."
+  (unless (blank-line-p point)
+    (let ((indentation (line-indentation point))
+          (last nil))
+      (with-point ((p point))
+        (loop :while (line-offset p 1)
+              :do (cond ((blank-line-p p))
+                        ((< indentation (line-indentation p))
+                         (setf last (copy-point p :temporary)))
+                        (t (return)))))
+      (when last
+        (let ((start (copy-point point :temporary)))
+          (line-start start)
+          (line-end last)
+          (values start last))))))
+
+(defun defun-fold-region (point)
   "Return (values start end) spanning the defun at POINT, or NIL."
   (let ((defun-begin (variable-value 'beginning-of-defun-function :buffer point))
         (defun-end (variable-value 'end-of-defun-function :buffer point)))
@@ -138,6 +201,16 @@
         (funcall defun-begin start 1)
         (when (point< start end)
           (values start end))))))
+
+(defun fold-region-default (point)
+  "Return (values start end) of what folds at the line of POINT, or NIL: a
+bracket that closes on a later line, else the lines indented under it.
+(DEFUN-FOLD-REGION, the region of a defun found with the mode's
+beginning-of-defun-function, can be a mode's fold-region-function.)"
+  (dolist (function '(bracket-fold-region indentation-fold-region))
+    (multiple-value-bind (start end) (funcall function point)
+      (when (and start end (same-line-p start point) (not (same-line-p start end)))
+        (return (values start end))))))
 
 (defun fold-overlay-at (point)
   "The fold overlay whose header line is POINT's line, or NIL."
@@ -172,6 +245,46 @@ nothing to fold."
   (unless (and (variable-value 'enable-tab-fold)
                (fold-toggle-at-point))
     (indent-line-and-complete-symbol)))
+
+(defun fold-all-regions (buffer)
+  "Fold in BUFFER every region that fold-region-function finds and that is
+not in another one (top-level forms, functions, classes...).  Return how
+many were folded."
+  (let ((function (variable-value 'fold-region-function :default buffer))
+        (count 0))
+    (with-point ((p (buffer-start-point buffer)))
+      (loop
+        (multiple-value-bind (start end)
+            (unless (or (fold-overlay-at p) (line-continuation-p p))
+              (funcall function p))
+          (cond ((and start end (same-line-p start p) (not (same-line-p start end)))
+                 (overlay-put (place-region-placeholder-overlay start end :is-line-fold t) :fold t)
+                 (incf count)
+                 ;; past the fold: the line that ends it may open another
+                 ;; (C's "} else {"), unless it is in the fold
+                 (move-point p end)
+                 (unless (and (start-line-p p) (not (line-continuation-p p)))
+                   (unless (line-offset p 1)
+                     (return))))
+                ((not (line-offset p 1))
+                 (return))))))
+    count))
+
+(defun move-out-of-folds (point)
+  "Move POINT to the line that begins the fold hiding it, if one does."
+  (loop :while (and (line-continuation-p point) (line-offset point -1)))
+  (line-start point))
+
+(define-command fold-all () ()
+  "Fold every region of the buffer that is not in another one."
+  (fold-all-regions (current-buffer))
+  (move-out-of-folds (current-point)))
+
+(define-command toggle-fold-all () ()
+  "Unfold everything if something is folded, otherwise fold everything."
+  (if (some (lambda (overlay) (overlay-get overlay :fold)) (buffer-overlays))
+      (unfold-all)
+      (fold-all)))
 
 (define-command unfold-all () ()
   "Remove every fold in the current buffer."
