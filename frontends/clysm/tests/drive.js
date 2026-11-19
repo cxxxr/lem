@@ -344,6 +344,14 @@ module.exports = (win, app) => {
         await lisp('(lem:send-event (lambda () (lem-clysm:claude-code-bypass-permissions)))');
         check('claude mode: bypassPermissions', await until(async () => (await mode()) === '"bypassPermissions"'), await mode());
         check('claude mode: the warning', (await chat()).includes('⚠ bypassPermissions'));
+        // a narrow window: what is on the left of its modeline gives way to what is on the right
+        const overlaps = await js(`(() => [...document.querySelectorAll('.lem-modeline .lem-line')].some((line) => {
+          const spans = [...line.children].slice(1).filter((s) => s.textContent.trim())
+            .map((s) => [parseFloat(s.style.left), parseFloat(s.style.left) + parseFloat(s.style.width)])
+            .sort((a, b) => a[0] - b[0]);
+          return spans.some((s, i) => i > 0 && s[0] < spans[i - 1][1] - 0.5);
+        }))()`);
+        check('modelines do not overlap', !overlaps);
         await lisp('(setf lem-clysm:*claude-allow-bypass-permissions* nil)');
         await lisp('(lem:send-event (lambda () (lem-core/commands/window:delete-other-windows)))');
       }
@@ -366,6 +374,8 @@ module.exports = (win, app) => {
         check('remote: screen', screen.includes('== window'), screen);
         const [, line] = await ask('POST', '/eval', `(lem-clysm::segments-text '((0 6 "日本語" "" "lem-wide") (6 3 "abc" "") (9 4 "Big" "" nil nil 4/3)) 20)`);
         check('remote: wide and larger text on the screen', line.trim() === '"日本語abcBig"', line);
+        const [, clipped] = await ask('POST', '/eval', `(mapcar #'third (lem-clysm::clip-segments '((0 5 "abcde" "") (5 10 "0123456789" "") (12 3 "xyz" "")) 9))`);
+        check('modeline: the left cut before the right', clipped.trim() === '("abcde" "012…")', clipped);
         check('remote: no token, no answer', (await fetch(url + '/state')).status === 401);
         await lisp('(lem:send-event (lambda () (lem-clysm:remote-stop)))');
         check('remote: stopped', await until(() => !fs.existsSync(remoteFile)));
