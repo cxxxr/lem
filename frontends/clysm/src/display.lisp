@@ -34,7 +34,10 @@
 
 (ui:defmodel view ()
   ((window :initarg :window :reader view-window)
-   (kind :initarg :kind :reader view-kind)          ; :tile, :floating or :header
+   ;; which component shows it: :window (a window of the frame, with its
+   ;; modeline apart), :tabbar (a header window), :minibuffer (the prompt
+   ;; or the message of the frame) or :popup (another floating window)
+   (role :initarg :role :accessor view-role)
    (border :initarg :border :initform nil :reader view-border)
    (border-shape :initarg :border-shape :initform nil :reader view-border-shape)
    (x :initarg :x :accessor view-x)
@@ -192,9 +195,35 @@ cursor is."
           do (setf (svref lines i) nil))
     (setf (canvas-dirty (view-canvas view)) t)))
 
+;;; ---- roles
+
+(defun window-role (window)
+  "The component that shows WINDOW (see the slot ROLE of VIEW)."
+  (cond ((lem:header-window-p window) :tabbar)
+        ((or (lem:floating-window-p window) (lem:attached-window-p window))
+         (let ((frame (lem:current-frame)))
+           (if (or (eq window (lem:frame-prompt-window frame))
+                   (eq window (lem:frame-message-window frame)))
+               :minibuffer
+               :popup)))
+        (t :window)))
+
+(defun update-role (view)
+  "Note again which component shows VIEW: a floating window becomes the
+prompt (or the message) of the frame only after it is made."
+  (let ((role (window-role (view-window view))))
+    (unless (eq role (view-role view))
+      (setf (view-role view) role))))
+
 ;;; ---- components
 
 (defun px (n) (format nil "~,2Fpx" n))
+
+(defun cell-box (x y width height)
+  "The CSS of a box of WIDTH x HEIGHT cells at column X, line Y."
+  (let ((cw *char-width*) (ch *char-height*))
+    (format nil "left:~A;top:~A;width:~A;height:~A;"
+            (px (* x cw)) (px (* y ch)) (px (* width cw)) (px (* height ch)))))
 
 (ui:defcomponent screen-line (segments top char-width char-height)
   (:div :class "lem-line" :style (format nil "top:~A;height:~A;line-height:~A;"
@@ -206,44 +235,88 @@ cursor is."
                   text)))
             segments)))
 
-(defun view-class (view)
-  (format nil "lem-view lem-~(~A~)" (view-kind view)))
-
-(ui:defcomponent view-border-box (view)
-  ;; the border of a floating window, half a cell around it
+(defun view-line-nodes (view)
   (let ((cw *char-width*) (ch *char-height*))
-    (:div :class (format nil "lem-border lem-border-~(~A~)" (or (view-border-shape view) :normal))
-          :style (format nil "left:~A;top:~A;width:~A;height:~A;"
-                         (px (* (- (view-x view) 0.5) cw)) (px (* (- (view-y view) 0.5) ch))
-                         (px (* (+ (view-width view) 1) cw)) (px (* (+ (view-height view) 1) ch))))))
+    (loop for segments across (view-lines view)
+          for y from 0
+          when segments
+            collect (ui:keyed y (screen-line segments (* y ch) cw ch)))))
+
+(defun background-style (view)
+  (if (view-background view) (format nil "background:~A;" (view-background view)) ""))
+
+(ui:defcomponent buffer-view (view)
+  ;; the text of a window of the frame, without its modeline
+  (:div :class "lem-view lem-window"
+        :style (format nil "~A~A"
+                       (cell-box (view-x view) (view-y view) (view-width view) (view-height view))
+                       (background-style view))
+    (view-line-nodes view)))
+
+(ui:defcomponent modeline-bar (view)
+  ;; the modeline of a window, on the line under it
+  (:div :class (if (eq (view-window view) (lem:current-window))
+                   "lem-modeline lem-modeline-active"
+                   "lem-modeline")
+        :style (cell-box (view-x view) (+ (view-y view) (view-height view)) (view-width view) 1)
+    (when (view-modeline view)
+      (screen-line (view-modeline view) 0 *char-width* *char-height*))))
 
 (ui:defcomponent view-separator (view)
   ;; the line between a window and the one on its left, in the column between them
-  (let ((cw *char-width*) (ch *char-height*))
-    (:div :class "lem-separator"
-          :style (format nil "left:~A;top:~A;width:~A;height:~A;"
-                         (px (* (- (view-x view) 1) cw)) (px (* (view-y view) ch))
-                         (px cw) (px (* (+ (view-height view) (if (view-modeline-p view) 1 0)) ch))))))
+  (:div :class "lem-separator"
+        :style (cell-box (- (view-x view) 1) (view-y view)
+                         1 (+ (view-height view) (if (view-modeline-p view) 1 0)))))
 
-(ui:defcomponent view-box (view)
-  (let ((cw *char-width*) (ch *char-height*))
-    (:div :class (view-class view)
-          :style (format nil "left:~A;top:~A;width:~A;height:~A;~@[background:~A;~]"
-                         (px (* (view-x view) cw)) (px (* (view-y view) ch))
-                         (px (* (view-width view) cw))
-                         (px (* (+ (view-height view) (if (view-modeline-p view) 1 0)) ch))
-                         (view-background view))
-      (loop for segments across (view-lines view)
-            for y from 0
-            when segments
-              collect (ui:keyed y (screen-line segments (* y ch) cw ch)))
-      (when (and (view-modeline-p view) (view-modeline view))
-        (ui:keyed :modeline
-                  (screen-line (view-modeline view) (* (view-height view) ch) cw ch))))))
+(ui:defcomponent tabbar-view (view)
+  ;; a header window: the tabs of frame-multiplexer, ...
+  (:div :class "lem-view lem-tabbar"
+        :style (format nil "~A~A"
+                       (cell-box (view-x view) (view-y view) (view-width view) (view-height view))
+                       (background-style view))
+    (view-line-nodes view)))
 
-(defun view-nodes (view)
-  (list (when (and (view-border view) (plusp (view-border view)))
-          (ui:keyed (list :border view) (view-border-box view)))
-        (when (and (eq (view-kind view) :tile) (plusp (view-x view)))
-          (ui:keyed (list :separator view) (view-separator view)))
-        (ui:keyed view (view-box view))))
+(ui:defcomponent floating-view (view)
+  ;; a popup or the minibuffer: a box with its border, half a cell around
+  ;; the window, and the window in it
+  (let* ((border (and (view-border view) (plusp (view-border view))))
+         (margin (if border 0.5 0)))
+    (:div :class (format nil "lem-~(~A~)~:[~; lem-bordered~]" (view-role view) border)
+          :style (cell-box (- (view-x view) margin) (- (view-y view) margin)
+                           (+ (view-width view) (* 2 margin)) (+ (view-height view) (* 2 margin)))
+      (when border
+        (:div :class (format nil "lem-border lem-border-~(~A~)"
+                             (or (view-border-shape view) :normal))))
+      (:div :class "lem-view"
+            :style (format nil "~A~A"
+                           (cell-box margin margin (view-width view) (view-height view))
+                           (background-style view))
+        (view-line-nodes view)))))
+
+(defun views-of (roles)
+  (remove-if-not (lambda (view) (member (view-role view) roles)) *views*))
+
+(ui:defcomponent window-layer ()
+  (:div :class "lem-layer lem-windows"
+    (mapcan (lambda (view)
+              (list (when (plusp (view-x view))
+                      (ui:keyed (list :separator view) (view-separator view)))
+                    (ui:keyed view (buffer-view view))
+                    (when (view-modeline-p view)
+                      (ui:keyed (list :modeline view) (modeline-bar view)))))
+            (views-of '(:window)))))
+
+(ui:defcomponent tabbar-layer ()
+  (:div :class "lem-layer lem-tabbars"
+    (mapcar (lambda (view) (ui:keyed view (tabbar-view view)))
+            (views-of '(:tabbar)))))
+
+(ui:defcomponent minibuffer-layer ()
+  (:div :class "lem-layer lem-minibuffers"
+    (mapcar (lambda (view) (ui:keyed view (floating-view view)))
+            (views-of '(:minibuffer)))))
+
+(ui:defcomponent popup-layer ()
+  (:div :class "lem-layer lem-popups"
+    (mapcar (lambda (view) (ui:keyed view (floating-view view)))
+            (views-of '(:popup)))))

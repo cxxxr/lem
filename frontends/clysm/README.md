@@ -113,8 +113,14 @@ the GUI framework; `render-line` turns Lem's drawing objects into segments
 `(column width text style)` of the view's lines, and `update-display` gives
 the lines of the views that changed to their observed slots. The components
 that show them are rendered again; a line equal to the one before is not, so
-typing a key changes one line of the page. Floating windows have borders and
-lie above the others; windows side by side have a line between them.
+typing a key changes one line of the page. Each kind of window has a
+component of its own, in a layer of its own (from below): the windows of the
+frame (`buffer-view`), each with its modeline apart (`modeline-bar`) and a
+line between windows side by side; the tab bar (`tabbar-view`, a header
+window); the minibuffer (the prompt and the message of the frame); the popups
+(the other floating windows). The minibuffer and the popups
+(`floating-view`) have their borders and are classes `lem-minibuffer` and
+`lem-popup` of the page, so that `lem.css` gives each its own look.
 
 **Input** (`src/input.lisp`). Keys are typed into a text field that follows
 the cursor, so that an input method shows its composition there: keys with a

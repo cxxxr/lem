@@ -7,14 +7,26 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #1d1f21; }
               font-family: 'JetBrains Mono', 'DejaVu Sans Mono', 'Noto Sans Mono CJK JP', 'Noto Sans Mono',
                            ui-monospace, monospace;
               font-variant-ligatures: none; -webkit-font-smoothing: antialiased; user-select: none; }
-.lem-view { position: absolute; overflow: hidden; background: inherit; }
-.lem-floating { z-index: 10; }
-.lem-border { position: absolute; z-index: 9; box-sizing: border-box; pointer-events: none;
-              border: 1px solid color-mix(in srgb, currentColor 45%, transparent); }
-.lem-border-left-border { border-width: 0 0 0 1px; }
+/* the layers, from below: the windows (with their modelines), the tab bar,
+   the minibuffer (the prompt and the message), the popups */
+.lem-layer { position: absolute; inset: 0; pointer-events: none; }
+.lem-layer > * { pointer-events: auto; }
+.lem-windows { z-index: 1; }
+.lem-tabbars { z-index: 2; }
+.lem-minibuffers { z-index: 3; }
+.lem-popups { z-index: 4; }
+.lem-view { position: absolute; overflow: hidden; background: var(--lem-background); }
+.lem-modeline { position: absolute; overflow: hidden; }
 .lem-separator { position: absolute; pointer-events: none; }
 .lem-separator::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%;
                          border-left: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
+/* a popup or the minibuffer: its border, half a cell around the window */
+.lem-popup, .lem-minibuffer { position: absolute; }
+.lem-border { position: absolute; inset: 0; box-sizing: border-box; pointer-events: none;
+              background: var(--lem-background);
+              border: 1px solid color-mix(in srgb, currentColor 45%, transparent); }
+.lem-border-left-border { border-width: 0 0 0 1px; }
+.lem-popup.lem-bordered { box-shadow: 0 4px 14px rgb(0 0 0 / 0.35); }
 .lem-line { position: absolute; left: 0; right: 0; }
 .lem-line > span { position: absolute; top: 0; height: 100%; overflow: hidden; }
 /* the keys are typed here; it stays at the cursor for input methods */

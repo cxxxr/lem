@@ -13,15 +13,20 @@
 
 (ui:defcomponent screen ()
   (:div :class "lem-screen"
-        :style (format nil "color:~A;background:~A;font-size:~Apx;--lem-line-height:~A;"
-                       *foreground* *background* *font-size* (px *char-height*))
+        :style (format nil "color:~A;background:~A;--lem-background:~A;font-size:~Apx;--lem-line-height:~A;"
+                       *foreground* *background* *background* *font-size* (px *char-height*))
         :on-mount (lambda (node) (setf *screen-element* node))
         :on-mousedown #'on-mouse-down
         :on-mouseup #'on-mouse-up
         :on-mousemove #'on-mouse-move
         :on-wheel #'on-wheel
         :on-contextmenu (lambda (event) (js:call event "preventDefault"))
-    (mapcar #'view-nodes *views*)
+    ;; from below: the windows with their modelines, the tab bar, the
+    ;; minibuffer, the popups
+    (window-layer)
+    (tabbar-layer)
+    (minibuffer-layer)
+    (popup-layer)
     (input-field)))
 
 (sys::%defvar-host *measure-cell*
@@ -142,23 +147,16 @@
         (when (js:get document "fullscreenElement")
           (js:call document "exitFullscreen")))))
 
-(defun view-kind-of (window)
-  (cond ((or (lem:floating-window-p window) (lem:attached-window-p window)) :floating)
-        ((lem:header-window-p window) :header)
-        (t :tile)))
-
 (defmethod lem-if:make-view ((implementation clysm) window x y width height use-modeline)
   (let ((view (make-instance 'view
-                             :window window :kind (view-kind-of window)
+                             :window window :role (window-role window)
                              :border (lem:window-border window)
                              :border-shape (and (lem:floating-window-p window)
                                                 (lem:floating-window-border-shape window))
                              :x x :y y :width width :height height
                              :modeline-p use-modeline)))
     (resize-canvas view)
-    ;; floating windows above the others
-    (setf *views* (stable-sort (append *views* (list view)) #'<
-                               :key (lambda (v) (if (eq (view-kind v) :floating) 1 0))))
+    (setf *views* (append *views* (list view)))
     view))
 
 (defmethod lem-if:delete-view ((implementation clysm) view)
@@ -199,6 +197,7 @@
   1)
 
 (defmethod lem-if:update-display ((implementation clysm))
+  (mapc #'update-role *views*)
   (mapc #'publish-view *views*)
   (let* ((window (lem:current-window))
          (view (lem:window-view window)))
