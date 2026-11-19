@@ -1,4 +1,5 @@
-;;;; image.lisp — images in buffers, and a viewer of image files
+;;;; image.lisp — images and text of other sizes in buffers, and a viewer of
+;;;; image files
 ;;;;
 ;;;; LOAD-IMAGE reads an image file (with the file system of the page:
 ;;;; Node.js's in the desktop application, the files in memory in a
@@ -7,7 +8,8 @@
 ;;;; INSERT-IMAGE puts it into a buffer as text whose attribute has it (Lem
 ;;;; draws such text as an image, display.lisp).  Image files are opened in
 ;;;; an image buffer, which is zoomed with + - 0 and fitted with f w h as in
-;;;; Lem's SDL2 frontend.
+;;;; Lem's SDL2 frontend.  Text is drawn larger or smaller with an attribute
+;;;; that has :SCALE (SCALED-ATTRIBUTE, INSERT-TEXT; display.lisp draws it).
 
 (in-package :lem-clysm)
 
@@ -23,32 +25,49 @@
   (let ((type (pathname-type pathname)))
     (and type (assoc type *image-types* :test #'string-equal) t)))
 
-(sys::%defvar-host *load-image-file*
-  (js:eval "(path, type, done) => {
-     let url;
-     try {
-       url = URL.createObjectURL(new Blob([globalThis.__clysm_fs.readFileSync(path)], { type }));
-     } catch (e) { done(null, 0, 0, String(e && e.message || e)); return; }
+(sys::%defvar-host *decode-image*
+  (js:eval "(url, revoke, done) => {
      const img = new Image();
      img.onload = () => done(url, img.naturalWidth, img.naturalHeight, null);
-     img.onerror = () => { URL.revokeObjectURL(url); done(null, 0, 0, 'not an image the page can show'); };
+     img.onerror = () => { if (revoke) URL.revokeObjectURL(url);
+                           done(null, 0, 0, 'not an image the page can show'); };
      img.src = url; }"))
+
+(sys::%defvar-host *file-url*
+  (js:eval "(path, type) => {
+     try {
+       return URL.createObjectURL(new Blob([globalThis.__clysm_fs.readFileSync(path)], { type }));
+     } catch (e) { return String(e && e.message || e); }}"))
+
+(defun decode-image (url revoke function)
+  "Have the page decode the image at URL, then call FUNCTION in the editor
+with the image, or with NIL and why.  REVOKE: URL is a blob URL to let go if
+it is not an image."
+  (js:funcall *decode-image* url revoke
+              (lambda (url width height error)
+                (lem:send-event
+                 (lambda ()
+                   (if (stringp url)
+                       (funcall function (%make-image url width height))
+                       (funcall function nil (if (stringp error) error "cannot be loaded")))
+                   (lem:redraw-display)))
+                nil)))
 
 (defun load-image (pathname function)
   "Load the image file PATHNAME; then call FUNCTION in the editor with the
 image, or with NIL and a message saying why it could not be loaded."
   (let* ((path (namestring (truename pathname)))
          (type (or (cdr (assoc (pathname-type pathname) *image-types* :test #'string-equal))
-                   "application/octet-stream")))
-    (js:funcall *load-image-file* path type
-                (lambda (url width height error)
-                  (lem:send-event
-                   (lambda ()
-                     (if (stringp url)
-                         (funcall function (%make-image url width height))
-                         (funcall function nil (if (stringp error) error "cannot be loaded")))
-                     (lem:redraw-display)))
-                  nil))))
+                   "application/octet-stream"))
+         (url (js:funcall *file-url* path type)))
+    (if (and (stringp url) (eql 0 (search "blob:" url)))
+        (decode-image url t function)
+        (funcall function nil url))))
+
+(defun load-image-url (url function)
+  "Like LOAD-IMAGE, the image at URL (a data: URL, or one the page can
+fetch)."
+  (decode-image url nil function))
 
 ;;; ---- images in buffers
 
@@ -75,6 +94,56 @@ default, its own size; with one of them, the other in proportion)."
                       (insert-image point image)
                       (lem:message "~A: ~A" (namestring pathname) error))
                   (lem:delete-point point)))))
+
+;;; ---- text of other sizes
+
+(defun scaled-attribute (scale &optional attribute)
+  "An attribute that draws text SCALE times its usual size (2: twice as
+large), with the colours and the rest of ATTRIBUTE (an attribute, the name
+of one, or NIL)."
+  (let ((scaled (lem:make-attribute :plist (list :scale scale)))
+        (base (and attribute (lem:ensure-attribute attribute nil))))
+    (if base (lem:merge-attribute base scaled) scaled)))
+
+(defun insert-text (point string &key (scale 1) attribute)
+  "Insert STRING at POINT, SCALE times its usual size, with ATTRIBUTE."
+  (lem:insert-string point string :attribute (if (= scale 1)
+                                                 attribute
+                                                 (scaled-attribute scale attribute))))
+
+(defparameter *sample-image*
+  (concatenate 'string "data:image/svg+xml;utf8,"
+               "<svg xmlns='http://www.w3.org/2000/svg' width='240' height='120'>"
+               "<rect width='240' height='120' rx='12' fill='%23394b70'/>"
+               "<circle cx='60' cy='60' r='34' fill='%237aa2f7'/>"
+               "<rect x='112' y='34' width='100' height='14' rx='7' fill='%23c0caf5'/>"
+               "<rect x='112' y='58' width='80' height='10' rx='5' fill='%23a9b1d6'/>"
+               "<rect x='112' y='76' width='90' height='10' rx='5' fill='%23a9b1d6'/></svg>")
+  "The image of RICH-TEXT-SAMPLE.")
+
+(lem:define-command rich-text-sample () ()
+  "Show a buffer with text of several sizes and an image."
+  (let ((buffer (lem:make-buffer "*rich text*")))
+    (lem:switch-to-buffer buffer)
+    (load-image-url
+     *sample-image*
+     (lambda (image &optional error)
+       (declare (ignore error))
+       (let ((point (lem:buffer-point buffer))
+             (lem:*inhibit-read-only* t))
+         (lem:erase-buffer buffer)
+         (insert-text point "Lem on Clysm" :scale 2.5 :attribute 'lem:syntax-keyword-attribute)
+         (insert-text point (format nil "~%Text of several sizes and images in one buffer~%")
+                      :scale 1.4 :attribute 'lem:syntax-function-name-attribute)
+         (insert-text point (format nil "~%The usual size: the text of the buffer, which you edit as usual.~%"))
+         (insert-text point (format nil "Small text, for notes.~%~%")
+                      :scale 0.8 :attribute 'lem:syntax-comment-attribute)
+         (when image
+           (insert-image point image)
+           (insert-text point "  an image, with text on its baseline" :scale 1.2))
+         (insert-text point (format nil "~%~%Lisp: (lem-clysm:insert-text (lem:current-point) \"Big\" :scale 2)~%")
+                      :attribute 'lem:syntax-string-attribute)
+         (lem:buffer-start point))))))
 
 ;;; ---- the viewer
 

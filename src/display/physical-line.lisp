@@ -58,7 +58,9 @@
 
 (defclass image-object (drawing-object)
   ((image :initarg :image :reader image-object-image)
-   (width :initarg :width :reader image-object-width)
+   ;; (not WIDTH: that is the slot of DRAWING-OBJECT that caches the width
+   ;; of the object for the frontend, which may count cells, not pixels)
+   (image-width :initarg :width :reader image-object-width)
    (height :initarg :height :reader image-object-height)
    (attribute :initarg :attribute :reader image-object-attribute)))
 

@@ -187,18 +187,42 @@ of a name is made again for a new theme)")
     (values (max 1 (ceiling width *char-width*))
             (max 1 (ceiling height *char-height*)))))
 
+;;; ---- text of other sizes
+;;;
+;;; Text whose attribute has :SCALE (a positive number: 2 is twice the
+;;; size) is drawn that much larger: it takes (* SCALE WIDTH) columns, not
+;;; rounded (Lem cuts text into objects where the cursor is, and where the
+;;; kind of characters changes: rounded widths would move the text after a
+;;; cut), and CEILING SCALE lines; the text of its line stands on the same
+;;; baseline (the bottom of the line).
+
+(defun attribute-scale (attribute)
+  "The :SCALE of ATTRIBUTE, or NIL for text of the usual size."
+  (let* ((attribute (and attribute (lem:ensure-attribute attribute nil)))
+         (scale (and attribute (lem:attribute-value attribute :scale))))
+    (and (realp scale) (plusp scale) (/= scale 1) (rationalize scale))))
+
+(defun text-object-scale (object)
+  (attribute-scale (lem-core/display:text-object-attribute object)))
+
 ;;; ---- drawing objects -> segments
 
 (defun object-width (object)
   (typecase object
     (lem-core/display:image-object (values (image-object-cells object)))
     (lem-core/display:text-object
-     (lem:string-width (lem-core/display:text-object-string object)))
+     (let ((width (lem:string-width (lem-core/display:text-object-string object)))
+           (scale (text-object-scale object)))
+       ;; (exact: a rational number of columns)
+       (if scale (* width scale) width)))
     (t 0)))
 
 (defun object-height (object)
   (typecase object
     (lem-core/display:image-object (nth-value 1 (image-object-cells object)))
+    (lem-core/display:text-object
+     (let ((scale (text-object-scale object)))
+       (if scale (max 1 (ceiling scale)) 1)))
     (t 1)))
 
 (defun cursor-object-p (object)
@@ -213,8 +237,9 @@ of a name is made again for a new theme)")
        (and attribute (lem:cursor-attribute-p (lem:ensure-attribute attribute nil)))))))
 
 (defun object-segment (object x view)
-  "The segment (column width text style class [image]) that draws OBJECT at
-column X, or NIL; IMAGE is (url width height) of an image, in pixels."
+  "The segment (column width text style class image scale) that draws OBJECT
+at column X, or NIL: IMAGE is (url width height) of an image, in pixels, and
+SCALE the size of the text (NIL: the usual one)."
   (typecase object
     (lem-core/display:void-object nil)
     (lem-core/display:image-object
@@ -240,10 +265,12 @@ column X, or NIL; IMAGE is (url width height) of an image, in pixels."
              (attribute-class (lem-core/display:text-object-attribute object)))))
     (lem-core/display:text-object
      (let ((string (lem-core/display:text-object-string object)))
-       (list x (lem:string-width string) string
+       (list x (object-width object) string
              (attribute-style (lem:ensure-attribute
                                (lem-core/display:text-object-attribute object) nil))
-             (attribute-class (lem-core/display:text-object-attribute object)))))))
+             (attribute-class (lem-core/display:text-object-attribute object))
+             nil
+             (text-object-scale object))))))
 
 (defun objects-segments (objects x y view)
   "The segments of OBJECTS drawn from column X of line Y; notes where the
@@ -251,7 +278,8 @@ cursor is."
   (let ((segments '()))
     (dolist (object objects (nreverse segments))
       (when (and y (cursor-object-p object))
-        (lem:set-last-print-cursor (view-window view) x y))
+        ;; (a column after larger text is not a whole one)
+        (lem:set-last-print-cursor (view-window view) (floor x) y))
       (let ((segment (object-segment object x view)))
         (when segment
           (push (if (cursor-object-p object) (mark-cursor segment) segment) segments)))
@@ -259,8 +287,8 @@ cursor is."
 
 (defun mark-cursor (segment)
   "SEGMENT of the cursor, with the class lem-cursor."
-  (destructuring-bind (x width text style &optional class image) segment
-    (list x width text style (format nil "lem-cursor~@[ ~A~]" class) image)))
+  (destructuring-bind (x width text style &optional class image scale) segment
+    (list x width text style (format nil "lem-cursor~@[ ~A~]" class) image scale)))
 
 (defun objects-segments-from-right (objects view)
   (let ((x (view-width view)) (segments '()))
@@ -365,7 +393,9 @@ buffer, or NIL if all of it is shown."
 
 ;;; ---- components
 
-(defun px (n) (format nil "~,2Fpx" n))
+(defun px (n)
+  "N pixels, for CSS (N may be a rational number)."
+  (format nil "~,2Fpx" (float n 1d0)))
 
 (defun cell-box (x y width height)
   "The CSS of a box of WIDTH x HEIGHT cells at column X, line Y."
@@ -373,20 +403,49 @@ buffer, or NIL if all of it is shown."
     (format nil "left:~A;top:~A;width:~A;height:~A;"
             (px (* x cw)) (px (* y ch)) (px (* width cw)) (px (* height ch)))))
 
+(defun segment-pixel-height (segment char-height)
+  "The height of what SEGMENT draws, in pixels: an image's, or that of its
+text; NIL for a background (the rest of a line...), which takes the line."
+  (destructuring-bind (x width text style &optional class image scale) segment
+    (declare (ignore x width style class))
+    (cond (image (third image))
+          ((and (equal text "") (null scale)) nil)
+          (t (* (or scale 1) char-height)))))
+
+(defun line-pixel-height (segments char-height)
+  "The height of a line of SEGMENTS: the lines that its tallest segment takes."
+  (* char-height
+     (loop for segment in segments
+           for height = (segment-pixel-height segment char-height)
+           maximize (if height (max 1 (ceiling (- height 0.01) char-height)) 1))))
+
 (ui:defcomponent screen-line (segments top char-width char-height)
-  (:div :class "lem-line" :style (format nil "top:~A;height:~A;line-height:~A;"
-                                         (px top) (px char-height) (px char-height))
-    (mapcar (lambda (segment)
-              (destructuring-bind (x width text style &optional class image) segment
-                (:span :class class
-                       :style (format nil "left:~A;width:~A;~A" (px (* x char-width))
-                                      (px (* width char-width)) style)
-                  (if image
-                      (destructuring-bind (url width height) image
-                        (:img :src url :draggable "false"
-                              :style (format nil "width:~A;height:~A;" (px width) (px height))))
-                      text))))
-            segments)))
+  ;; a line taller than a cell (an image, larger text): its segments stand on
+  ;; its bottom
+  (let ((line-height (line-pixel-height segments char-height)))
+    (:div :class "lem-line" :style (format nil "top:~A;height:~A;line-height:~A;"
+                                           (px top) (px char-height) (px char-height))
+      (mapcar (lambda (segment)
+                (destructuring-bind (x width text style &optional class image scale) segment
+                  (let ((height (segment-pixel-height segment char-height)))
+                    (:span :class class
+                           :style (format nil "left:~A;width:~A;~@[top:~A;~]~@[height:~A;~]~
+                                               ~@[line-height:~A;~]~@[font-size:~,3Fem;~]~A"
+                                          (px (* x char-width)) (px (* width char-width))
+                                          (cond ((null height) (and (> line-height char-height) (px 0)))
+                                                ((/= height line-height) (px (- line-height height))))
+                                          (cond ((null height)
+                                                 (and (> line-height char-height) (px line-height)))
+                                                ((/= height char-height) (px height)))
+                                          (and scale (px height))
+                                          (and scale (float scale 1d0))
+                                          style)
+                      (if image
+                          (destructuring-bind (url width height) image
+                            (:img :src url :draggable "false"
+                                  :style (format nil "width:~A;height:~A;" (px width) (px height))))
+                          text)))))
+              segments))))
 
 (defun view-line-nodes (view)
   (let ((cw *char-width*) (ch *char-height*))

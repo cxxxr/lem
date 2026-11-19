@@ -268,6 +268,26 @@ module.exports = (win, app) => {
       await lisp(`(lem:send-event (lambda () (lem:switch-to-buffer (lem:make-buffer "images")) (lem-clysm:insert-image-file ${lispString(svg)})))`);
       check('image in a buffer', await until(async () => (await lisp('(lem:buffer-name (lem:current-buffer))')) === '"images"' && await imageShown(64)));
 
+      // text of several sizes and an image in one buffer, on one baseline
+      await lisp('(lem:send-event (lambda () (lem-clysm:rich-text-sample)))');
+      check('text of several sizes', await until(() => js(`(() => {
+        const spans = [...document.querySelectorAll('.lem-line > span')];
+        const title = spans.find((s) => s.textContent.includes('em on Clysm') && s.style.fontSize === '2.5em');
+        const img = document.querySelector('.lem-image img');
+        const after = spans.find((s) => s.textContent.includes('with text on its baseline'));
+        return !!(title && img && img.complete && after
+                  && after.parentElement === img.parentElement.parentElement);
+      })()`)));
+
+      // the larger text does not move where the cursor is (Lem cuts it there)
+      const titleEnd = () => js(`(() => { const l = [...document.querySelectorAll('.lem-line')]
+          .find((l) => l.textContent.includes('on Clysm') && [...l.children].some((s) => s.style.fontSize === '2.5em'));
+        const last = l && l.lastElementChild;
+        return last ? parseFloat(last.style.left) + parseFloat(last.style.width) : null; })()`);
+      const ends = [];
+      for (let i = 0; i < 4; i++) { ends.push(await titleEnd()); await key('f', ['control']); await sleep(150); }
+      check('larger text under the cursor', ends[0] !== null && ends.every((e) => Math.abs(e - ends[0]) < 0.5), ends.join(' '));
+
       const width = await lisp('(lem:display-width)');
       win.setContentSize(700, 400);
       check('resize', await until(async () => (await lisp('(lem:display-width)')) !== width));
