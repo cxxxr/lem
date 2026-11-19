@@ -2,6 +2,7 @@
   :depends-on ("alexandria"
                "trivial-types"
                "usocket"
+               "dexador"
                "micros"
                "trivia"
                "uiop"

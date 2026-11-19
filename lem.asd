@@ -30,7 +30,8 @@
                "log4cl"
                "split-sequence"
                "str"
-               "dexador"
+               "usocket"
+               "quri"
                "cl-mustache"
                ;; "lem-encodings"
                #+sbcl
@@ -223,7 +224,6 @@
                              (:file "auto-save")
                              (:file "frame-multiplexer")
                              (:file "filer")
-                             (:file "deepl")
                              (:file "themes")
                              (:file "detective")
                              (:file "extension-commands" :if-feature :quicklisp)
@@ -234,8 +234,15 @@
                 :serial t
                 :components ((:file "theme-list")))))
 
+(defsystem "lem/deepl"
+  :description "Lem's commands that translate with DeepL"
+  :depends-on ("lem/core" "dexador")
+  :pathname "src/ext"
+  :components ((:file "deepl")))
+
 (defsystem "lem/extensions"
-  :depends-on (#+sbcl
+  :depends-on ("lem/deepl"
+               #+sbcl
                "lem-template"
                "lem-welcome"
                "lem-lsp-mode"
