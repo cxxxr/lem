@@ -7,8 +7,7 @@
                "uiop"
                "lem-lisp-syntax"
                "lem/core"
-               "lem-process"
-               "lem-lsp-mode")
+               "lem-process")
   :serial t
   :components ((:file "test-api")
                (:file "errors")
@@ -62,7 +61,7 @@
                 :components ((:file "call-defun")))))
 
 (defsystem "lem-lisp-mode/v2"
-  :depends-on ("lem-lisp-mode")
+  :depends-on ("lem-lisp-mode" "lem-lsp-mode")
   :serial t
   :pathname "v2"
   :components ((:file "lsp-config")))
