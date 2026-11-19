@@ -28,7 +28,19 @@ if set, replaces it.  Without a directory, it is looked for in PATH, then in
   "More arguments of claude (\"--model\" \"opus\"...).")
 
 (defparameter *claude-permission-modes* '("default" "acceptEdits" "plan")
-  "The permission modes that Shift-Tab cycles through.")
+  "The permission modes that Shift-Tab cycles through (and bypassPermissions
+after them, with *CLAUDE-ALLOW-BYPASS-PERMISSIONS*).")
+
+(defvar *claude-allow-bypass-permissions* nil
+  "Whether Claude may run every tool without asking (bypassPermissions): when
+true, claude is started with --allow-dangerously-skip-permissions and
+Shift-Tab goes to bypassPermissions after plan.  Claude then edits, deletes
+and runs commands without a question: for sandboxes, or what can be lost.")
+
+(defvar *claude-permission-mode* nil
+  "The permission mode a session starts in (\"acceptEdits\", \"plan\",
+\"bypassPermissions\" with *CLAUDE-ALLOW-BYPASS-PERMISSIONS*...), or NIL for
+claude's default.")
 
 ;;; ---- the process (Node.js, in the desktop application)
 
@@ -112,6 +124,7 @@ if set, replaces it.  Without a directory, it is looked for in PATH, then in
   handle directory chat input
   (state :starting)                     ; :starting :idle :responding :exited
   session-id model (mode "default") cost
+  (bypass-allowed nil)                  ; started with --allow-dangerously-skip-permissions
   (pending '())                         ; permission requests waiting for an answer
   (streamed '())                        ; ids of the messages whose text was streamed
   (in-text nil)                         ; a text is being streamed
@@ -333,7 +346,7 @@ md-attribute, an attribute or NIL)."
     (when (and allow always)
       (let ((suggestion (first (jlist request "request" "permission_suggestions"))))
         (when (jstring suggestion "mode")
-          (setf (session-mode session) (jstring suggestion "mode")))))
+          (note-mode session (jstring suggestion "mode")))))
     (write-chat session (if allow "  ✓ allowed" "  ✗ not allowed") (if allow :added :removed))
     (write-chat session (format nil "~@[: ~A~]~%" (and (not allow) (plusp (length message)) message)))
     (when (session-pending session)
@@ -412,6 +425,8 @@ md-attribute, an attribute or NIL)."
            (setf (session-session-id session) (jstring message "session_id"))
            (when (eq (session-state session) :starting)
              (setf (session-state session) :idle)))
+          ((equal type "control_response")
+           (handle-control-response session (jget message "response")))
           ((equal type "control_request")
            (when (equal (jstring message "request" "subtype") "can_use_tool")
              (setf (session-pending session) (append (session-pending session) (list message)))
@@ -419,6 +434,27 @@ md-attribute, an attribute or NIL)."
                (write-permission-request session message))
              (lem:message "Claude asks to use ~A: y, a or n" (jstring message "request" "tool_name")))))
     (schedule-redraw session)))
+
+(defun note-mode (session mode)
+  "Claude's permission mode is MODE now."
+  (unless (equal mode (session-mode session))
+    (setf (session-mode session) mode)
+    (fresh-chat-line session)
+    (if (equal mode "bypassPermissions")
+        (write-chat session (format nil "⚠ bypassPermissions: Claude runs every tool without asking~%") :removed)
+        (write-chat session (format nil "Permission mode: ~A~%" mode) :mark)))
+  (lem:message "Permission mode: ~A" mode))
+
+(defun handle-control-response (session response)
+  "Claude's answer to a control request of the session: a new permission
+mode, or why it refused one."
+  (cond ((equal (jstring response "subtype") "error")
+         (let ((error (or (jstring response "error") "refused")))
+           (fresh-chat-line session)
+           (write-chat session (format nil "✗ ~A~%" error) :removed)
+           (lem:message "Claude: ~A" error)))
+        ((jstring response "response" "mode")
+         (note-mode session (jstring response "response" "mode")))))
 
 (defun handle-claude-exit (session code why)
   (setf (session-state session) :exited
@@ -450,7 +486,9 @@ md-attribute, an attribute or NIL)."
                   (:responding (if (session-pending session) "asking" "working"))
                   (:exited "ended")
                   (t "ready"))
-                (session-mode session)
+                (if (equal (session-mode session) "bypassPermissions")
+                    "⚠ BYPASS"
+                    (session-mode session))
                 (and (realp (session-cost session)) (session-cost session)))
         "")))
 
@@ -474,8 +512,13 @@ md-attribute, an attribute or NIL)."
       (markdown-live-mode t))
     (lem:change-buffer-mode input 'claude-input-mode)
     (lem:modeline-add-status-list 'session-status input)
+    (setf (session-bypass-allowed session) (and *claude-allow-bypass-permissions* t))
+    (when *claude-permission-mode*
+      (setf (session-mode session) *claude-permission-mode*))
     (push session *claude-sessions*)
     (write-chat session (format nil "Claude Code in ~A~%" directory) :mark)
+    (when (equal *claude-permission-mode* "bypassPermissions")
+      (write-chat session (format nil "⚠ bypassPermissions: Claude runs every tool without asking~%") :removed))
     (write-chat session (format nil "Return send · C-j newline · S-Tab mode · C-c C-c stop~%") :mark)
     (setf (session-handle session)
           (js:funcall *claude-spawn* *claude-command* (namestring directory)
@@ -483,6 +526,10 @@ md-attribute, an attribute or NIL)."
                                 "--verbose" "--include-partial-messages"
                                 "--permission-prompt-tool" "stdio")
                               (and continue '("--continue"))
+                              (and *claude-allow-bypass-permissions*
+                                   '("--allow-dangerously-skip-permissions"))
+                              (and *claude-permission-mode*
+                                   (list "--permission-mode" *claude-permission-mode*))
                               *claude-arguments*)
                       (lambda (message)
                         (lem:send-event (lambda () (handle-claude-message session message)))
@@ -561,15 +608,43 @@ md-attribute, an attribute or NIL)."
       (answer-permission session nil :message "Interrupted."))
     (lem:message "Interrupted")))
 
+(defun session-modes (session)
+  "The permission modes that Shift-Tab cycles through in SESSION."
+  (append *claude-permission-modes*
+          (and (session-bypass-allowed session) '("bypassPermissions"))))
+
 (lem:define-command claude-code-cycle-mode () ()
-  "Change the permission mode: default (ask), acceptEdits, plan."
+  "Change the permission mode: default (ask), acceptEdits, plan, and
+bypassPermissions if the session allows it (*claude-allow-bypass-permissions*).
+The mode shown changes when Claude has taken it."
   (let* ((session (current-session))
-         (modes *claude-permission-modes*)
+         (modes (session-modes session))
          (next (or (second (member (session-mode session) modes :test #'string=))
                    (first modes))))
     (js:call (session-handle session) "control" "set_permission_mode" "mode" next)
-    (setf (session-mode session) next)
-    (lem:message "Permission mode: ~A" next)))
+    (lem:message "Permission mode: ~A..." next)))
+
+(lem:define-command claude-code-bypass-permissions () ()
+  "Let Claude run every tool without asking (bypassPermissions), if the
+session was started with *claude-allow-bypass-permissions*."
+  (let ((session (current-session)))
+    (unless (session-bypass-allowed session)
+      (lem:editor-error "Set lem-clysm:*claude-allow-bypass-permissions* to T, then start Claude Code again (M-x claude-code-restart)"))
+    (js:call (session-handle session) "control" "set_permission_mode" "mode" "bypassPermissions")))
+
+(lem:define-command claude-code-restart () ()
+  "End the Claude Code of the project and start it again with the last
+conversation (with the options as they are now)."
+  (let* ((session (current-session))
+         (directory (namestring (session-directory session))))
+    (unless (eq (session-state session) :exited)
+      (js:call (session-handle session) "kill"))
+    (setf (session-state session) :exited)
+    (dolist (buffer (list (session-chat session) (session-input session)))
+      (dolist (window (lem:get-buffer-windows buffer))
+        (unless (lem:one-window-p)
+          (lem:delete-window window))))
+    (show-session (start-session directory :continue t))))
 
 (defun answer-key (allow always character)
   (let ((session (buffer-session (lem:current-buffer))))

@@ -332,6 +332,19 @@ module.exports = (win, app) => {
         await key('y');
         check('claude answers', await until(async () => { const c = await chat(); return c.includes('Done: **fake.txt** says hi.') && c.includes('$0.0012'); }, 10000), await chat());
         check('claude wrote the file', fs.existsSync(path.join(project, 'fake.txt')));
+        // permission modes: Shift-Tab, and bypassPermissions once claude is started allowing it
+        const mode = () => lisp('(lem-clysm::session-mode (first lem-clysm::*claude-sessions*))');
+        await lisp('(lem:send-event (lambda () (lem-clysm:claude-code-cycle-mode)))');
+        check('claude mode: acceptEdits', await until(async () => (await mode()) === '"acceptEdits"'), await mode());
+        await lisp('(lem:send-event (lambda () (lem-clysm:claude-code-bypass-permissions)))');
+        await sleep(300);
+        check('claude mode: bypass not allowed', (await mode()) === '"acceptEdits"', await mode());
+        await lisp('(progn (setf lem-clysm:*claude-allow-bypass-permissions* t) (lem:send-event (lambda () (lem-clysm:claude-code-restart))))');
+        await sleep(1000);
+        await lisp('(lem:send-event (lambda () (lem-clysm:claude-code-bypass-permissions)))');
+        check('claude mode: bypassPermissions', await until(async () => (await mode()) === '"bypassPermissions"'), await mode());
+        check('claude mode: the warning', (await chat()).includes('⚠ bypassPermissions'));
+        await lisp('(setf lem-clysm:*claude-allow-bypass-permissions* nil)');
         await lisp('(lem:send-event (lambda () (lem-core/commands/window:delete-other-windows)))');
       }
 

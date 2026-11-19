@@ -25,7 +25,16 @@ const text = (id, s) => {
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const m = JSON.parse(line);
   if (m.type === 'control_request') {
-    out({ type: 'control_response', response: { subtype: 'success', request_id: m.request_id, response: {} } });
+    const { subtype, mode } = m.request;
+    if (subtype === 'set_permission_mode' && mode === 'bypassPermissions'
+        && !process.argv.includes('--allow-dangerously-skip-permissions')) {
+      out({ type: 'control_response', response: { subtype: 'error', request_id: m.request_id,
+            error: 'Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions',
+            error_code: 'bypass_not_launched' } });
+    } else {
+      out({ type: 'control_response', response: { subtype: 'success', request_id: m.request_id,
+            response: subtype === 'set_permission_mode' ? { mode } : {} } });
+    }
   } else if (m.type === 'control_response' && waiting) {
     const allow = m.response.response.behavior === 'allow';
     const { file, id } = waiting;

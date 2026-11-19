@@ -14,5 +14,7 @@
            #:*claude-command* #:*claude-arguments* #:claude-code #:claude-code-continue
            #:claude-code-send #:claude-code-send-region #:claude-code-interrupt
            #:claude-code-cycle-mode #:claude-code-yes #:claude-code-always #:claude-code-no
+           #:*claude-allow-bypass-permissions* #:*claude-permission-mode*
+           #:claude-code-bypass-permissions #:claude-code-restart
            ;; looking at the editor from outside (remote.lisp)
            #:remote-start #:remote-stop))
