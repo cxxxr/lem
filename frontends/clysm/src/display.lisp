@@ -337,14 +337,37 @@ The line takes HEIGHT lines: it covers the HEIGHT - 1 lines under it."
               (canvas-background canvas) (color-string lem-if:*background-color-of-drawing-window*)
               (canvas-dirty canvas) t)))))
 
+(defun text-columns (text columns)
+  "The first characters of TEXT that take at most COLUMNS columns."
+  (let ((width 0))
+    (subseq text 0 (or (position-if (lambda (char)
+                                      (< columns (incf width (lem:string-width (string char)))))
+                                    text)
+                       (length text)))))
+
+(defun clip-segments (segments limit)
+  "SEGMENTS cut where column LIMIT is: those after it are left out, and the
+one across it is shortened and ends with …"
+  (loop for segment in segments
+        for (x width text) = segment
+        when (< x limit)
+          collect (if (<= (+ x width) limit)
+                      segment
+                      (let ((text (concatenate 'string (text-columns text (max 0 (- limit x 1))) "…")))
+                        (list* x (lem:string-width text) text (cdddr segment))))))
+
 (defun draw-modeline (view left-objects right-objects default-attribute)
-  (let ((canvas (view-canvas view)))
+  ;; what is on the left gives way to what is on the right when the window
+  ;; is too narrow for both (Lem puts them where they are, over each other)
+  (let* ((canvas (view-canvas view))
+         (right (objects-segments-from-right right-objects view))
+         (limit (- (reduce #'min right :key #'first :initial-value (view-width view)) 1)))
     (setf (canvas-modeline canvas)
           (append (list (list 0 (view-width view) ""
                               (attribute-style (lem:ensure-attribute default-attribute nil))
                               (attribute-class default-attribute)))
-                  (objects-segments left-objects 0 nil view)
-                  (objects-segments-from-right right-objects view))
+                  (clip-segments (objects-segments left-objects 0 nil view) limit)
+                  right)
           (canvas-dirty canvas) t)))
 
 (defun clear-lines-from (view y)

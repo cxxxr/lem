@@ -476,19 +476,25 @@ mode, or why it refused one."
     (:name "Prompt"
      :keymap *claude-input-mode-keymap*))
 
+(defun mode-label (mode)
+  "A short name of the permission mode MODE, for the modeline."
+  (cond ((equal mode "default") "ask")
+        ((equal mode "acceptEdits") "edits")
+        ((equal mode "bypassPermissions") "⚠bypass")
+        (t mode)))
+
 (defun session-status (window)
   "The part of the modeline that tells how the session of WINDOW is."
   (let ((session (buffer-session (lem:window-buffer window))))
     (if session
-        (format nil " ~A · ~A~@[ · $~,3F~] "
+        ;; (short: the window of the input is narrow)
+        (format nil " ~A · ~A~@[ · $~,2F~] "
                 (case (session-state session)
-                  (:starting "starting")
+                  ;; (claude says it has started only after the first message)
                   (:responding (if (session-pending session) "asking" "working"))
                   (:exited "ended")
                   (t "ready"))
-                (if (equal (session-mode session) "bypassPermissions")
-                    "⚠ BYPASS"
-                    (session-mode session))
+                (mode-label (session-mode session))
                 (and (realp (session-cost session)) (session-cost session)))
         "")))
 
