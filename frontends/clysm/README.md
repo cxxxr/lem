@@ -140,7 +140,8 @@ copies an image of the computer too) and decodes it before the editor gets it.
 Text is drawn larger or smaller with an attribute that has `:scale` (2: twice
 the size): `(lem-clysm:insert-text point "Title" :scale 2 :attribute
 'lem:syntax-keyword-attribute)`, or `lem-clysm:scaled-attribute`. It takes
-`(ceiling (* scale width))` columns and `(ceiling scale)` lines, and the text
+`(* scale width)` columns (not rounded, so that the text does not move where
+Lem cuts it, at the cursor) and `(ceiling scale)` lines, and the text
 and images of a line stand on its bottom, so that one buffer has text of
 several sizes and images between them; `M-x rich-text-sample` shows one.
 

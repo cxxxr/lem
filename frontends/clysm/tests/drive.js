@@ -279,6 +279,15 @@ module.exports = (win, app) => {
                   && after.parentElement === img.parentElement.parentElement);
       })()`)));
 
+      // the larger text does not move where the cursor is (Lem cuts it there)
+      const titleEnd = () => js(`(() => { const l = [...document.querySelectorAll('.lem-line')]
+          .find((l) => l.textContent.includes('on Clysm') && [...l.children].some((s) => s.style.fontSize === '2.5em'));
+        const last = l && l.lastElementChild;
+        return last ? parseFloat(last.style.left) + parseFloat(last.style.width) : null; })()`);
+      const ends = [];
+      for (let i = 0; i < 4; i++) { ends.push(await titleEnd()); await key('f', ['control']); await sleep(150); }
+      check('larger text under the cursor', ends[0] !== null && ends.every((e) => Math.abs(e - ends[0]) < 0.5), ends.join(' '));
+
       const width = await lisp('(lem:display-width)');
       win.setContentSize(700, 400);
       check('resize', await until(async () => (await lisp('(lem:display-width)')) !== width));

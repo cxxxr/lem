@@ -190,15 +190,17 @@ of a name is made again for a new theme)")
 ;;; ---- text of other sizes
 ;;;
 ;;; Text whose attribute has :SCALE (a positive number: 2 is twice the
-;;; size) is drawn that much larger: it takes CEILING (* SCALE WIDTH)
-;;; columns and CEILING SCALE lines, and the text of its line stands on the
-;;; same baseline (the bottom of the line).
+;;; size) is drawn that much larger: it takes (* SCALE WIDTH) columns, not
+;;; rounded (Lem cuts text into objects where the cursor is, and where the
+;;; kind of characters changes: rounded widths would move the text after a
+;;; cut), and CEILING SCALE lines; the text of its line stands on the same
+;;; baseline (the bottom of the line).
 
 (defun attribute-scale (attribute)
   "The :SCALE of ATTRIBUTE, or NIL for text of the usual size."
   (let* ((attribute (and attribute (lem:ensure-attribute attribute nil)))
          (scale (and attribute (lem:attribute-value attribute :scale))))
-    (and (realp scale) (plusp scale) (/= scale 1) scale)))
+    (and (realp scale) (plusp scale) (/= scale 1) (rationalize scale))))
 
 (defun text-object-scale (object)
   (attribute-scale (lem-core/display:text-object-attribute object)))
@@ -211,7 +213,8 @@ of a name is made again for a new theme)")
     (lem-core/display:text-object
      (let ((width (lem:string-width (lem-core/display:text-object-string object)))
            (scale (text-object-scale object)))
-       (if scale (ceiling (* width scale)) width)))
+       ;; (exact: a rational number of columns)
+       (if scale (* width scale) width)))
     (t 0)))
 
 (defun object-height (object)
@@ -275,7 +278,8 @@ cursor is."
   (let ((segments '()))
     (dolist (object objects (nreverse segments))
       (when (and y (cursor-object-p object))
-        (lem:set-last-print-cursor (view-window view) x y))
+        ;; (a column after larger text is not a whole one)
+        (lem:set-last-print-cursor (view-window view) (floor x) y))
       (let ((segment (object-segment object x view)))
         (when segment
           (push (if (cursor-object-p object) (mark-cursor segment) segment) segments)))
@@ -389,7 +393,9 @@ buffer, or NIL if all of it is shown."
 
 ;;; ---- components
 
-(defun px (n) (format nil "~,2Fpx" n))
+(defun px (n)
+  "N pixels, for CSS (N may be a rational number)."
+  (format nil "~,2Fpx" (float n 1d0)))
 
 (defun cell-box (x y width height)
   "The CSS of a box of WIDTH x HEIGHT cells at column X, line Y."
@@ -432,7 +438,7 @@ text; NIL for a background (the rest of a line...), which takes the line."
                                                  (and (> line-height char-height) (px line-height)))
                                                 ((/= height char-height) (px height)))
                                           (and scale (px height))
-                                          scale
+                                          (and scale (float scale 1d0))
                                           style)
                       (if image
                           (destructuring-bind (url width height) image
