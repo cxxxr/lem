@@ -327,11 +327,26 @@ the cursor."
 ;;; ---- the buffer
 
 (defun fence-p (string)
-  "The fence (``` or ~~~) that STRING opens or closes a code block with, or NIL."
+  "The fence that STRING begins with: three or more ` or ~ (all of them,
+\"````\" for four), or NIL."
   (let ((start (position #\Space string :test-not #'char=)))
-    (when (and start (<= start 3) (<= (+ start 3) (length string)))
-      (let ((head (subseq string start (+ start 3))))
-        (and (member head '("```" "~~~") :test #'string=) head)))))
+    (when (and start (<= start 3) (member (char string start) '(#\` #\~)))
+      (let* ((mark (char string start))
+             (end (or (position mark string :start start :test-not #'char=) (length string))))
+        (when (<= 3 (- end start))
+          (subseq string start end))))))
+
+(defun fence-line (fence string)
+  "The fence of STRING if it opens a code block (FENCE NIL) or closes the
+one that FENCE opened (the same mark, at least as many, nothing after them),
+or NIL: a ``` in a block of ```` is a line of the block."
+  (let ((this (fence-p string)))
+    (cond ((null this) nil)
+          ((null fence) this)
+          ((and (char= (char this 0) (char fence 0))
+                (<= (length fence) (length this))
+                (string= "" (string-trim " " (subseq string (+ (search this string) (length this))))))
+           this))))
 
 (defun buffer-windows (buffer)
   (remove buffer (lem:window-list) :key #'lem:window-buffer :test-not #'eq))
@@ -394,23 +409,24 @@ a margin below); the lines of folds are not counted."
                       (decorator (make-decorator :point point :line line
                                                  :reveal (eql line cursor) :width width
                                                  :folded (member line folded)))
-                      (this-fence (fence-p string)))
+                      (this-fence (fence-line fence string)))
                  (unless hidden
                    (loop for (from) in ranges
                          for cell on counts
                          when (<= from line) do (incf (car cell))))
                  (cond
                    ;; ``` lang: the language small, the marks hidden
-                   ((and this-fence (or (null fence) (string= fence this-fence)))
+                   (this-fence
                     (when shown
                       (add-line-background decorator :code-block)
-                      (let ((marks (+ (search this-fence string) 3)))
+                      (let ((marks (+ (search this-fence string) (length this-fence))))
                         (if (decorator-folded decorator)
                             (show-as decorator 0 marks (list "▸ " (md-attribute :bullet)))
                             (hide decorator 0 marks))
                         (add-overlay decorator marks (length string) :fence)))
                     (setf language (and (null fence)
-                                        (string-trim " `~" (subseq string (+ (search this-fence string) 3))))
+                                        (string-trim " `~" (subseq string (+ (search this-fence string)
+                                                                             (length this-fence)))))
                           fence (if fence nil this-fence)))
                    (fence
                     (when shown
@@ -444,8 +460,8 @@ not headings), or the end of the buffer.  With LEVEL 6, the next heading."
         (lem:buffer-end end)
         (return end))
       (let* ((string (lem:line-string end))
-             (this-fence (fence-p string)))
-        (cond ((and this-fence (or (null fence) (string= fence this-fence)))
+             (this-fence (fence-line fence string)))
+        (cond (this-fence
                (setf fence (if fence nil this-fence)))
               ((and (null fence)
                     (let ((other (heading-level string)))
@@ -459,7 +475,7 @@ not headings), or the end of the buffer.  With LEVEL 6, the next heading."
       (unless (lem:line-offset end 1)
         (lem:buffer-end end)
         (return end))
-      (when (equal (fence-p (lem:line-string end)) fence)
+      (when (fence-line fence (lem:line-string end))
         (unless (lem:line-offset end 1) (lem:line-end end))
         (return end)))))
 
@@ -468,8 +484,8 @@ not headings), or the end of the buffer.  With LEVEL 6, the next heading."
   (let ((fence nil))
     (lem:with-point ((p (lem:buffer-start-point (lem:point-buffer point))))
       (loop until (lem:same-line-p p point)
-            do (let ((this (fence-p (lem:line-string p))))
-                 (when (and this (or (null fence) (string= fence this)))
+            do (let ((this (fence-line fence (lem:line-string p))))
+                 (when this
                    (setf fence (if fence nil this))))
                (unless (lem:line-offset p 1) (return))))
     fence))
@@ -530,9 +546,9 @@ its level returns true, or a level to fold its section to."
     (lem:with-point ((point (lem:buffer-start-point buffer)))
       (loop
         (let* ((string (lem:line-string point))
-               (this-fence (fence-p string))
+               (this-fence (fence-line fence string))
                (level (and (null fence) (heading-level string))))
-          (cond ((and this-fence (or (null fence) (string= fence this-fence)))
+          (cond (this-fence
                  (setf fence (if fence nil this-fence)))
                 ((and level (not (hidden-line-p point)))
                  (let ((fold (funcall function level)))

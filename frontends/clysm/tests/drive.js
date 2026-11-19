@@ -332,6 +332,9 @@ module.exports = (win, app) => {
         await key('y');
         check('claude answers', await until(async () => { const c = await chat(); return c.includes('Done: **fake.txt** says hi.') && c.includes('$0.0012'); }, 10000), await chat());
         check('claude wrote the file', fs.existsSync(path.join(project, 'fake.txt')));
+        // a ``` in what a tool said (the fake's result has one) does not end the block it is shown in
+        check('claude: the end is not in a code block',
+              (await lisp('(lem:with-point ((p (lem:buffer-end-point (lem-clysm::session-chat (first lem-clysm::*claude-sessions*))))) (lem:line-offset p -1) (lem-clysm::in-code-block-p p))')) === 'NIL');
         // permission modes: Shift-Tab, and bypassPermissions once claude is started allowing it
         const mode = () => lisp('(lem-clysm::session-mode (first lem-clysm::*claude-sessions*))');
         await lisp('(lem:send-event (lambda () (lem-clysm:claude-code-cycle-mode)))');
