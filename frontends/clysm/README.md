@@ -120,7 +120,13 @@ line between windows side by side; the tab bar (`tabbar-view`, a header
 window); the minibuffer (the prompt and the message of the frame); the popups
 (the other floating windows). The minibuffer and the popups
 (`floating-view`) have their borders and are classes `lem-minibuffer` and
-`lem-popup` of the page, so that `lem.css` gives each its own look.
+`lem-popup` of the page, so that `lem.css` gives each its own look. Text drawn
+with some of Lem's attributes (the modeline's, frame-multiplexer's tabs, the
+selected item of a menu, the prompt) has the class `lem-a-NAME` of the
+attribute, and the cursor `lem-cursor`; `lem.css` makes the surfaces (bars,
+cards, borders, the accent) from the colours of the theme, as Zed and VS
+Code do: square tabs, the prompt and its completion as one card, a scroll
+bar for each window.
 
 **Input** (`src/input.lisp`). Keys are typed into a text field that follows
 the cursor, so that an input method shows its composition there: keys with a
@@ -201,5 +207,6 @@ Integration gets a page that says so.
 | `desktop/` | the page, `boot.lisp` (which also saves the heap image) and `package.json` of the application, `lem`, its client, `link-image.mjs` (one module), and `train.js` and `hint-image.mjs` (compilation hints) |
 | `web/` | the page for a browser (`index.html`, `boot.lisp`, `welcome.lisp`), `pack.mjs`, `make-html.mjs` |
 | `lem.css` | the look of both pages |
+| `fonts/` | JetBrains Mono (the text) and Inter (the bars), under the SIL Open Font License: copied next to the desktop page, put into the page for a browser |
 | `build.sh`, `build-web.sh` | build `build/clysm/desktop/`, `build/clysm/web/lem.html` |
 | `tests/` | `make test-clysm`: `run.sh`, `drive.js` (types into the application), `web-shell.js` (the page in a plain window) |

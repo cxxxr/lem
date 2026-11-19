@@ -1,4 +1,16 @@
 /* lem.css — the page of Lem on Clysm (desktop/index.html, web/index.html) */
+/* the fonts, in fonts/ (SIL Open Font License; web/make-html.mjs puts them
+   into the page): JetBrains Mono for the text, Inter for the bars */
+@font-face { font-family: 'JetBrains Mono'; font-weight: 400; font-style: normal;
+             src: url(fonts/JetBrainsMono-Regular.woff2) format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-weight: 700; font-style: normal;
+             src: url(fonts/JetBrainsMono-Bold.woff2) format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-weight: 400; font-style: italic;
+             src: url(fonts/JetBrainsMono-Italic.woff2) format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-weight: 700; font-style: italic;
+             src: url(fonts/JetBrainsMono-BoldItalic.woff2) format('woff2'); }
+@font-face { font-family: 'Inter'; font-weight: 100 900; font-style: normal;
+             src: url(fonts/InterVariable.woff2) format('woff2'); }
 html, body { margin: 0; height: 100%; overflow: hidden; background: #1d1f21; }
 #lem { position: fixed; inset: 0; }
 #status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -15,34 +27,82 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #1d1f21; }
 .lem-tabbars { z-index: 2; }
 .lem-minibuffers { z-index: 3; }
 .lem-popups { z-index: 4; }
+/* the surfaces, from the theme's colours as Zed's and VS Code's: the text
+   on the background, the bars a little lighter, the cards (popups, the
+   minibuffer) lighter still, thin borders; the accent is the theme's colour
+   of the selected item of a menu */
+.lem-screen {
+  --lem-surface: color-mix(in srgb, var(--lem-foreground) 5%, var(--lem-background));
+  --lem-elevated: color-mix(in srgb, var(--lem-foreground) 8%, var(--lem-background));
+  --lem-border: color-mix(in srgb, var(--lem-foreground) 13%, var(--lem-background));
+  --lem-element: color-mix(in srgb, var(--lem-foreground) 16%, var(--lem-background));
+  --lem-selected: color-mix(in srgb, var(--lem-accent) 32%, var(--lem-elevated));
+  --lem-muted: color-mix(in srgb, var(--lem-foreground) 55%, var(--lem-background));
+  --lem-ui-font: Inter, 'Noto Sans', 'Noto Sans CJK JP', system-ui, sans-serif;
+}
 .lem-view { position: absolute; overflow: hidden; background: var(--lem-background); }
-/* the modeline: a hairline above it, its coloured parts (the position,
-   "All"...) as chips; the first span is the bar itself */
-.lem-modeline { position: absolute; overflow: hidden;
-                box-shadow: inset 0 1px 0 color-mix(in srgb, currentColor 12%, transparent); }
-.lem-modeline .lem-line > span:not(:first-child) { top: 2px; height: calc(100% - 4px);
-                                                   line-height: calc(var(--lem-line-height) - 4px);
-                                                   border-radius: 4px; }
+
+/* the scroll bar of a window: thin, brighter under the mouse */
+.lem-scrollbar { position: absolute; right: 2px; width: 6px; min-height: 12px; border-radius: 3px;
+                 pointer-events: none; opacity: 0.45; transition: opacity 0.15s;
+                 background: color-mix(in srgb, var(--lem-foreground) 30%, transparent); }
+.lem-window:hover .lem-scrollbar { opacity: 1; }
+
+/* the line between windows side by side */
 .lem-separator { position: absolute; pointer-events: none; }
 .lem-separator::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%;
-                         border-left: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
-/* the tab bar: the tabs as rounded pills on the bar */
-.lem-tabbar .lem-line > span:not(.lem-fill) { top: 1px; height: calc(100% - 2px);
-                                              line-height: calc(var(--lem-line-height) - 2px);
-                                              border-radius: 6px; }
-.lem-tabbar .lem-line > span.lem-fill { background: transparent !important; }
-/* a popup or the minibuffer: a rounded card, half a cell around the window */
+                         border-left: 1px solid var(--lem-border); }
+
+/* the modeline: a bar of the UI font under a hairline; the text keeps the
+   theme's colours, the position ("All", "Top"...) is a chip */
+.lem-modeline { position: absolute; overflow: hidden; background: var(--lem-surface);
+                box-shadow: inset 0 1px 0 var(--lem-border);
+                font-family: var(--lem-ui-font); font-size: 0.88em; }
+.lem-modeline .lem-line > span { background: transparent !important; font-weight: 500 !important; }
+.lem-modeline:has(.lem-a-modeline-inactive) { color: var(--lem-muted); }
+.lem-modeline:has(.lem-a-modeline-inactive) .lem-line > span { opacity: 0.7; }
+.lem-modeline .lem-line > span.lem-a-modeline-posline-attribute,
+.lem-modeline .lem-line > span.lem-a-inactive-modeline-posline-attribute {
+  top: 3px; height: calc(100% - 6px); line-height: calc(var(--lem-line-height) - 6px);
+  border-radius: 4px; text-align: center; font-weight: 500 !important;
+  background: var(--lem-element) !important; color: var(--lem-foreground) !important; }
+
+/* the tab bar: square tabs; the current one has the colour of the text,
+   an accent on its top and no line under it */
+.lem-tabbar { background: var(--lem-surface); box-shadow: inset 0 -1px 0 var(--lem-border);
+              font-family: var(--lem-ui-font); font-size: 0.88em; }
+.lem-tabbar .lem-line > span { background: transparent !important; text-align: center; }
+.lem-tabbar .lem-line > span.lem-a-frame-multiplexer-frame-name-attribute {
+  color: var(--lem-muted) !important; font-weight: normal !important;
+  box-shadow: inset -1px 0 0 var(--lem-border); }
+.lem-tabbar .lem-line > span.lem-a-frame-multiplexer-active-frame-name-attribute {
+  color: var(--lem-foreground) !important; font-weight: 500 !important;
+  background: var(--lem-background) !important;
+  box-shadow: inset 0 2px 0 var(--lem-accent), inset -1px 0 0 var(--lem-border),
+              inset 1px 0 0 var(--lem-border); }
+
+/* a popup or the minibuffer: a card, half a cell around the window */
 .lem-popup, .lem-minibuffer { position: absolute; }
 .lem-border { position: absolute; inset: 0; box-sizing: border-box; pointer-events: none;
-              background: var(--lem-background); border-radius: 8px;
-              border: 1px solid color-mix(in srgb, currentColor 18%, transparent); }
+              background: var(--lem-elevated); border-radius: 8px;
+              border: 1px solid var(--lem-border); }
 .lem-border-left-border { border-width: 0 0 0 1px; border-radius: 0; }
 .lem-bordered > .lem-view { background: transparent; }
-.lem-popup.lem-bordered .lem-border { box-shadow: 0 8px 24px rgb(0 0 0 / 0.45), 0 2px 6px rgb(0 0 0 / 0.3); }
-.lem-minibuffer.lem-bordered .lem-border { box-shadow: 0 12px 36px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.3); }
-/* the selected item of a popup: a rounded row */
-.lem-popup .lem-line > span:first-child { border-top-left-radius: 4px; border-bottom-left-radius: 4px; }
-.lem-popup .lem-line > span:last-child { border-top-right-radius: 4px; border-bottom-right-radius: 4px; }
+.lem-popup.lem-bordered > .lem-border { box-shadow: 0 8px 24px rgb(0 0 0 / 0.4), 0 2px 6px rgb(0 0 0 / 0.25); }
+.lem-minibuffer.lem-bordered > .lem-border { box-shadow: 0 12px 36px rgb(0 0 0 / 0.5), 0 2px 8px rgb(0 0 0 / 0.25); }
+/* the text of the minibuffer on its card (the cursor stays) */
+.lem-minibuffer.lem-bordered .lem-line > span:not(.lem-cursor) { background: transparent !important; }
+/* the prompt and the completion under it: one card (a command palette),
+   with a line between them */
+.lem-join-below > .lem-border { border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+                                border-bottom-color: transparent; }
+.lem-join-above > .lem-border { border-top-left-radius: 0; border-top-right-radius: 0;
+                                box-shadow: 0 20px 28px -12px rgb(0 0 0 / 0.5) !important; }
+/* a menu (completion...): its items on the card, the selected one a
+   rounded row tinted with the accent */
+.lem-popup:has(.lem-a-popup-menu-attribute) .lem-line > span { background: transparent !important; }
+.lem-popup .lem-line:has(> .lem-a-popup-menu-attribute) { background: var(--lem-selected); border-radius: 4px; }
+.lem-popup .lem-line > span.lem-a-popup-menu-attribute { color: var(--lem-foreground) !important; }
 .lem-line { position: absolute; left: 0; right: 0; }
 .lem-line > span { position: absolute; top: 0; height: 100%; overflow: hidden; }
 /* the keys are typed here; it stays at the cursor for input methods */

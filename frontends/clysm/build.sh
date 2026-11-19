@@ -59,6 +59,7 @@ cp host/common.mjs host/jsffi.mjs host/link.mjs ui/electron/main.js ui/electron/
 cp "$here/lem.css" "$here/load-lem.lisp" "$here/desktop/boot.lisp" "$here/desktop/package.json" \
    "$here/desktop/lem" "$here/desktop/train.js" "$here/desktop/hint-image.mjs" \
    "$here/desktop/link-image.mjs" "$out/"
+rm -rf "$out/fonts" && cp -r "$here/fonts" "$out/fonts"
 # worlds (Clysm's contrib/world/): images in workers that the Lisp mode connects to
 cp contrib/world/worker.js "$out/world-worker.js"
 cp contrib/world/boot.lisp "$out/world-boot.lisp"

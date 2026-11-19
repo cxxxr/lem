@@ -14,7 +14,10 @@ const module = (file) => fs.readFileSync(path.join(root, file), 'utf8')
   .replace(/^export /gm, '');
 const host = ['host/jsffi.mjs', 'host/common.mjs', 'host/web/clysm.mjs', 'host/web/vfs.mjs'].map(module).join('\n');
 const values = {
-  CSS: fs.readFileSync(path.join(here, '..', 'lem.css'), 'utf8'),
+  // (the fonts of the CSS as data: URLs)
+  CSS: fs.readFileSync(path.join(here, '..', 'lem.css'), 'utf8')
+    .replace(/url\(fonts\/([^)]+)\)/g, (all, file) =>
+      `url(data:font/woff2;base64,${fs.readFileSync(path.join(here, '..', 'fonts', file)).toString('base64')})`),
   HOST: host,
   IMAGE: zlib.gzipSync(fs.readFileSync(image), { level: 9 }).toString('base64'),
   FILES: fs.readFileSync(files).toString('base64'),
