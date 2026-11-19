@@ -154,29 +154,58 @@ begins to where the next one begins (its margin with it), the last to its end."
                      (multiple-value-bind (start end) (window-node-extent child split-type)
                        (- end start)))))
 
-(defun distribute-size (total current fixed proportional)
+(defun distribute-size (total current fixed weights)
   "Share TOTAL among children whose sizes are CURRENT: those that are FIXED
-(a list of booleans) keep their size, the others share the rest, equally or
-(PROPORTIONAL) as they shared it.  If the fixed ones leave the others less
-than two lines (or columns) each, none is fixed."
+(a list of booleans) keep their size, the others share the rest as their
+WEIGHTS.  If the fixed ones leave the others less than two lines (or columns)
+each, none is fixed.  The sizes, and as second value what each would have
+had without rounding."
   (let* ((flexible (count nil fixed))
          (rest (- total (loop :for size :in current :for f :in fixed :when f :sum size))))
     (when (or (zerop flexible) (< rest (* 2 flexible)))
       (setf fixed (make-list (length current) :initial-element nil)
             flexible (length current)
             rest total))
-    (let* ((weights (loop :for size :in current :for f :in fixed
-                          :unless f :collect (if proportional (max 1 size) 1)))
+    (let* ((weights (loop :for weight :in weights :for f :in fixed
+                          :unless f :collect (max 1 weight)))
            (sum (reduce #'+ weights))
-           (shares (mapcar (lambda (weight) (floor (* rest weight) sum)) weights))
+           (exact (mapcar (lambda (weight) (/ (* rest weight) sum)) weights))
+           (shares (mapcar #'floor exact))
            (left (- rest (reduce #'+ shares))))
-      ;; what the rounding left, one by one from the first
-      (loop :for cell :on shares
-            :while (plusp left)
-            :do (incf (car cell))
-                (decf left))
-      (loop :for size :in current :for f :in fixed
-            :collect (if f size (pop shares))))))
+      ;; what the rounding left, one by one to those it took the most from
+      ;; (not always the first: resizing back and forth would make it grow)
+      (dolist (index (stable-sort (loop :for i :from 0 :below (length exact) :collect i)
+                                  #'>
+                                  :key (lambda (i) (- (nth i exact) (nth i shares)))))
+        (when (<= left 0) (return))
+        (incf (nth index shares))
+        (decf left))
+      (values (loop :for size :in current :for f :in fixed
+                    :collect (if f size (pop shares)))
+              (loop :for size :in current :for f :in fixed
+                    :collect (if f size (pop exact)))))))
+
+;;; Fitted to the frame again and again (a window dragged larger), the
+;;; windows would drift from their shares as their sizes are rounded: what
+;;; each would have had is kept (on its first window, for the split it is in)
+;;; and used again as long as its size is still that one rounded.
+
+(defun child-first-window (child)
+  (first (window-tree-flatten-n-tree child)))
+
+(defun remembered-share (child key size)
+  "The size CHILD had without rounding in the split KEY, if SIZE is still
+that one rounded; otherwise SIZE."
+  (let ((entry (assoc key (window-parameter (child-first-window child) 'layout-shares)
+                      :test #'equal)))
+    (if (and entry (< (abs (- (cdr entry) size)) 1))
+        (cdr entry)
+        size)))
+
+(defun remember-share (child key exact)
+  (let* ((window (child-first-window child))
+         (shares (remove key (window-parameter window 'layout-shares) :key #'car :test #'equal)))
+    (setf (window-parameter window 'layout-shares) (acons key exact shares))))
 
 (defun lay-out-windows (window-tree proportional)
   "Give the windows of WINDOW-TREE the room of the frame: along each split,
@@ -194,20 +223,28 @@ or (PROPORTIONAL) as they shared it."
                                     (:vsplit (if (frame-enable-window-modeline-per-window (current-frame))
                                                  0
                                                  (frame-window-bottom-margin (current-frame))))))
-                          (sizes (distribute-size total
-                                                  (current-slot-sizes children split-type)
-                                                  (mapcar (lambda (child)
-                                                            (window-size-fixed-in-p child split-type))
-                                                          children)
-                                                  proportional)))
-                     (loop :for (child . rest-children) :on children
-                           :for size :in sizes
-                           :for inner := (if rest-children (- size margin) size)
-                           :do (ecase split-type
-                                 (:hsplit (rec child x y inner height)
-                                          (incf x size))
-                                 (:vsplit (rec child x y width inner)
-                                          (incf y size)))))))))
+                          (key (cons split-type (child-first-window node)))
+                          (current (current-slot-sizes children split-type)))
+                     (multiple-value-bind (sizes exact)
+                         (distribute-size total
+                                          current
+                                          (mapcar (lambda (child)
+                                                    (window-size-fixed-in-p child split-type))
+                                                  children)
+                                          (if proportional
+                                              (mapcar (lambda (child size) (remembered-share child key size))
+                                                      children current)
+                                              (make-list (length children) :initial-element 1)))
+                       (loop :for (child . rest-children) :on children
+                             :for size :in sizes
+                             :for share :in exact
+                             :for inner := (if rest-children (- size margin) size)
+                             :do (remember-share child key share)
+                                 (ecase split-type
+                                   (:hsplit (rec child x y inner height)
+                                            (incf x size))
+                                   (:vsplit (rec child x y width inner)
+                                            (incf y size))))))))))
     (rec (convert-window-n-tree window-tree)
          (topleft-window-x (current-frame))
          (topleft-window-y (current-frame))

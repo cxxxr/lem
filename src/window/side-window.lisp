@@ -25,6 +25,13 @@
                               :border 0))
          (balance-windows))))
 
+(defun place-leftside-window (window)
+  "Give the left-side WINDOW the height of the frame, at its left (after the
+display was resized)."
+  (check-type window leftside-window)
+  (window-set-size window (window-width window) (max-window-height (current-frame)))
+  (window-set-pos window 0 (topleft-window-y (current-frame))))
+
 (defun delete-leftside-window ()
   (delete-window (frame-leftside-window (current-frame)))
   (setf (frame-leftside-window (current-frame)) nil)

@@ -1059,8 +1059,15 @@ in it."
   (declare (ignore window))
   (refresh-markdown-buffers))
 
+(defun refresh-markdown-after-resize (window)
+  "A window was resized (the screen, a split): the lines it shows now are
+decorated before the screen is drawn, not after the next command."
+  (declare (ignore window))
+  (refresh-markdown-buffers))
+
 (lem:add-hook lem:*post-command-hook* 'refresh-markdown-after-command)
 (lem:add-hook lem:*window-scroll-functions* 'refresh-markdown-after-scroll)
+(lem:add-hook lem:*window-size-change-functions* 'refresh-markdown-after-resize)
 
 ;;; Markdown buffers turn it on: Lem's Markdown mode is loaded when it is
 ;;; first used (extensions.lisp), then its hook is given this.

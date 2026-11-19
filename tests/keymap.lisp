@@ -60,3 +60,12 @@ timeout so a regression fails CI cleanly instead of hanging it."
               (error (e) (cons :error e)))))
       (ok (eq result :ok))
       (ok (search "real-command" (or output ""))))))
+
+(deftest multi-column-list-quits-with-c-g
+  "C-g closes a multi-column-list (list-buffers...) also when it is not bound
+to keyboard-quit (vi-mode): typed, it would filter the list."
+  (let ((prefix (lem-core::keymap-find lem/multi-column-list::*multi-column-list-mode-keymap*
+                                       (lem:parse-keyspec "C-g"))))
+    (ok (and prefix
+             (eq 'lem/multi-column-list::multi-column-list/quit
+                 (lem-core::prefix-suffix prefix))))))
