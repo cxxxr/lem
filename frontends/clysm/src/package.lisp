@@ -8,4 +8,5 @@
            ;; text of other sizes
            #:scaled-attribute #:insert-text #:rich-text-sample
            ;; Markdown (markdown.lisp)
-           #:markdown-live-mode #:*markdown-live-by-default* #:markdown-toggle-task))
+           #:markdown-live-mode #:*markdown-live-by-default* #:markdown-toggle-task
+           #:markdown-fold-region #:markdown-fold-or-indent #:markdown-cycle-folds))
