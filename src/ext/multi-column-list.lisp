@@ -21,6 +21,8 @@
      :keymap *multi-column-list-mode-keymap*))
 
 (define-key *multi-column-list-mode-keymap* 'keyboard-quit 'multi-column-list/quit)
+;; (C-g too: in vi-mode it is not keyboard-quit, and typed it would filter the list)
+(define-key *multi-column-list-mode-keymap* "C-g" 'multi-column-list/quit)
 (define-key *multi-column-list-mode-keymap* 'escape 'multi-column-list/quit)
 (define-key *multi-column-list-mode-keymap* 'next-line 'multi-column-list/down)
 (define-key *multi-column-list-mode-keymap* "Tab" 'multi-column-list/down)

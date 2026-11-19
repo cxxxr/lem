@@ -328,6 +328,13 @@ module.exports = (win, app) => {
       check('markdown redrawn after a change',
             await until(() => js("[...document.querySelectorAll('.lem-windows .lem-line')].some((l) => l.textContent.includes('☑ a task'))")),
             await js("[...document.querySelectorAll('.lem-windows .lem-line')].map((l) => l.textContent).join(' | ')"));
+      // the screen resized (larger text, then back): the lines shown again are decorated, with no command
+      await lisp('(lem:send-event (lambda () (lem-clysm::set-font-size (+ lem-clysm::*font-size* 16))))');
+      await sleep(800);
+      await lisp('(lem:send-event (lambda () (lem-clysm::set-font-size (- lem-clysm::*font-size* 16))))');
+      check('markdown decorated after a resize',
+            await until(() => js("[...document.querySelectorAll('.lem-windows .lem-line')].some((l) => l.textContent.includes('│ ccc │ d  │'))")),
+            await js("[...document.querySelectorAll('.lem-windows .lem-line')].map((l) => l.textContent).join(' | ')"));
       await key('x', ['control']); await key('s', ['control']); await sleep(300);   // (saved: C-x C-c does not ask)
       // Claude Code, with tests/fake-claude.mjs (LEM_CLAUDE_COMMAND): in the desktop application
       if (!web) {
@@ -397,6 +404,8 @@ module.exports = (win, app) => {
         check('remote: screen', screen.includes('== window'), screen);
         const [, line] = await ask('POST', '/eval', `(lem-clysm::segments-text '((0 6 "日本語" "" "lem-wide") (6 3 "abc" "") (9 4 "Big" "" nil nil 4/3)) 20)`);
         check('remote: wide and larger text on the screen', line.trim() === '"日本語abcBig"', line);
+        const [, small] = await ask('POST', '/eval', `(lem-clysm::segments-text '((0 3.4 "lisp" "" nil nil 0.85) (4 3 "xyz" "")) 10)`);
+        check('remote: smaller text on the screen', small.trim() === '"lispxyz"', small);
         const [, clipped] = await ask('POST', '/eval', `(mapcar #'third (lem-clysm::clip-segments '((0 5 "abcde" "") (5 10 "0123456789" "") (12 3 "xyz" "")) 9))`);
         check('modeline: the left cut before the right', clipped.trim() === '("abcde" "012…")', clipped);
         check('remote: no token, no answer', (await fetch(url + '/state')).status === 401);

@@ -1065,6 +1065,8 @@ the windows of the frame keep their share of it (a window whose height or
 width is fixed keeps it)."
   (dolist (window (frame-header-windows (current-frame)))
     (window-set-size window (display-width) (header-window-height window)))
+  (alexandria:when-let (window (frame-leftside-window (current-frame)))
+    (place-leftside-window window))
   (alexandria:when-let (window (frame-rightside-window (current-frame)))
     (resize-rightside-window window))
   (alexandria:when-let (window (frame-bottomside-window (current-frame)))
