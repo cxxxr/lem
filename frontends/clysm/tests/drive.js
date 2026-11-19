@@ -288,6 +288,30 @@ module.exports = (win, app) => {
       for (let i = 0; i < 4; i++) { ends.push(await titleEnd()); await key('f', ['control']); await sleep(150); }
       check('larger text under the cursor', ends[0] !== null && ends.every((e) => Math.abs(e - ends[0]) < 0.5), ends.join(' '));
 
+      // Markdown as it reads: a larger heading, the marks hidden, an image
+      const md = path.join(work, 'notes.md');
+      await writeFile(md, '# Title\n\nSome **bold** text.\n\n![a dot](dot.svg)\n\n- [ ] a task\n');
+      await lisp(`(lem:send-event (lambda () (lem:find-file ${lispString(md)})))`);
+      await key('n', ['control']); await sleep(300);   // (a command: the buffer is decorated after it)
+      const rendered = () => js(`(() => {
+        const spans = [...document.querySelectorAll('.lem-windows .lem-line > span')];
+        const title = spans.find((s) => s.textContent.includes('Title'));
+        const lines = [...document.querySelectorAll('.lem-windows .lem-line')].map((l) => l.textContent);
+        return !!(title && title.style.fontSize === '2em' && !title.textContent.includes('#')
+                  && lines.some((l) => l.includes('Some bold text.'))
+                  && lines.some((l) => l.includes('☐ a task'))
+                  && [...document.querySelectorAll('.lem-windows .lem-image img')].some((i) => i.complete && i.naturalWidth === 64));
+      })()`);
+      check('markdown rendered', await until(rendered, 15000),
+            await js("[...document.querySelectorAll('.lem-windows .lem-line')].map((l) => l.textContent).join(' | ')"));
+      // the line of the cursor shows its marks
+      await key('n', ['control']); await sleep(300);
+      check('markdown marks on the line of the cursor',
+            await until(() => js("[...document.querySelectorAll('.lem-windows .lem-line')].some((l) => l.textContent.includes('Some **bold** text.'))")));
+      await lisp('(lem:send-event (lambda () (lem:move-to-line (lem:current-point) 7) (lem-clysm:markdown-toggle-task)))');
+      check('markdown task toggled', await until(async () => (await lisp('(lem:buffer-text (lem:current-buffer))')).includes('- [x] a task')));
+      await key('x', ['control']); await key('s', ['control']); await sleep(300);   // (saved: C-x C-c does not ask)
+
       const width = await lisp('(lem:display-width)');
       win.setContentSize(700, 400);
       check('resize', await until(async () => (await lisp('(lem:display-width)')) !== width));

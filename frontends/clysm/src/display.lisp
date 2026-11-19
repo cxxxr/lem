@@ -29,6 +29,10 @@
 
 (defstruct canvas
   (lines #() :type simple-vector)       ; a list of segments for each line
+  ;; the lines that each line takes: more than 1 for an image or larger
+  ;; text, whose line covers the lines under it (Lem does not draw them,
+  ;; and they are not cleared: Lem knows what they had)
+  (heights #() :type simple-vector)
   (modeline nil)
   (background nil)                      ; of a floating window
   (dirty t))
@@ -49,6 +53,7 @@
    (canvas :initform (make-canvas) :reader view-canvas)
    ;; what the page shows: copies of the canvas
    (lines :initform #() :accessor view-lines)
+   (heights :initform #() :accessor view-heights)
    ;; a popup under the prompt is drawn as one card with it (a command
    ;; palette): :below for the prompt, :above for the popup, or NIL
    (joined :initform nil :accessor view-joined)
@@ -60,9 +65,12 @@
 (defun resize-canvas (view)
   (let* ((canvas (view-canvas view))
          (old (canvas-lines canvas))
-         (new (make-array (max 0 (view-height view)) :initial-element nil)))
+         (new (make-array (max 0 (view-height view)) :initial-element nil))
+         (heights (make-array (max 0 (view-height view)) :initial-element 1)))
     (replace new old)
+    (replace heights (canvas-heights canvas))
     (setf (canvas-lines canvas) new
+          (canvas-heights canvas) heights
           (canvas-dirty canvas) t)))
 
 (defun publish-view (view)
@@ -71,6 +79,7 @@
     (when (canvas-dirty canvas)
       (setf (canvas-dirty canvas) nil
             (view-lines view) (copy-seq (canvas-lines canvas))
+            (view-heights view) (copy-seq (canvas-heights canvas))
             (view-modeline view) (canvas-modeline canvas)
             (view-background view) (canvas-background canvas)))))
 
@@ -299,10 +308,10 @@ cursor is."
 
 (defun draw-line (view x y objects height)
   "Draw OBJECTS on line Y of VIEW from column X (the line is cleared from X).
-The HEIGHT - 1 lines under it are under an image: they are cleared."
+The line takes HEIGHT lines: it covers the HEIGHT - 1 lines under it."
   (let ((canvas (view-canvas view)))
-    (loop for below from (1+ y) below (min (+ y height) (length (canvas-lines canvas)))
-          do (setf (svref (canvas-lines canvas) below) nil))
+    (when (< -1 y (length (canvas-lines canvas)))
+      (setf (svref (canvas-heights canvas) y) (max 1 (or height 1))))
     (when (< -1 y (length (canvas-lines canvas)))
       (let ((kept (remove-if-not (lambda (segment) (< (first segment) x))
                                  (svref (canvas-lines canvas) y)))
@@ -322,9 +331,11 @@ The HEIGHT - 1 lines under it are under an image: they are cleared."
           (canvas-dirty canvas) t)))
 
 (defun clear-lines-from (view y)
-  (let ((lines (canvas-lines (view-canvas view))))
+  (let ((lines (canvas-lines (view-canvas view)))
+        (heights (canvas-heights (view-canvas view))))
     (loop for i from (max 0 y) below (length lines)
-          do (setf (svref lines i) nil))
+          do (setf (svref lines i) nil
+                   (svref heights i) 1))
     (setf (canvas-dirty (view-canvas view)) t)))
 
 ;;; ---- roles
@@ -448,11 +459,17 @@ text; NIL for a background (the rest of a line...), which takes the line."
               segments))))
 
 (defun view-line-nodes (view)
-  (let ((cw *char-width*) (ch *char-height*))
+  "The lines of VIEW, but those that a taller line above covers."
+  (let ((cw *char-width*) (ch *char-height*)
+        (heights (view-heights view))
+        (covered-until 0))
     (loop for segments across (view-lines view)
           for y from 0
-          when segments
-            collect (ui:keyed y (screen-line segments (* y ch) cw ch)))))
+          for height = (if (< y (length heights)) (svref heights y) 1)
+          when (and segments (<= covered-until y))
+            collect (ui:keyed y (screen-line segments (* y ch) cw ch))
+          when (<= covered-until y)
+            do (setf covered-until (+ y height)))))
 
 (defun background-style (view)
   (if (view-background view) (format nil "background:~A;" (view-background view)) ""))

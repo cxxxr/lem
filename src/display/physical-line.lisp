@@ -380,12 +380,16 @@ Assumes inputs are already reduced (no adjacent mergeable objects)."
         :return t))
 
 (defun invalidate-cache (window y height)
+  "Drop the cache entries of the rows that a line drawn at Y, HEIGHT high,
+overlaps: a taller line covers the entries of the rows under it, which no
+longer hold what those entries say (a later line equal to one of them
+would otherwise not be drawn)."
   (setf (drawing-cache window)
         (remove-if (lambda (elt)
                      (destructuring-bind (cache-y cache-height drawing-objects) elt
                        (declare (ignore drawing-objects))
-                       (and (<= cache-y y)
-                            (<= (+ y height) (+ cache-y cache-height)))))
+                       (and (< cache-y (+ y height))
+                            (< y (+ cache-y cache-height)))))
                    (drawing-cache window))))
 
 (defun remove-drawing-cache-entries-from (entries y)

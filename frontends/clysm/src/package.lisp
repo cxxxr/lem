@@ -6,4 +6,6 @@
            #:load-image #:load-image-url #:image-attribute #:insert-image #:insert-image-file
            #:image-viewer-mode
            ;; text of other sizes
-           #:scaled-attribute #:insert-text #:rich-text-sample))
+           #:scaled-attribute #:insert-text #:rich-text-sample
+           ;; Markdown (markdown.lisp)
+           #:markdown-live-mode #:*markdown-live-by-default* #:markdown-toggle-task))

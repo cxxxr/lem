@@ -54,6 +54,9 @@
 (sys::%defvar-host *show-before-loading*
   (js:eval "() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)))"))
 
+(defvar *after-extension-load* '()
+  "(system . function): FUNCTION is called when the extension SYSTEM is loaded.")
+
 (defun load-extension (system &key quiet)
   "Load the extension SYSTEM if it is not loaded yet; with QUIET, without
 telling it (before the editor has started)."
@@ -69,6 +72,9 @@ telling it (before the editor has started)."
         (js:await (js:funcall *show-before-loading*))))
     (let ((*compile-verbose* nil) (*load-verbose* nil))
       (asdf:load-system system))
+    (loop for (name . function) in *after-extension-load*
+          when (string= name system)
+            do (funcall function))
     (unless quiet
       (lem:message nil))))
 
