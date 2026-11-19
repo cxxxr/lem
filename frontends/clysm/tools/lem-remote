@@ -1,0 +1,43 @@
+#!/usr/bin/env node
+// frontends/clysm/tools/lem-remote — look at Lem on Clysm (the desktop
+// application) from outside, once it answers (M-x remote-start):
+//
+//   lem-remote screen         the text of each window on the screen
+//   lem-remote state          the windows, the buffers, the echo area
+//   lem-remote log            what the page wrote to the console (errors...)
+//   lem-remote eval 'FORMS'   evaluate Lisp forms in the editor (- : read them from stdin)
+//   lem-remote keys 'C-x o'   type keys
+//
+// It reads where Lem answers from remote.json of Lem's home: $LEM_REMOTE,
+// $LEM_HOME/remote.json, ~/.lem/remote.json or ~/.config/lem/remote.json
+// (the newest of those that exist).
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+const candidates = [process.env.LEM_REMOTE,
+                    process.env.LEM_HOME && path.join(process.env.LEM_HOME, 'remote.json'),
+                    path.join(os.homedir(), '.lem', 'remote.json'),
+                    path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'lem', 'remote.json')]
+  .filter((f) => f && fs.existsSync(f))
+  .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+if (!candidates.length) {
+  console.error('lem-remote: no remote.json: run M-x remote-start in Lem');
+  process.exit(2);
+}
+const { url, token } = JSON.parse(fs.readFileSync(candidates[0], 'utf8'));
+const [command, ...rest] = process.argv.slice(2);
+const routes = { screen: ['GET', '/screen'], state: ['GET', '/state'], log: ['GET', '/log'],
+                 eval: ['POST', '/eval'], keys: ['POST', '/keys'] };
+if (!routes[command]) {
+  console.error('usage: lem-remote screen | state | log | eval FORMS | keys KEYS');
+  process.exit(2);
+}
+const [method, route] = routes[command];
+const body = method === 'POST' ? (rest[0] === '-' || rest.length === 0 ? fs.readFileSync(0, 'utf8') : rest.join(' ')) : undefined;
+fetch(url + route, { method, body, headers: { authorization: 'Bearer ' + token } })
+  .then(async (response) => {
+    process.stdout.write(await response.text());
+    process.exit(response.ok ? 0 : 1);
+  })
+  .catch((e) => { console.error('lem-remote: ' + e.message + ' (' + url + '; is Lem running? M-x remote-start)'); process.exit(1); });

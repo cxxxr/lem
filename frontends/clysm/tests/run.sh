@@ -19,6 +19,7 @@ status=0
 passed() { tee "$dir/out" | grep -E '^(ok|FAIL|lem)'; grep -qE '^lem[^:]*: ok$' "$dir/out"; }
 (cd "$desktop" &&
    LEM_HOME="$dir/home/" LEM_TEST_DIR="$dir" CLYSM_USER_DATA="$dir/desktop-data" \
+   LEM_CLAUDE_COMMAND="$here/tests/fake-claude.mjs" \
    CLYSM_ELECTRON_TEST="$here/tests/drive.js" \
    timeout 180 "$electron" . --ozone-platform=headless 2>&1) | passed || status=1
 LEM_WEB_PAGE="$web/lem.html" CLYSM_USER_DATA="$dir/web-data" \

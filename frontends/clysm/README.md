@@ -165,6 +165,44 @@ unfolds what begins on the line (a bracket that closes on a later line, or
 the lines indented under it) and `C-c Shift-Tab` folds every outer region
 or unfolds all: Lem's `fold-region-default`.
 
+**Claude Code** (`src/claude.lisp`, in the desktop application). `M-x
+claude-code` talks with Claude Code about the project of the buffer: the
+conversation, shown as Markdown as it reads, and an input under it (Return
+sends, `C-j` a new line). The answer is written as it comes; before a tool
+that needs it, Claude asks, and the conversation shows what it would do (the
+diff of an edit, the new file, the command): `y` allows it, `a` allows it and
+the same from now on, `n` does not (and says what to do instead). What each
+tool did is folded under its line (Tab). Files that Claude changed are read
+again in the buffers that have them, unless they were changed there.
+`Shift-Tab` in the input cycles the permission mode (default, acceptEdits,
+plan), `C-c C-c` interrupts, `M-x claude-code-send-region` puts the region,
+with its file and lines, into the input, and `M-x claude-code-continue`
+starts with the last conversation of the project. It runs the `claude`
+command as the Agent SDK does (`claude -p` with JSON lines in and out,
+`--permission-prompt-tool stdio`), with Node.js's `child_process`;
+`lem-clysm:*claude-command*` (or `LEM_CLAUDE_COMMAND`) and
+`lem-clysm:*claude-arguments*` (`'("--model" "opus")`...) choose how.
+`make test-clysm` talks with `tests/fake-claude.mjs`.
+
+**From outside** (`src/remote.lisp`, `tools/lem-remote`, in the desktop
+application). `M-x remote-start` makes the application answer HTTP on
+127.0.0.1, so that a program of the computer, an agent such as Claude Code
+among them, looks at the editor as it is and acts in it, to find what is
+wrong:
+
+```
+$ frontends/clysm/tools/lem-remote screen         # the text of each window
+$ frontends/clysm/tools/lem-remote state          # windows, buffers, echo area
+$ frontends/clysm/tools/lem-remote log            # what the page wrote to the console
+$ frontends/clysm/tools/lem-remote eval '(lem:current-buffer)'
+$ frontends/clysm/tools/lem-remote keys 'C-x o'
+```
+
+Where it answers is in `remote.json` of Lem's home, readable by the user
+only: the port and a token that each request gives; requests of web pages
+are refused. `M-x remote-stop` ends it; `(lem-clysm:remote-start)` in
+init.lisp starts it with Lem.
+
 **Input** (`src/input.lisp`). Keys are typed into a text field that follows
 the cursor, so that an input method shows its composition there: keys with a
 modifier or without a character come from `keydown`, characters from
@@ -235,7 +273,7 @@ Integration gets a page that says so.
 
 | Path | Contents |
 |---|---|
-| `lem-clysm.asd`, `lem-clysm-lisp.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `image` (images, text of other sizes), `markdown` (Markdown as it reads), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
+| `lem-clysm.asd`, `lem-clysm-lisp.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `image` (images, text of other sizes), `markdown` (Markdown as it reads), `claude` (Claude Code), `remote` (seen from outside), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
 | `setup.lisp` | finds the stubs, Clysm's worlds and usocket for a page, and `lem-clysm`, for ASDF |
 | `stubs/` | the libraries that Lem on Clysm does without: tree-sitter, subprocesses, an HTTP client, log4cl, deploy |
 | `clysm/` | Clysm (submodule) |
