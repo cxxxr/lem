@@ -398,7 +398,10 @@ several folds that each hide arbitrary character ranges across multiple buffer l
               (setf virtual-items
                     (stable-sort (nreverse virtual-items) #'< :key #'virtual-item-charpos))
               (setf (values string attributes) (expand-tab string attributes tab-width))
-              (let ((charpos (point-charpos point)))
+              ;; POINT may start the line in the middle (a wrapped line scrolled): its charpos counts
+              ;; the characters of the buffer, the string has lost those that invisible overlays hide.
+              (let ((charpos (min (length string)
+                                  (adjust-charpos-for-splices (point-charpos point) splice-ops))))
                 (when (< 0 charpos)
                   (psetf string (subseq string charpos)
                          attributes (lem/buffer/line:subseq-elements

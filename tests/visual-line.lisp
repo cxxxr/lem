@@ -179,3 +179,23 @@
         (ok (= (position-at-point point)
                (position-at-point (point-at-line buffer 2)))
             "cursor landed inside the fold on the first hidden line")))))
+;; a window may begin a wrapped line in its middle: the charpos of its view point counts the
+;; characters of the buffer, which an invisible overlay before it has taken out of the string
+(deftest logical-line-from-the-middle-of-a-line-with-hidden-text
+  (lem-fake-interface:with-fake-interface ()
+    (with-testing-buffer (buffer (make-text-buffer (lines "abcdefghij")))
+      (with-point ((start (buffer-start-point buffer))
+                   (end (buffer-start-point buffer)))
+        (character-offset end 4)
+        (overlay-put (make-overlay start end (make-attribute)) :invisible t))
+      (flet ((shown-from (charpos)
+               (with-point ((point (buffer-start-point buffer)))
+                 (character-offset point charpos)
+                 (lem-core::logical-line-string
+                  (lem-core::create-logical-line
+                   point
+                   (buffer-overlays buffer)
+                   (lem-core::get-active-modes-class-instance buffer))))))
+        (ok (equal "ij" (shown-from 8)) "after the hidden text, from the same character")
+        (ok (equal "efghij" (shown-from 2)) "in the hidden text, from its end")
+        (ok (equal "" (shown-from 10)) "at the end of the line")))))
