@@ -254,6 +254,23 @@
              (ok (= ascent cjk-ascent))
              (ok own))))))))
 
+(deftest glyph-source-lookups-do-not-allocate
+  ;; glyph-source runs for every glyph drawn on every frame, so once a
+  ;; glyph's source is known, looking it up again must not cons.
+  (with-ttf ()
+    (call-with-font
+     (font:make-font-config :size 28 :system-fallback nil)
+     (lambda (font)
+       (let ((latin (font:font-latin-normal-font font))
+             (characters "aα日─"))
+         (loop :for character :across characters
+               :do (font:glyph-source font latin character))
+         (let ((before (sb-ext:get-bytes-consed)))
+           (loop :repeat 10000
+                 :do (loop :for character :across characters
+                           :do (font:glyph-source font latin character)))
+           (ok (< (- (sb-ext:get-bytes-consed) before) 1024))))))))
+
 (deftest text-fonts-have-shaping-chains
   ;; Each text font is shaped with the same file first, then the fonts
   ;; SDL_ttf falls back to for it, in the same order.

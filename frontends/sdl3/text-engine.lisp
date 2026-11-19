@@ -32,7 +32,7 @@ ones still in use are recreated on the next frame.")
 (defstruct (text-engine (:constructor %make-text-engine (pointer)))
   "SDL_ttf's text engine for one renderer, and the texts drawn with it."
   pointer
-  ;; TTF_Font pointer address -> (string -> TTF_Text) hash table.
+  ;; TTF_Font pointer address -> (character -> TTF_Text) hash table.
   (texts (make-hash-table))
   ;; Number of texts in TEXTS.
   (text-count 0))
@@ -64,27 +64,28 @@ use."
   (clrhash (text-engine-texts engine))
   (setf (text-engine-text-count engine) 0))
 
-(defun get-text (engine font string)
-  "Return ENGINE's cached text drawing STRING with FONT, creating it if
+(defun get-text (engine font character)
+  "Return ENGINE's cached text drawing CHARACTER with FONT, creating it if
 needed, or NIL if SDL_ttf cannot create it."
   (let* ((address (cffi:pointer-address font))
          (all-texts (text-engine-texts engine))
          (texts (or (gethash address all-texts)
-                    (setf (gethash address all-texts) (make-hash-table :test 'equal)))))
-    (or (gethash string texts)
+                    (setf (gethash address all-texts) (make-hash-table)))))
+    (or (gethash character texts)
         (progn
           (when (>= (text-engine-text-count engine) *max-texts*)
             (clear-text-cache engine)
-            (setf texts (setf (gethash address all-texts) (make-hash-table :test 'equal))))
-          (let ((text (lem-sdl3/ffi:create-text (text-engine-pointer engine) font string)))
+            (setf texts (setf (gethash address all-texts) (make-hash-table))))
+          (let ((text (lem-sdl3/ffi:create-text (text-engine-pointer engine) font
+                                                (string character))))
             (when text
               (incf (text-engine-text-count engine))
-              (setf (gethash string texts) text)))))))
+              (setf (gethash character texts) text)))))))
 
-(defun draw-glyph (engine font string x y color)
-  "Draw STRING with FONT through ENGINE in COLOR (a lem:color) with its
+(defun draw-glyph (engine font character x y color)
+  "Draw CHARACTER with FONT through ENGINE in COLOR (a lem:color) with its
 top-left corner at (X, Y).  Return true if it was drawn."
-  (let ((text (get-text engine font string)))
+  (let ((text (get-text engine font character)))
     (when text
       (lem-sdl3/ffi:set-text-color text
                                    (lem:color-red color)

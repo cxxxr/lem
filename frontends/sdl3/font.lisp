@@ -103,8 +103,9 @@ skipped.")
   ;; the font itself followed by its fallbacks, in the order SDL_ttf tries
   ;; them; see glyph-source.
   (fallback-chains (make-hash-table))
-  ;; (address . char-code) -> (ASCENT . OWN-P); memoizes glyph-source.
-  (glyph-sources (make-hash-table :test 'equal))
+  ;; Pointer address of each text font -> (char-code -> (ASCENT . OWN-P));
+  ;; memoizes glyph-source.  Two levels so that lookups don't cons a key.
+  (glyph-sources (make-hash-table))
   ;; The same font files opened for shaping (lem-sdl3/shaper), or NIL when
   ;; FreeType or HarfBuzz is missing.
   (shaping-fonts '())
@@ -213,9 +214,12 @@ open (e.g. an attribute's own font) return TTF-FONT's ascent and T."
          (chain (gethash address (font-fallback-chains font))))
     (if (null chain)
         (values (lem-sdl3/ffi:font-ascent ttf-font) t)
-        (let* ((key (cons address (char-code character)))
-               (source (or (gethash key (font-glyph-sources font))
-                           (setf (gethash key (font-glyph-sources font))
+        (let* ((sources (or (gethash address (font-glyph-sources font))
+                            (setf (gethash address (font-glyph-sources font))
+                                  (make-hash-table))))
+               (code (char-code character))
+               (source (or (gethash code sources)
+                           (setf (gethash code sources)
                                  (let ((link (or (find-if (lambda (link)
                                                             (lem-sdl3/ffi:font-has-glyph-p
                                                              (car link) character))
