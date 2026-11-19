@@ -245,6 +245,23 @@ of a name is made again for a new theme)")
      (let ((attribute (lem-core/display:text-object-attribute object)))
        (and attribute (lem:cursor-attribute-p (lem:ensure-attribute attribute nil)))))))
 
+;;; Text of characters wider than a column (Japanese, Chinese, emoji...):
+;;; the font that has them (the text's font has none) draws them in its own
+;;; widths, not in the 2 columns Lem gives them, so that text after them
+;;; would not be where Lem puts it (the cursor in a Japanese line was away
+;;; from its character).  Each of their characters is drawn in a box of its
+;;; columns (screen-line).
+
+(defun wide-text-p (string)
+  "Whether STRING has characters that do not take one column."
+  (/= (lem:string-width string) (length string)))
+
+(defun text-class (class string)
+  "CLASS (of an attribute, or NIL), and lem-wide for a text of wide characters."
+  (if (wide-text-p string)
+      (format nil "~@[~A ~]lem-wide" class)
+      class))
+
 (defun object-segment (object x view)
   "The segment (column width text style class image scale) that draws OBJECT
 at column X, or NIL: IMAGE is (url width height) of an image, in pixels, and
@@ -271,13 +288,13 @@ SCALE the size of the text (NIL: the usual one)."
              string
              (attribute-style (lem:ensure-attribute
                                (lem-core/display:text-object-attribute object) nil))
-             (attribute-class (lem-core/display:text-object-attribute object)))))
+             (text-class (attribute-class (lem-core/display:text-object-attribute object)) string))))
     (lem-core/display:text-object
      (let ((string (lem-core/display:text-object-string object)))
        (list x (object-width object) string
              (attribute-style (lem:ensure-attribute
                                (lem-core/display:text-object-attribute object) nil))
-             (attribute-class (lem-core/display:text-object-attribute object))
+             (text-class (attribute-class (lem-core/display:text-object-attribute object)) string)
              nil
              (text-object-scale object))))))
 
@@ -451,11 +468,19 @@ text; NIL for a background (the rest of a line...), which takes the line."
                                           (and scale (px height))
                                           (and scale (float scale 1d0))
                                           style)
-                      (if image
-                          (destructuring-bind (url width height) image
-                            (:img :src url :draggable "false"
-                                  :style (format nil "width:~A;height:~A;" (px width) (px height))))
-                          text)))))
+                      (cond (image
+                             (destructuring-bind (url width height) image
+                               (:img :src url :draggable "false"
+                                     :style (format nil "width:~A;height:~A;" (px width) (px height)))))
+                            ((and class (search "lem-wide" class))
+                             ;; each character in a box of its columns
+                             (map 'list (lambda (char)
+                                          (:span :style (format nil "width:~A;"
+                                                                (px (* (lem:string-width (string char))
+                                                                       char-width (or scale 1))))
+                                            (string char)))
+                                  text))
+                            (t text))))))
               segments))))
 
 (defun view-line-nodes (view)
