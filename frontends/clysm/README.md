@@ -181,7 +181,14 @@ starts with the last conversation of the project. It runs the `claude`
 command as the Agent SDK does (`claude -p` with JSON lines in and out,
 `--permission-prompt-tool stdio`), with Node.js's `child_process`;
 `lem-clysm:*claude-command*` (or `LEM_CLAUDE_COMMAND`) and
-`lem-clysm:*claude-arguments*` (`'("--model" "opus")`...) choose how.
+`lem-clysm:*claude-arguments*` (`'("--model" "opus")`...) choose how. With
+`(setf lem-clysm:*claude-allow-bypass-permissions* t)` claude is started
+with `--allow-dangerously-skip-permissions`, and `Shift-Tab` goes to
+bypassPermissions after plan (or `M-x claude-code-bypass-permissions`):
+Claude then runs every tool without asking, which the conversation and the
+modeline (⚠ BYPASS) say. `lem-clysm:*claude-permission-mode*` is the mode a
+session starts in; `M-x claude-code-restart` starts the session again with
+the options as they are, and its last conversation.
 `make test-clysm` talks with `tests/fake-claude.mjs`.
 
 **From outside** (`src/remote.lisp`, `tools/lem-remote`, in the desktop
