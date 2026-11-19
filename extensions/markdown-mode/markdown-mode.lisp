@@ -45,11 +45,18 @@
           (column (point-column point)))
       (+ column (- tab-width (rem column tab-width))))))
 
+(defun call-without-lsp-mode (function)
+  "Call FUNCTION with lsp-mode kept off, if lem-lsp-mode is loaded."
+  (if (find-package :lem-lsp-mode)
+      (uiop:symbol-call :lem-lsp-mode :call-without-lsp-mode function)
+      (funcall function)))
+
 (defmethod execute :around ((mode markdown-mode) command argument)
   "This method switches to the major mode corresponding to a language when a language name is specified in a Markdown code block."
-  (lem-lsp-mode:without-lsp-mode ()
-    (with-major-mode (current-major-mode-at-point (current-point))
-      (call-next-method))))
+  (call-without-lsp-mode
+   (lambda ()
+     (with-major-mode (current-major-mode-at-point (current-point))
+       (call-next-method)))))
 
 (defun %markdown-insert-link (&optional arg)
   "Insert a Markdown link.

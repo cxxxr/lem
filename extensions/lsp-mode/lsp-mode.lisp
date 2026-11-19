@@ -23,7 +23,8 @@
            :spec-initialization-options
            :register-lsp-method
            :define-language-spec
-           :without-lsp-mode))
+           :without-lsp-mode
+           :call-without-lsp-mode))
 (in-package :lem-lsp-mode/lsp-mode)
 
 ;; FIXME:
@@ -34,11 +35,15 @@
 Its purpose is to disable lsp-mode in a code block within markdown-mode, which can cause unexpected behavior in lsp-mode.
 Setting this variable to T while working within a markdown code block will avoid this problem.")
 
+(defun call-without-lsp-mode (function)
+  "Call FUNCTION, preventing lsp-mode from being enabled while it runs."
+  (let ((*disable* t))
+    (funcall function)))
+
 (defmacro without-lsp-mode (() &body body)
   "This macro prevents enabling lsp-mode within the body.
 Use this when lsp-mode has side effects that you want to avoid."
-  `(let ((*disable* T))
-     ,@body))
+  `(call-without-lsp-mode (lambda () ,@body)))
 
 ;;;
 (define-condition not-found-program (editor-error)
