@@ -24,6 +24,7 @@ lem-icon.svg
 GIT_IGNORE.*
 
 lem
+!/frontends/clysm/desktop/lem
 lem-ncurses
 lem-server
 lem-client
