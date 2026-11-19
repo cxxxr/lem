@@ -30,7 +30,8 @@
                "log4cl"
                "split-sequence"
                "str"
-               "dexador"
+               "usocket"
+               "quri"
                "cl-mustache"
                ;; "lem-encodings"
                #+sbcl
@@ -220,7 +221,6 @@
                              (:file "auto-save")
                              (:file "frame-multiplexer")
                              (:file "filer")
-                             (:file "deepl")
                              (:file "themes")
                              (:file "detective")
                              (:file "read-only-sources")
@@ -236,10 +236,17 @@
   :pathname "src/ext"
   :components ((:file "extension-commands" :if-feature :quicklisp)))
 
+(defsystem "lem/deepl"
+  :description "Lem's commands that translate with DeepL"
+  :depends-on ("lem/core" "dexador")
+  :pathname "src/ext"
+  :components ((:file "deepl")))
+
 (defsystem "lem/extensions"
   :depends-on (;; Disabled for Nix build due to QL-DIST dependency
                #-nix-build
                "lem/extension-manager"
+               "lem/deepl"
                #+sbcl
                "lem-template"
                "lem-welcome"
