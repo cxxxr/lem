@@ -1,7 +1,8 @@
 (defpackage :lem-sdl3/drawing
   (:use :cl
         :lem-core/display)
-  (:local-nicknames (:display :lem-sdl3/display)
+  (:local-nicknames (:box-drawing :lem-sdl3/box-drawing)
+                    (:display :lem-sdl3/display)
                     (:text-engine :lem-sdl3/text-engine)
                     (:text-shaping :lem-sdl3/text-shaping)
                     (:view :lem-sdl3/view)))
@@ -205,6 +206,34 @@ display:display-box-drawing-band."
                                            (char string 0)
                                            (and attribute (lem:attribute-bold attribute))))))
 
+(defun drawn-box-character (drawing-object)
+  "Return DRAWING-OBJECT's character if it is a box-drawing or block
+character drawn as rectangles (see box-drawing:glyph-rects), else NIL.
+Characters with an attribute's own font keep that font."
+  (let ((string (text-object-string drawing-object)))
+    (and (= 1 (length string))
+         (null (lem-core:attribute-font (text-object-attribute drawing-object)))
+         (box-drawing:glyph-rects (char string 0) 1 1)
+         (char string 0))))
+
+(defun blend-color (foreground background amount)
+  "The colour AMOUNT (0 to 1) of the way from BACKGROUND to FOREGROUND."
+  (flet ((mix (f b) (round (+ b (* amount (- f b))))))
+    (lem:make-color (mix (lem:color-red foreground) (lem:color-red background))
+                    (mix (lem:color-green foreground) (lem:color-green background))
+                    (mix (lem:color-blue foreground) (lem:color-blue background)))))
+
+(defun draw-box-character (display character x y width height foreground background)
+  "Draw the box-drawing or block CHARACTER in the WIDTH × HEIGHT cell at
+(X, Y) as rectangles in FOREGROUND, or for a shade, in FOREGROUND blended
+into BACKGROUND."
+  (multiple-value-bind (rects shade) (box-drawing:glyph-rects character width height)
+    (let ((color (if (and shade background)
+                     (blend-color foreground background shade)
+                     foreground)))
+      (loop :for (rect-x rect-y rect-width rect-height) :in rects
+            :do (draw-rect display (+ x rect-x) (+ y rect-y) rect-width rect-height color)))))
+
 (defun text-engine-font (drawing-object display)
   "Return the font to draw DRAWING-OBJECT's glyph with through the text
 engine, or NIL if it is drawn from a surface instead.  Fonts an attribute
@@ -265,8 +294,9 @@ surface when `text-engine-font' allows it; they land on the same pixels.
 
 When there is no surface (SDL_ttf renders nothing for an empty string) only
 the background phase draws anything."
-  (let* ((engine-font (and clip (text-engine-font drawing-object display)))
-         (surface (unless engine-font (get-surface drawing-object display)))
+  (let* ((box-character (and clip (drawn-box-character drawing-object)))
+         (engine-font (and clip (not box-character) (text-engine-font drawing-object display)))
+         (surface (unless (or box-character engine-font) (get-surface drawing-object display)))
          (surface-width (if surface (lem-sdl3/ffi:surface-width surface) 0))
          (surface-height (if surface (lem-sdl3/ffi:surface-height surface) 0))
          (cell-height (object-height drawing-object display))
@@ -281,6 +311,11 @@ the background phase draws anything."
              (draw-cursor display x y cell-width cell-height background))
             (t
              (draw-rect display x y cell-width cell-height background))))
+    (when (and box-character (member phase '(:glyph :both)))
+      (draw-box-character display box-character x y cell-width cell-height
+                          (lem-core:attribute-foreground-with-reverse
+                           (glyph-attribute drawing-object display))
+                          background))
     (when (and engine-font (member phase '(:glyph :both)))
       (text-engine:draw-glyph (display:display-text-engine display)
                               engine-font
