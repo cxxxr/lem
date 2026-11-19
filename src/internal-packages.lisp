@@ -14,6 +14,7 @@
    :folder-object
    :icon-object
    :image-object
+   :image-object-attribute
    :image-object-height
    :image-object-image
    :image-object-width

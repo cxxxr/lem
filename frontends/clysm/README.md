@@ -128,6 +128,16 @@ cards, borders, the accent) from the colours of the theme, as Zed and VS
 Code do: square tabs, the prompt and its completion as one card, a scroll
 bar for each window.
 
+**Images** (`src/image.lisp`). An image file (PNG, JPEG, GIF, WebP, SVG,
+BMP, ICO, AVIF) opens in an image buffer, fitted to the window: `+` `-` `0`
+zoom, `f` `w` `h` fit it to the window, its width, its height. `M-x
+insert-image-file` puts an image into the text of a buffer, and Lisp code
+does with `lem-clysm:load-image` and `lem-clysm:insert-image` (text whose
+attribute has `:image`, which Lem draws as an image object: here an `<img>`
+over the cells it takes). The page reads the file with its file system (the
+computer's, or the files in memory in a browser, where `M-x open-local-file`
+copies an image of the computer too) and decodes it before the editor gets it.
+
 **Input** (`src/input.lisp`). Keys are typed into a text field that follows
 the cursor, so that an input method shows its composition there: keys with a
 modifier or without a character come from `keydown`, characters from
@@ -198,7 +208,7 @@ Integration gets a page that says so.
 
 | Path | Contents |
 |---|---|
-| `lem-clysm.asd`, `lem-clysm-lisp.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
+| `lem-clysm.asd`, `lem-clysm-lisp.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `image` (images), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
 | `setup.lisp` | finds the stubs, Clysm's worlds and usocket for a page, and `lem-clysm`, for ASDF |
 | `stubs/` | the libraries that Lem on Clysm does without: tree-sitter, subprocesses, an HTTP client, log4cl, deploy |
 | `clysm/` | Clysm (submodule) |

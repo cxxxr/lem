@@ -17,4 +17,5 @@
                (:file "input")
                (:file "frontend")
                (:file "browser")
+               (:file "image")
                (:file "extensions")))

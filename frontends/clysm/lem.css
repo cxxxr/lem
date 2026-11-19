@@ -104,6 +104,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #1d1f21; }
 .lem-popup .lem-line:has(> .lem-a-popup-menu-attribute) { background: var(--lem-selected); border-radius: 4px; }
 .lem-popup .lem-line > span.lem-a-popup-menu-attribute { color: var(--lem-foreground) !important; }
 .lem-line { position: absolute; left: 0; right: 0; }
+/* an image over the cells it takes (display.lisp) */
+.lem-line > span.lem-image { overflow: visible; z-index: 1; }
+.lem-line > span.lem-image > img { display: block; image-rendering: auto; }
 .lem-line > span { position: absolute; top: 0; height: 100%; overflow: hidden; }
 /* the keys are typed here; it stays at the cursor for input methods */
 .lem-input { position: absolute; z-index: 20; width: 1px; padding: 0; margin: 0; border: 0;

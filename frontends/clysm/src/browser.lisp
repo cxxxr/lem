@@ -8,11 +8,14 @@
 (in-package :lem-clysm)
 
 (sys::%defvar-host *choose-local-file*
-  (js:eval "(done) => { const input = document.createElement('input');
+  (js:eval "(directory, done) => { const input = document.createElement('input');
      input.type = 'file';
      input.addEventListener('change', () => {
        const file = input.files[0];
-       if (file) file.text().then((text) => done(file.name, text)); });
+       /* the bytes as they are: an image too */
+       if (file) file.arrayBuffer().then((data) => {
+         globalThis.__clysm_fs.writeFileSync(directory + file.name, new Uint8Array(data));
+         done(file.name); }); });
      input.click(); }"))
 
 (sys::%defvar-host *download*
@@ -22,10 +25,8 @@
      a.click();
      setTimeout(() => URL.revokeObjectURL(a.href), 10000); }"))
 
-(defun open-copied-file (name text)
+(defun open-copied-file (name)
   (let ((path (merge-pathnames (file-namestring name) (user-homedir-pathname))))
-    (with-open-file (out path :direction :output :if-exists :supersede :external-format :utf-8)
-      (write-string text out))
     (lem:find-file path)
     (lem:message "Copied ~A to ~A" name (namestring path))
     (lem:redraw-display)))
@@ -33,8 +34,9 @@
 (lem:define-command open-local-file () ()
   "Choose a file of the computer and open a copy of it in the home directory."
   (js:funcall *choose-local-file*
-              (lambda (name text)
-                (lem:send-event (lambda () (open-copied-file name text)))
+              (namestring (user-homedir-pathname))
+              (lambda (name)
+                (lem:send-event (lambda () (open-copied-file name)))
                 nil)))
 
 (lem:define-command download-file () ()

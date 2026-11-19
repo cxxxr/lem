@@ -164,16 +164,48 @@ of a name is made again for a new theme)")
             (and (plusp (hash-table-count colors))
                  (gethash (attribute-colors attribute) colors)))))))
 
+;;; ---- images
+;;;
+;;; An image is the value :IMAGE of an attribute (see image.lisp): Lem
+;;; draws text with it as an image object, of the size :WIDTH x :HEIGHT of
+;;; the attribute in pixels, or of the image's own.  It takes the cells
+;;; under it, and is drawn as an element <img> over them.
+
+(defstruct (image (:constructor %make-image (url width height)))
+  "An image loaded in the page: a URL of it, and its size in pixels."
+  url width height)
+
+(defun image-object-pixels (object)
+  "The width and height of the image OBJECT in pixels."
+  (let ((image (lem-core/display:image-object-image object)))
+    (values (or (lem-core/display:image-object-width object) (image-width image))
+            (or (lem-core/display:image-object-height object) (image-height image)))))
+
+(defun image-object-cells (object)
+  "The columns and lines of the image OBJECT."
+  (multiple-value-bind (width height) (image-object-pixels object)
+    (values (max 1 (ceiling width *char-width*))
+            (max 1 (ceiling height *char-height*)))))
+
 ;;; ---- drawing objects -> segments
 
 (defun object-width (object)
   (typecase object
+    (lem-core/display:image-object (values (image-object-cells object)))
     (lem-core/display:text-object
      (lem:string-width (lem-core/display:text-object-string object)))
     (t 0)))
 
+(defun object-height (object)
+  (typecase object
+    (lem-core/display:image-object (nth-value 1 (image-object-cells object)))
+    (t 1)))
+
 (defun cursor-object-p (object)
   (typecase object
+    (lem-core/display:image-object
+     (let ((attribute (lem-core/display:image-object-attribute object)))
+       (and attribute (lem:cursor-attribute-p (lem:ensure-attribute attribute nil)))))
     (lem-core/display:eol-cursor-object
      (lem-core/display:eol-cursor-object-true-cursor-p object))
     (lem-core/display:text-object
@@ -181,10 +213,14 @@ of a name is made again for a new theme)")
        (and attribute (lem:cursor-attribute-p (lem:ensure-attribute attribute nil)))))))
 
 (defun object-segment (object x view)
-  "The segment (column width text style class) that draws OBJECT at column X, or NIL."
+  "The segment (column width text style class [image]) that draws OBJECT at
+column X, or NIL; IMAGE is (url width height) of an image, in pixels."
   (typecase object
     (lem-core/display:void-object nil)
-    (lem-core/display:image-object nil)
+    (lem-core/display:image-object
+     (multiple-value-bind (width height) (image-object-pixels object)
+       (list x (object-width object) "" "" "lem-image"
+             (list (image-url (lem-core/display:image-object-image object)) width height))))
     (lem-core/display:eol-cursor-object
      (list x 1 " " (format nil "background:~A;"
                            (color-string (lem-core/display:eol-cursor-object-color object)))))
@@ -223,8 +259,8 @@ cursor is."
 
 (defun mark-cursor (segment)
   "SEGMENT of the cursor, with the class lem-cursor."
-  (destructuring-bind (x width text style &optional class) segment
-    (list x width text style (format nil "lem-cursor~@[ ~A~]" class))))
+  (destructuring-bind (x width text style &optional class image) segment
+    (list x width text style (format nil "lem-cursor~@[ ~A~]" class) image)))
 
 (defun objects-segments-from-right (objects view)
   (let ((x (view-width view)) (segments '()))
@@ -233,9 +269,12 @@ cursor is."
       (let ((segment (object-segment object x view)))
         (when segment (push segment segments))))))
 
-(defun draw-line (view x y objects)
-  "Draw OBJECTS on line Y of VIEW from column X (the line is cleared from X)."
+(defun draw-line (view x y objects height)
+  "Draw OBJECTS on line Y of VIEW from column X (the line is cleared from X).
+The HEIGHT - 1 lines under it are under an image: they are cleared."
   (let ((canvas (view-canvas view)))
+    (loop for below from (1+ y) below (min (+ y height) (length (canvas-lines canvas)))
+          do (setf (svref (canvas-lines canvas) below) nil))
     (when (< -1 y (length (canvas-lines canvas)))
       (let ((kept (remove-if-not (lambda (segment) (< (first segment) x))
                                  (svref (canvas-lines canvas) y)))
@@ -338,11 +377,15 @@ buffer, or NIL if all of it is shown."
   (:div :class "lem-line" :style (format nil "top:~A;height:~A;line-height:~A;"
                                          (px top) (px char-height) (px char-height))
     (mapcar (lambda (segment)
-              (destructuring-bind (x width text style &optional class) segment
+              (destructuring-bind (x width text style &optional class image) segment
                 (:span :class class
                        :style (format nil "left:~A;width:~A;~A" (px (* x char-width))
                                       (px (* width char-width)) style)
-                  text)))
+                  (if image
+                      (destructuring-bind (url width height) image
+                        (:img :src url :draggable "false"
+                              :style (format nil "width:~A;height:~A;" (px width) (px height))))
+                      text))))
             segments)))
 
 (defun view-line-nodes (view)

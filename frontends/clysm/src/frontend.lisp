@@ -207,8 +207,7 @@ of the cursor."
 (defmethod lem-if:view-height ((implementation clysm) view) (view-height view))
 
 (defmethod lem-if:render-line ((implementation clysm) view x y objects height)
-  (declare (ignore height))
-  (draw-line view x y objects))
+  (draw-line view x y objects height))
 
 (defmethod lem-if:render-line-on-modeline ((implementation clysm) view left-objects right-objects
                                            default-attribute height)
@@ -222,8 +221,7 @@ of the cursor."
   (object-width drawing-object))
 
 (defmethod lem-if:object-height ((implementation clysm) drawing-object)
-  (declare (ignore drawing-object))
-  1)
+  (object-height drawing-object))
 
 (defmethod lem-if:update-display ((implementation clysm))
   (mapc #'update-role *views*)
