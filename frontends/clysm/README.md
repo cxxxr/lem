@@ -137,6 +137,12 @@ attribute has `:image`, which Lem draws as an image object: here an `<img>`
 over the cells it takes). The page reads the file with its file system (the
 computer's, or the files in memory in a browser, where `M-x open-local-file`
 copies an image of the computer too) and decodes it before the editor gets it.
+Text is drawn larger or smaller with an attribute that has `:scale` (2: twice
+the size): `(lem-clysm:insert-text point "Title" :scale 2 :attribute
+'lem:syntax-keyword-attribute)`, or `lem-clysm:scaled-attribute`. It takes
+`(ceiling (* scale width))` columns and `(ceiling scale)` lines, and the text
+and images of a line stand on its bottom, so that one buffer has text of
+several sizes and images between them; `M-x rich-text-sample` shows one.
 
 **Input** (`src/input.lisp`). Keys are typed into a text field that follows
 the cursor, so that an input method shows its composition there: keys with a

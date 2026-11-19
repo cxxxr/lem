@@ -268,6 +268,17 @@ module.exports = (win, app) => {
       await lisp(`(lem:send-event (lambda () (lem:switch-to-buffer (lem:make-buffer "images")) (lem-clysm:insert-image-file ${lispString(svg)})))`);
       check('image in a buffer', await until(async () => (await lisp('(lem:buffer-name (lem:current-buffer))')) === '"images"' && await imageShown(64)));
 
+      // text of several sizes and an image in one buffer, on one baseline
+      await lisp('(lem:send-event (lambda () (lem-clysm:rich-text-sample)))');
+      check('text of several sizes', await until(() => js(`(() => {
+        const spans = [...document.querySelectorAll('.lem-line > span')];
+        const title = spans.find((s) => s.textContent.includes('em on Clysm') && s.style.fontSize === '2.5em');
+        const img = document.querySelector('.lem-image img');
+        const after = spans.find((s) => s.textContent.includes('with text on its baseline'));
+        return !!(title && img && img.complete && after
+                  && after.parentElement === img.parentElement.parentElement);
+      })()`)));
+
       const width = await lisp('(lem:display-width)');
       win.setContentSize(700, 400);
       check('resize', await until(async () => (await lisp('(lem:display-width)')) !== width));
