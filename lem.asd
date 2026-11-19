@@ -36,9 +36,6 @@
                #+sbcl
                sb-concurrency
                "lem-mailbox"
-               ;; Disabled for Nix build due to QL-DIST dependency
-               #-nix-build
-               "lem-extension-manager"
                #+sbcl
                "sb-sprof")
   :pathname "src"
@@ -226,7 +223,6 @@
                              (:file "deepl")
                              (:file "themes")
                              (:file "detective")
-                             (:file "extension-commands" :if-feature :quicklisp)
                              (:file "read-only-sources")
                              (:file "image-buffer")))
 
@@ -234,8 +230,17 @@
                 :serial t
                 :components ((:file "theme-list")))))
 
+(defsystem "lem/extension-manager"
+  :description "Lem's commands that install packages with Quicklisp"
+  :depends-on ("lem/core" "lem-extension-manager")
+  :pathname "src/ext"
+  :components ((:file "extension-commands" :if-feature :quicklisp)))
+
 (defsystem "lem/extensions"
-  :depends-on (#+sbcl
+  :depends-on (;; Disabled for Nix build due to QL-DIST dependency
+               #-nix-build
+               "lem/extension-manager"
+               #+sbcl
                "lem-template"
                "lem-welcome"
                "lem-lsp-mode"
