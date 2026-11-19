@@ -7,8 +7,7 @@
                "cl-package-locks"
                "alexandria"
                "split-sequence"
-               "lem-lisp-mode"
-               "lem-dashboard"
+               "lem-lisp-syntax"
                "trivial-types")
   :components ((:file "core")
                (:file "leader" :depends-on ("core"))
@@ -36,9 +35,20 @@
                (:file "utils"))
   :in-order-to ((test-op (test-op "lem-vi-mode/tests"))))
 
+(defsystem "lem-vi-mode/lisp-mode"
+  :description "The keys of Lisp mode's debugger and inspector in vi-mode"
+  :depends-on ("lem-vi-mode" "lem-lisp-mode")
+  :components ((:file "lisp-mode-binds")))
+
+(defsystem "lem-vi-mode/dashboard"
+  :description "The keys of the dashboard in vi-mode"
+  :depends-on ("lem-vi-mode" "lem-dashboard")
+  :components ((:file "dashboard-binds")))
+
 (defsystem "lem-vi-mode/tests"
   :depends-on ("lem/core"
                "lem-vi-mode"
+               "lem-lisp-mode"
                "lem-fake-interface"
                "rove"
                "cl-ppcre"

@@ -240,6 +240,8 @@
                "lem-welcome"
                "lem-lsp-mode"
                "lem-vi-mode"
+               "lem-vi-mode/lisp-mode"
+               "lem-vi-mode/dashboard"
                #+sbcl
                "lem-lisp-mode"
                #+sbcl
