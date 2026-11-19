@@ -256,6 +256,18 @@ module.exports = (win, app) => {
         console.log(`lem: the file of a client on the screen in ${ms} ms`);
       }
 
+      // images: a file opened in the viewer, and one in a buffer's text
+      const svg = path.join(work, 'dot.svg');
+      await writeFile(svg, '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48"><circle cx="32" cy="24" r="20" fill="tomato"/></svg>');
+      await key('x', ['control']); await key('f', ['control']); await sleep(300);
+      await key('a', ['control']); await key('k', ['control']);
+      await type(svg); await key('Return');
+      const imageShown = (width) => js(`[...document.querySelectorAll('.lem-image img')].some((i) => i.complete && i.naturalWidth === ${width})`);
+      check('image viewer', await until(async () => (await lisp('(lem:mode-name (lem:buffer-major-mode (lem:current-buffer)))')) === '"Image Viewer"'
+                                             && await imageShown(64)));
+      await lisp(`(lem:send-event (lambda () (lem:switch-to-buffer (lem:make-buffer "images")) (lem-clysm:insert-image-file ${lispString(svg)})))`);
+      check('image in a buffer', await until(async () => (await lisp('(lem:buffer-name (lem:current-buffer))')) === '"images"' && await imageShown(64)));
+
       const width = await lisp('(lem:display-width)');
       win.setContentSize(700, 400);
       check('resize', await until(async () => (await lisp('(lem:display-width)')) !== width));
