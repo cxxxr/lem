@@ -72,7 +72,13 @@
             :done (lem:make-attribute :foreground muted :strikethrough t)
             :rule (lem:make-attribute :foreground dim)
             :table (lem:make-attribute :foreground dim)
-            :missing (lem:make-attribute :foreground muted :italic t)))))
+            :missing (lem:make-attribute :foreground muted :italic t)
+            ;; lines of a diff
+            :added (lem:make-attribute :foreground (mix-colors foreground "#3fb950" 0.7)
+                                       :background (mix-colors background "#3fb950" 0.12))
+            :removed (lem:make-attribute :foreground (mix-colors foreground "#f85149" 0.7)
+                                         :background (mix-colors background "#f85149" 0.12))
+            :hunk (lem:make-attribute :foreground accent)))))
 
 (defun theme-key ()
   "The colours of the theme: the attributes are made again when they change."
@@ -354,6 +360,16 @@ a margin below); the lines of folds are not counted."
         when (lem:overlay-get overlay :fold)
           collect (lem:line-number-at-point (lem:overlay-start overlay))))
 
+(defun decorate-diff-line (decorator string)
+  "Colour a line of a diff: added, removed, a hunk."
+  (let ((attribute (and (plusp (length string))
+                        (case (char string 0)
+                          (#\+ (unless (eql 0 (search "+++" string)) :added))
+                          (#\- (unless (eql 0 (search "---" string)) :removed))
+                          (#\@ :hunk)))))
+    (when attribute
+      (add-overlay decorator 0 (length string) attribute))))
+
 (defun decorate-buffer (buffer)
   "Make again the overlays of the lines of BUFFER that windows show."
   (clear-markdown-overlays buffer)
@@ -364,7 +380,8 @@ a margin below); the lines of folds are not counted."
          (cursor (cursor-line buffer))
          (folded (folded-lines buffer))
          (width (* *char-width* (max 10 (- (if window (lem:window-width window) 80) 2))))
-         (fence nil))
+         (fence nil)
+         (language nil))
     (lem:with-point ((point (lem:buffer-start-point buffer)))
       (loop for line from 1
             do (let* ((string (lem:line-string point))
@@ -392,9 +409,14 @@ a margin below); the lines of folds are not counted."
                             (show-as decorator 0 marks (list "▸ " (md-attribute :bullet)))
                             (hide decorator 0 marks))
                         (add-overlay decorator marks (length string) :fence)))
-                    (setf fence (if fence nil this-fence)))
+                    (setf language (and (null fence)
+                                        (string-trim " `~" (subseq string (+ (search this-fence string) 3))))
+                          fence (if fence nil this-fence)))
                    (fence
-                    (when shown (add-line-background decorator :code-block)))
+                    (when shown
+                      (add-line-background decorator :code-block)
+                      (when (equal language "diff")
+                        (decorate-diff-line decorator string))))
                    (shown
                     (decorate-line decorator string))))
                ;; (past what every window shows)

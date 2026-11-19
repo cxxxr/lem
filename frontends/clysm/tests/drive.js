@@ -311,6 +311,43 @@ module.exports = (win, app) => {
       await lisp('(lem:send-event (lambda () (lem:move-to-line (lem:current-point) 7) (lem-clysm:markdown-toggle-task)))');
       check('markdown task toggled', await until(async () => (await lisp('(lem:buffer-text (lem:current-buffer))')).includes('- [x] a task')));
       await key('x', ['control']); await key('s', ['control']); await sleep(300);   // (saved: C-x C-c does not ask)
+      // Claude Code, with tests/fake-claude.mjs (LEM_CLAUDE_COMMAND): in the desktop application
+      if (!web) {
+        const project = path.join(work, 'project');
+        fs.mkdirSync(path.join(project, '.git'), { recursive: true });   // (the root of a project)
+        fs.writeFileSync(path.join(project, 'notes.txt'), 'notes\n');
+        await lisp(`(lem:send-event (lambda () (lem:find-file ${lispString(path.join(project, 'notes.txt'))}) (lem-clysm:claude-code)))`);
+        await sleep(1000);
+        await type('hello claude'); await key('Return');
+        const chat = () => lisp('(lem:buffer-text (lem-clysm::session-chat (first lem-clysm::*claude-sessions*)))');
+        check('claude asks', await until(async () => (await chat()).includes('Allow?'), 10000), await chat());
+        await key('y');
+        check('claude answers', await until(async () => { const c = await chat(); return c.includes('Done: **fake.txt** says hi.') && c.includes('$0.0012'); }, 10000), await chat());
+        check('claude wrote the file', fs.existsSync(path.join(project, 'fake.txt')));
+        await lisp('(lem:send-event (lambda () (lem-core/commands/window:delete-other-windows)))');
+      }
+
+      // the editor seen from outside (M-x remote-start, tools/lem-remote): in the desktop application
+      if (!web) {
+        await lisp('(lem:send-event (lambda () (lem-clysm:remote-start)))');
+        const remoteFile = path.join(process.env.LEM_HOME, 'remote.json');
+        check('remote: started', await until(() => fs.existsSync(remoteFile)));
+        const { url, token } = JSON.parse(fs.readFileSync(remoteFile, 'utf8'));
+        const ask = async (method, route, body, headers = {}) => {
+          const response = await fetch(url + route, { method, body, headers: { authorization: 'Bearer ' + token, ...headers } });
+          return [response.status, await response.text()];
+        };
+        const [, state] = await ask('GET', '/state');
+        check('remote: state', state.includes('buffers:') && state.includes('windows:'), state);
+        const [, value] = await ask('POST', '/eval', '(+ 1 2)');
+        check('remote: eval', value.trim() === '3', value);
+        const [, screen] = await ask('GET', '/screen');
+        check('remote: screen', screen.includes('== window'), screen);
+        check('remote: no token, no answer', (await fetch(url + '/state')).status === 401);
+        await lisp('(lem:send-event (lambda () (lem-clysm:remote-stop)))');
+        check('remote: stopped', await until(() => !fs.existsSync(remoteFile)));
+      }
+
       // folds in source code: C-c Tab on a form
       await lisp(`(lem:send-event (lambda () (lem:find-file ${lispString(file)}) (lem:buffer-start (lem:current-point))))`);
       await sleep(500);

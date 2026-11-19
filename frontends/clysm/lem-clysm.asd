@@ -19,4 +19,6 @@
                (:file "browser")
                (:file "image")
                (:file "extensions")
-               (:file "markdown")))
+               (:file "markdown")
+               (:file "claude")
+               (:file "remote")))
