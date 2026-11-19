@@ -145,6 +145,18 @@ Lem cuts it, at the cursor) and `(ceiling scale)` lines, and the text
 and images of a line stand on its bottom, so that one buffer has text of
 several sizes and images between them; `M-x rich-text-sample` shows one.
 
+**Markdown** (`src/markdown.lisp`). A Markdown buffer is shown as it reads
+while it is edited (`markdown-live-mode`, on by default; `M-x
+markdown-live-mode` turns it off): headings larger, **bold**, *italic*,
+~~struck~~, `code`, links, quotes, bullets and task boxes (`C-c C-t` checks
+or unchecks one), rules, tables, code blocks on a background, and images in
+place of `![alt](file or URL)`, at most as wide as the window. The marks of
+Markdown are hidden but on the line of the cursor, where they are shown dim
+to be edited, as in Obsidian's live preview. The text of the file does not
+change: these are overlays, made again after a command for the lines that
+windows show. As headings and images take more than a line, the window is
+scrolled further to keep the cursor in it.
+
 **Input** (`src/input.lisp`). Keys are typed into a text field that follows
 the cursor, so that an input method shows its composition there: keys with a
 modifier or without a character come from `keydown`, characters from
@@ -215,7 +227,7 @@ Integration gets a page that says so.
 
 | Path | Contents |
 |---|---|
-| `lem-clysm.asd`, `lem-clysm-lisp.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `image` (images), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
+| `lem-clysm.asd`, `lem-clysm-lisp.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `image` (images, text of other sizes), `markdown` (Markdown as it reads), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
 | `setup.lisp` | finds the stubs, Clysm's worlds and usocket for a page, and `lem-clysm`, for ASDF |
 | `stubs/` | the libraries that Lem on Clysm does without: tree-sitter, subprocesses, an HTTP client, log4cl, deploy |
 | `clysm/` | Clysm (submodule) |
