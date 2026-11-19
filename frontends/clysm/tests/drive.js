@@ -298,7 +298,7 @@ module.exports = (win, app) => {
 
       // Markdown as it reads: a larger heading, the marks hidden, an image
       const md = path.join(work, 'notes.md');
-      await writeFile(md, '# Title\n\nSome **bold** text.\n\n![a dot](dot.svg)\n\n- [ ] a task\n');
+      await writeFile(md, '# Title\n\nSome **bold** text.\n\n![a dot](dot.svg)\n\n- [ ] a task\n\n| a | bb |\n|---|---|\n| **ccc** | d |\n');
       await lisp(`(lem:send-event (lambda () (lem:find-file ${lispString(md)})))`);
       await key('n', ['control']); await sleep(300);   // (a command: the buffer is decorated after it)
       const rendered = () => js(`(() => {
@@ -311,6 +311,11 @@ module.exports = (win, app) => {
                   && [...document.querySelectorAll('.lem-windows .lem-image img')].some((i) => i.complete && i.naturalWidth === 64));
       })()`);
       check('markdown rendered', await until(rendered, 15000),
+            await js("[...document.querySelectorAll('.lem-windows .lem-line')].map((l) => l.textContent).join(' | ')"));
+      // a table in columns, its marks hidden
+      const tableLines = ['│ a   │ bb │', '├─────┼────┤', '│ ccc │ d  │'];
+      check('markdown table', await until(() => js(`(() => { const lines = [...document.querySelectorAll('.lem-windows .lem-line')].map((l) => l.textContent);
+        return ${JSON.stringify(tableLines)}.every((t) => lines.some((l) => l.includes(t))); })()`)),
             await js("[...document.querySelectorAll('.lem-windows .lem-line')].map((l) => l.textContent).join(' | ')"));
       // the line of the cursor shows its marks
       await key('n', ['control']); await sleep(300);
