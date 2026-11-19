@@ -306,7 +306,7 @@
                "lem-elisp-mode"
                "lem-terraform-mode"
                "lem-nix-mode"
-               "lem-markdown-mode"
+               "lem-markdown-mode/preview"
                "lem-color-preview"
                "lem-lua-mode"
                #-os-windows "lem-terminal"

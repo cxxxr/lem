@@ -12,10 +12,19 @@
 
 (defparameter *view-type* :external-browser)
 
-(defgeneric on-save (buffer view-type))
-(defgeneric on-kill (buffer view-type))
-(defgeneric on-change (buffer view-type))
-(defgeneric preview (buffer view-type))
+(defgeneric on-save (buffer view-type)
+  (:method (buffer view-type)
+    (declare (ignore buffer view-type))))
+(defgeneric on-kill (buffer view-type)
+  (:method (buffer view-type)
+    (declare (ignore buffer view-type))))
+(defgeneric on-change (buffer view-type)
+  (:method (buffer view-type)
+    (declare (ignore buffer view-type))))
+(defgeneric preview (buffer view-type)
+  (:method (buffer view-type)
+    (declare (ignore buffer))
+    (lem:editor-error "No preview of the type ~S (lem-markdown-mode/preview)" view-type)))
 
 (defun on-save-default (buffer)
   (on-save buffer *view-type*))
