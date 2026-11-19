@@ -85,8 +85,9 @@
 
 (defun guess-function-name (function)
   (etypecase function
-    (function (format nil "~a"
-		      (micros::function-name function)))
+    (function (princ-to-string
+               (or (nth-value 2 (function-lambda-expression function))
+                   function)))
     (symbol (symbol-name function))))
 
 (defun make-timer-instance (timer-class function name handle-function)
