@@ -323,6 +323,11 @@ module.exports = (win, app) => {
             await until(() => js("[...document.querySelectorAll('.lem-windows .lem-line')].some((l) => l.textContent.includes('Some **bold** text.'))")));
       await lisp('(lem:send-event (lambda () (lem:move-to-line (lem:current-point) 7) (lem-clysm:markdown-toggle-task)))');
       check('markdown task toggled', await until(async () => (await lisp('(lem:buffer-text (lem:current-buffer))')).includes('- [x] a task')));
+      // (only the lines that changed are decorated again: the task is drawn done)
+      await key('p', ['control']); await sleep(300);
+      check('markdown redrawn after a change',
+            await until(() => js("[...document.querySelectorAll('.lem-windows .lem-line')].some((l) => l.textContent.includes('☑ a task'))")),
+            await js("[...document.querySelectorAll('.lem-windows .lem-line')].map((l) => l.textContent).join(' | ')"));
       await key('x', ['control']); await key('s', ['control']); await sleep(300);   // (saved: C-x C-c does not ask)
       // Claude Code, with tests/fake-claude.mjs (LEM_CLAUDE_COMMAND): in the desktop application
       if (!web) {
