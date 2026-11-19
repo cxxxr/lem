@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lem</title>
+<link rel="stylesheet" href="lem.css">
+<style>
+/* while Lem loads */
+#status { flex-direction: column; gap: 10px; }
+#status .bar { width: 260px; height: 3px; border-radius: 2px; background: #2c2f33; overflow: hidden; }
+#status .bar div { height: 100%; width: 0; background: #81a2be; transition: width 0.15s ease-out; }
+</style>
+</head>
+<body>
+<div id="status"><div id="step">Starting Lisp</div><div class="bar"><div id="bar"></div></div></div>
+<div id="lem"></div>
+<script type="module">
+  import { loadClysm } from './clysm.mjs';
+  const status = document.getElementById('status');
+  const bar = document.getElementById('bar');
+  const step = document.getElementById('step');
+  // called by boot.lisp (load-lem.lisp): N of the TOTAL files of Lem loaded
+  globalThis.lemBoot = {
+    progress(n, total) {
+      step.textContent = n < total ? 'Loading Lem' : 'Starting the editor';
+      bar.style.width = (10 + 88 * Math.min(1, n / total)) + '%';
+    },
+    failed(message) { status.textContent = 'Lem could not start:\n' + message; },
+  };
+  // the editor has started when its screen is in the page
+  new MutationObserver((records, observer) => {
+    if (!document.getElementById('lem').firstChild) return;
+    observer.disconnect();
+    status.remove();
+  }).observe(document.getElementById('lem'), { childList: true });
+  // the output of Lisp goes to the console, line by line
+  const pending = { 1: '', 2: '' };
+  const output = (text, fd) => {
+    const lines = (pending[fd] + text).split('\n');
+    pending[fd] = lines.pop();
+    for (const line of lines) (fd === 2 ? console.error : console.log)(line);
+  };
+  try {
+    const bytes = await (await fetch('lem.wasm')).arrayBuffer();
+    bar.style.width = '5%';
+    // (lisp.eval(string) evaluates Lisp forms, e.g. from the developer tools)
+    window.lisp = await loadClysm(bytes, output, {
+      fs: require('node:fs'),
+      root: '@CLYSM_ROOT@/',
+      args: ['@APP_DIR@/boot.lisp'],
+      // Lem loaded (build.sh), else boot.lisp loads it
+      image: '@APP_DIR@/lem.image',
+      // (build.sh: which functions run, for compilation hints)
+      train: !!process.env.CLYSM_IMAGE_TRAIN,
+    });
+  } catch (e) {
+    status.textContent = 'Lem could not start:\n' + (e && e.message);
+    throw e;
+  }
+</script>
+</body>
+</html>
