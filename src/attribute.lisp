@@ -331,6 +331,27 @@ every attribute from its definition." slot-name)
 (define-attribute syntax-builtin-attribute
   (t :foreground "#FF87FF"))
 
+;;; The colors of the parentheses by depth (paren coloring of Lisp mode),
+;;; here so that a color theme names them without loading Lisp mode
+
+(define-attribute paren-color-1
+  (t :foreground "red"))
+
+(define-attribute paren-color-2
+  (t :foreground "blue"))
+
+(define-attribute paren-color-3
+  (t :foreground "green"))
+
+(define-attribute paren-color-4
+  (t :foreground "sienna4"))
+
+(define-attribute paren-color-5
+  (t :foreground "dark cyan"))
+
+(define-attribute paren-color-6
+  (t :foreground "orange"))
+
 (define-attribute document-header1-attribute
   (:light :foreground "#000000" :bold t)
   (:dark :foreground "#FFFFFF" :bold t))

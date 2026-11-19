@@ -21,23 +21,8 @@
         (enable)
         (disable))))
 
-(define-attribute paren-color-1
-  (t :foreground "red"))
-
-(define-attribute paren-color-2
-  (t :foreground "blue"))
-
-(define-attribute paren-color-3
-  (t :foreground "green"))
-
-(define-attribute paren-color-4
-  (t :foreground "sienna4"))
-
-(define-attribute paren-color-5
-  (t :foreground "dark cyan"))
-
-(define-attribute paren-color-6
-  (t :foreground "orange"))
+;; paren-color-1 ... paren-color-6 are attributes of Lem (src/attribute.lisp),
+;; exported here too, where they were defined before.
 
 (defparameter *rainbow-colors* #(paren-color-1 paren-color-2 paren-color-3 paren-color-4 paren-color-5 paren-color-6))
 

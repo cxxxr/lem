@@ -158,6 +158,12 @@
    :syntax-variable-attribute
    :syntax-type-attribute
    :syntax-builtin-attribute
+   :paren-color-1
+   :paren-color-2
+   :paren-color-3
+   :paren-color-4
+   :paren-color-5
+   :paren-color-6
    :document-header1-attribute
    :document-header2-attribute
    :document-header3-attribute
