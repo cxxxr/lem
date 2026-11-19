@@ -234,6 +234,22 @@ This is the content area in which the buffer is displayed, without any side marg
 (defun (setf window-parameter) (value window parameter)
   (setf (getf (window-parameters window) parameter) value))
 
+(defun window-height-fixed-p (window)
+  "Whether WINDOW keeps its height when the windows are balanced or fitted
+to the frame again (balance-windows, a resize of the display)."
+  (window-parameter window 'height-fixed))
+
+(defun (setf window-height-fixed-p) (value window)
+  (setf (window-parameter window 'height-fixed) value))
+
+(defun window-width-fixed-p (window)
+  "Whether WINDOW keeps its width when the windows are balanced or fitted
+to the frame again (balance-windows, a resize of the display)."
+  (window-parameter window 'width-fixed))
+
+(defun (setf window-width-fixed-p) (value window)
+  (setf (window-parameter window 'width-fixed) value))
+
 (defmethod hide-cursor ((window window))
   (set-window-cursor-invisible t window))
 
@@ -1044,14 +1060,16 @@ You can pass in the optional argument WINDOW-LIST to replace the default
 ;;;
 (defun adjust-all-window-size ()
   "Resize all windows to fit the current display dimensions.
-Each header window is set to full display width and its preferred height."
+Each header window is set to full display width and its preferred height;
+the windows of the frame keep their share of it (a window whose height or
+width is fixed keeps it)."
   (dolist (window (frame-header-windows (current-frame)))
     (window-set-size window (display-width) (header-window-height window)))
   (alexandria:when-let (window (frame-rightside-window (current-frame)))
     (resize-rightside-window window))
   (alexandria:when-let (window (frame-bottomside-window (current-frame)))
-    (resize-bottomside-window window (window-height window)))
-  (balance-windows))
+    (place-bottomside-window window (window-height window)))
+  (resize-windows-proportionally))
 
 (defun update-on-display-resized ()
   (lem-if:resize-display-before (implementation))

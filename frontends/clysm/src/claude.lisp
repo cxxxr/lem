@@ -578,6 +578,8 @@ mode, or why it refused one."
         (setf input-window (lem:get-next-window chat-window))
         (lem:switch-to-window input-window)
         (lem:switch-to-buffer (session-input session)))
+      ;; (its height stays when the screen is resized or windows balanced)
+      (setf (lem:window-height-fixed-p input-window) t)
       (lem:switch-to-window input-window))))
 
 (defun live-session (directory)

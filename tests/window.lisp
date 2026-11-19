@@ -210,3 +210,46 @@
           (ok (= 10 ph)))  ; calculated: 10 * 1
         ;; Cleanup
         (lem:delete-window window)))))
+
+(defun set-display-size (width height)
+  (setf (slot-value (lem:implementation) 'lem-fake-interface::display-width) width
+        (slot-value (lem:implementation) 'lem-fake-interface::display-height) height))
+
+(deftest balance-windows/fixed-height
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((upper (lem:current-window))
+             (lower (progn (lem:split-window-vertically upper :height 15)
+                           (lem:get-next-window upper)))
+             (height (lem:window-height lower)))
+        (setf (lem:window-height-fixed-p lower) t)
+        (lem:balance-windows)
+        (ok (= height (lem:window-height lower)) "the fixed window keeps its height")
+        (setf (lem:window-height-fixed-p lower) nil)
+        (lem:balance-windows)
+        (ok (<= (abs (- (lem:window-height upper) (lem:window-height lower))) 1)
+            "without it, the windows are balanced")))))
+
+(deftest resize-display/proportional-and-fixed
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((left (lem:current-window))
+             (right (progn (lem:split-window-horizontally left :width 20)
+                           (lem:get-next-window left)))
+             (input (progn (lem:split-window-vertically right :height 15)
+                           (lem:get-next-window right)))
+             (input-height (lem:window-height input))
+             (left-share (/ (lem:window-width left) 80)))
+        (setf (lem:window-height-fixed-p input) t)
+        (set-display-size 160 48)
+        (lem-core::adjust-all-window-size)
+        (ok (<= (abs (- (/ (lem:window-width left) 160) left-share)) 1/80)
+            "the windows side by side keep their share of the width")
+        (ok (= input-height (lem:window-height input))
+            "the window of fixed height keeps it")
+        (ok (< 30 (lem:window-height right))
+            "the window above it takes the rest of the height")
+        (set-display-size 80 24)
+        (lem-core::adjust-all-window-size)
+        (ok (= input-height (lem:window-height input))
+            "it keeps it when the display shrinks too")))))

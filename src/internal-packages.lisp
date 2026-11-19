@@ -288,7 +288,8 @@
    :kill-buffer-hook)
   ;; window-tree.lisp
   (:export
-   :balance-windows)
+   :balance-windows
+   :resize-windows-proportionally)
   ;; window.lisp
   (:export
    :line-wrap
@@ -324,6 +325,8 @@
    :last-print-cursor-x
    :last-print-cursor-y
    :window-parameter
+   :window-height-fixed-p
+   :window-width-fixed-p
    :window-delete-hook
    :window-leave-hook
    :window-use-modeline-p
