@@ -229,8 +229,9 @@ prompt (or the message) of the frame only after it is made."
   (:div :class "lem-line" :style (format nil "top:~A;height:~A;line-height:~A;"
                                          (px top) (px char-height) (px char-height))
     (mapcar (lambda (segment)
-              (destructuring-bind (x width text style) segment
-                (:span :style (format nil "left:~A;width:~A;~A" (px (* x char-width))
+              (destructuring-bind (x width text style &optional class) segment
+                (:span :class class
+                       :style (format nil "left:~A;width:~A;~A" (px (* x char-width))
                                       (px (* width char-width)) style)
                   text)))
             segments)))
@@ -268,13 +269,41 @@ prompt (or the message) of the frame only after it is made."
         :style (cell-box (- (view-x view) 1) (view-y view)
                          1 (+ (view-height view) (if (view-modeline-p view) 1 0)))))
 
+(defun blank-segment-p (segment)
+  (every (lambda (char) (char= char #\Space)) (third segment)))
+
+(defun segment-background (segment)
+  "The background colour in the style of SEGMENT, or NIL."
+  (let* ((style (fourth segment))
+         (start (search "background:" style)))
+    (when start
+      (let ((start (+ start (length "background:"))))
+        (subseq style start (position #\; style :start start))))))
+
+(defun tabbar-line (segments)
+  "SEGMENTS of a line of the tab bar, the blank ones (the bar between the
+tabs) marked as the class lem-fill, so that the tabs alone are drawn as tabs."
+  (mapcar (lambda (segment)
+            (if (blank-segment-p segment)
+                (append segment (list "lem-fill"))
+                segment))
+          segments))
+
 (ui:defcomponent tabbar-view (view)
-  ;; a header window: the tabs of frame-multiplexer, ...
-  (:div :class "lem-view lem-tabbar"
-        :style (format nil "~A~A"
-                       (cell-box (view-x view) (view-y view) (view-width view) (view-height view))
-                       (background-style view))
-    (view-line-nodes view)))
+  ;; a header window: the tabs of frame-multiplexer, ...; the bar has the
+  ;; colour of its blank segments
+  (let* ((cw *char-width*) (ch *char-height*)
+         (first-line (and (plusp (length (view-lines view))) (svref (view-lines view) 0)))
+         (fill (find-if #'blank-segment-p first-line))
+         (bar (or (and fill (segment-background fill)) (view-background view))))
+    (:div :class "lem-view lem-tabbar"
+          :style (format nil "~A~@[background:~A;~]"
+                         (cell-box (view-x view) (view-y view) (view-width view) (view-height view))
+                         bar)
+      (loop for segments across (view-lines view)
+            for y from 0
+            when segments
+              collect (ui:keyed y (screen-line (tabbar-line segments) (* y ch) cw ch))))))
 
 (ui:defcomponent floating-view (view)
   ;; a popup or the minibuffer: a box with its border, half a cell around
@@ -286,7 +315,8 @@ prompt (or the message) of the frame only after it is made."
                            (+ (view-width view) (* 2 margin)) (+ (view-height view) (* 2 margin)))
       (when border
         (:div :class (format nil "lem-border lem-border-~(~A~)"
-                             (or (view-border-shape view) :normal))))
+                             (or (view-border-shape view) :normal))
+              :style (background-style view)))
       (:div :class "lem-view"
             :style (format nil "~A~A"
                            (cell-box margin margin (view-width view) (view-height view))
