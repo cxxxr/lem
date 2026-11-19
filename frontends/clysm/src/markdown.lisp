@@ -16,6 +16,26 @@
 
 (in-package :lem-clysm)
 
+;;; ---- regular expressions, made once (a string given to cl-ppcre is
+;;; compiled again at each call)
+
+(defparameter *url-scanner* (ppcre:create-scanner "^(?i)(https?|data|blob):"))
+(defparameter *code-span-scanner* (ppcre:create-scanner "(`+)(?!`)(.+?)(?<!`)\\1(?!`)"))
+(defparameter *image-scanner* (ppcre:create-scanner "!\\[([^\\]]*)\\]\\(([^)\\s]+)(?:\\s+\"[^\"]*\")?\\)"))
+(defparameter *link-scanner* (ppcre:create-scanner "\\[([^\\]]+)\\]\\(([^)]*)\\)"))
+(defparameter *heading-scanner* (ppcre:create-scanner "^#{1,6}[ \\t]"))
+(defparameter *rule-scanner* (ppcre:create-scanner "^ {0,3}([-*_])( *\\1){2,} *$"))
+(defparameter *quote-scanner* (ppcre:create-scanner "^ {0,3}>"))
+(defparameter *quote-mark-scanner* (ppcre:create-scanner "^ {0,3}> ?"))
+(defparameter *item-scanner* (ppcre:create-scanner "^\\s*([-*+]|\\d+[.)])\\s"))
+(defparameter *item-parts-scanner* (ppcre:create-scanner "^(\\s*)([-*+]|\\d+[.)])(\\s+)(\\[([ xX])\\]\\s)?"))
+(defparameter *pipe-row-scanner* (ppcre:create-scanner "^\\s*\\|"))
+(defparameter *pipe-delimiter-scanner* (ppcre:create-scanner "^[\\s|:-]+$"))
+(defparameter *pipe-scanner* (ppcre:create-scanner "\\|"))
+(defparameter *table-delimiter-scanner* (ppcre:create-scanner "^ {0,3}\\|?(\\s*:?-+:?\\s*\\|)*\\s*:?-+:?\\s*\\|?\\s*$"))
+(defparameter *link-or-image-scanner* (ppcre:create-scanner "!?\\[([^\\]]*)\\]\\([^)]*\\)"))
+(defparameter *task-scanner* (ppcre:create-scanner "^\\s*(?:[-*+]|\\d+[.)])\\s+\\[([ xX])\\]"))
+
 ;;; ---- colours and attributes, from the theme
 
 (defun color-of (thing)
@@ -99,7 +119,7 @@
   "source -> (:loaded image), :loading or (:failed message)")
 
 (defun url-p (string)
-  (ppcre:scan "^(?i)(https?|data|blob):" string))
+  (ppcre:scan *url-scanner* string))
 
 (defun image-source (target buffer)
   "The URL or the file of the image TARGET of a Markdown link in BUFFER."
@@ -168,9 +188,14 @@ keeping the cursor in the window counts them (KEEP-CURSOR-SHOWN)."
     (lem:character-offset point column)
     point))
 
+(defun markdown-overlays (buffer)
+  "The overlays made for BUFFER, by line: line -> overlays."
+  (or (lem:buffer-value buffer 'markdown-overlays)
+      (setf (lem:buffer-value buffer 'markdown-overlays) (make-hash-table))))
+
 (defun remember-overlay (decorator overlay)
-  (push overlay (lem:buffer-value (lem:point-buffer (decorator-point decorator))
-                                  'markdown-overlays))
+  (push overlay (gethash (decorator-line decorator)
+                         (markdown-overlays (lem:point-buffer (decorator-point decorator)))))
   overlay)
 
 (defun add-overlay (decorator start end attribute &rest properties)
@@ -204,33 +229,58 @@ the cursor."
       (add-overlay decorator start end nil :display display)))
 
 (defun clear-markdown-overlays (buffer)
-  (mapc #'lem:delete-overlay (lem:buffer-value buffer 'markdown-overlays))
-  (setf (lem:buffer-value buffer 'markdown-overlays) nil))
+  (let ((overlays (markdown-overlays buffer)))
+    (maphash (lambda (line list)
+               (declare (ignore line))
+               (mapc #'lem:delete-overlay list))
+             overlays)
+    (clrhash overlays)))
+
+(defun clear-line-overlays (buffer line)
+  "Delete the overlays made for LINE of BUFFER, and what was noted of it."
+  (let ((overlays (markdown-overlays buffer)))
+    (mapc #'lem:delete-overlay (gethash line overlays))
+    (remhash line overlays))
+  (let ((rows (lem:buffer-value buffer 'markdown-rows)))
+    (when rows (remhash line rows))))
 
 ;;; ---- the text of a line: code, images, links, emphasis
 
 (defparameter *emphasis*
-  '(("(\\*\\*|__)(?=\\S)(.+?)(?<=\\S)\\1" :bold)
-    ("~~(?=\\S)(.+?)(?<=\\S)~~" :strike)
-    ("(?<![*\\w])\\*(?=[^\\s*])(.+?)(?<=[^\\s*])\\*(?![*\\w])" :italic)
-    ("(?<![_\\w])_(?=[^\\s_])(.+?)(?<=[^\\s_])_(?![_\\w])" :italic))
-  "(regex attribute): the last group of REGEX is the text, around it the marks.")
+  (mapcar (lambda (entry)
+            (destructuring-bind (regex attribute mark) entry
+              (list (ppcre:create-scanner regex) attribute mark)))
+          '(("(\\*\\*|__)(?=\\S)(.+?)(?<=\\S)\\1" :bold "**__")
+            ("~~(?=\\S)(.+?)(?<=\\S)~~" :strike "~")
+            ("(?<![*\\w])\\*(?=[^\\s*])(.+?)(?<=[^\\s*])\\*(?![*\\w])" :italic "*")
+            ("(?<![_\\w])_(?=[^\\s_])(.+?)(?<=[^\\s_])_(?![_\\w])" :italic "_")))
+  "(scanner attribute marks): the last group of SCANNER is the text, around
+it the marks; it is used only on a line with one of the characters MARKS.")
+
+(defun marked-p (string &optional (from 0))
+  "Whether STRING has, from FROM, a character that Markdown text marks with
+(code, links, images, emphasis)."
+  (find-if (lambda (c) (find c "`[*_~")) string :start from))
 
 (defun decorate-text (decorator string from)
   "Decorate the text of STRING (the line) from the column FROM."
+  (unless (marked-p string from)
+    (return-from decorate-text))
   (let ((taken '()))
     (flet ((free-p (start end)
              (notany (lambda (range) (and (< start (cdr range)) (< (car range) end))) taken))
            (take (start end) (push (cons start end) taken)))
       ;; code spans first: what is in them is not Markdown
-      (ppcre:do-scans (start end rs re "(`+)(?!`)(.+?)(?<!`)\\1(?!`)" string nil :start from)
-        (take start end)
-        (hide decorator start (aref rs 1))
-        (add-overlay decorator (aref rs 1) (aref re 1) :code)
-        (hide decorator (aref re 1) end))
+      (when (find #\` string :start from)
+        (ppcre:do-scans (start end rs re *code-span-scanner* string nil :start from)
+          (take start end)
+          (hide decorator start (aref rs 1))
+          (add-overlay decorator (aref rs 1) (aref re 1) :code)
+          (hide decorator (aref re 1) end)))
       ;; ![alt](image)
-      (ppcre:do-scans (start end rs re "!\\[([^\\]]*)\\]\\(([^)\\s]+)(?:\\s+\"[^\"]*\")?\\)" string
-                       nil :start from)
+      (when (search "](" string :start2 from)
+       (ppcre:do-scans (start end rs re *image-scanner* string
+                        nil :start from)
         (when (free-p start end)
           (take start end)
           (multiple-value-bind (display height)
@@ -240,16 +290,18 @@ the cursor."
                              (decorator-width decorator))
             (show-as decorator start end display)
             (when (and height (not (decorator-reveal decorator)))
-              (note-rows decorator (ceiling height *char-height*))))))
+              (note-rows decorator (ceiling height *char-height*)))))))
       ;; [text](target): the text underlined, the target hidden
-      (ppcre:do-scans (start end rs re "\\[([^\\]]+)\\]\\(([^)]*)\\)" string nil :start from)
-        (when (free-p start end)
-          (take start end)
-          (hide decorator start (aref rs 0))
-          (add-overlay decorator (aref rs 0) (aref re 0) :link)
-          (hide decorator (aref re 0) end)))
+      (when (search "](" string :start2 from)
+        (ppcre:do-scans (start end rs re *link-scanner* string nil :start from)
+          (when (free-p start end)
+            (take start end)
+            (hide decorator start (aref rs 0))
+            (add-overlay decorator (aref rs 0) (aref re 0) :link)
+            (hide decorator (aref re 0) end))))
       ;; **bold**, ~~struck~~, *italic*
-      (loop for (regex attribute) in *emphasis*
+      (loop for (regex attribute marks) in *emphasis*
+            when (find-if (lambda (c) (find c marks)) string :start from)
             do (ppcre:do-scans (start end rs re regex string nil :start from)
                  (when (free-p start end)
                    (let* ((text (1- (length rs)))
@@ -271,7 +323,7 @@ the cursor."
   (let ((length (length string)))
     (cond
       ;; # heading
-      ((ppcre:scan "^#{1,6}[ \\t]" string)
+      ((ppcre:scan *heading-scanner* string)
        (let* ((level (position #\# string :test-not #'char=))
               (text (or (position-if-not (lambda (c) (member c '(#\Space #\Tab))) string :start level)
                         length)))
@@ -283,20 +335,20 @@ the cursor."
              (hide decorator 0 text))
          (decorate-text decorator string text)))
       ;; --- a rule
-      ((ppcre:scan "^ {0,3}([-*_])( *\\1){2,} *$" string)
+      ((ppcre:scan *rule-scanner* string)
        (let ((columns (max 3 (floor (decorator-width decorator) *char-width*))))
          (show-as decorator 0 length
                   (list (make-string columns :initial-element #\─) (md-attribute :rule)))))
       ;; > quote
-      ((ppcre:scan "^ {0,3}>" string)
-       (let ((text (nth-value 1 (ppcre:scan "^ {0,3}> ?" string))))
+      ((ppcre:scan *quote-scanner* string)
+       (let ((text (nth-value 1 (ppcre:scan *quote-mark-scanner* string))))
          (show-as decorator 0 text (list "▎ " (md-attribute :quote-bar)))
          (add-overlay decorator text length :quote)
          (decorate-text decorator string text)))
       ;; - item, 1. item, - [ ] task
-      ((ppcre:scan "^\\s*([-*+]|\\d+[.)])\\s" string)
+      ((ppcre:scan *item-scanner* string)
        (multiple-value-bind (start text rs re)
-           (ppcre:scan "^(\\s*)([-*+]|\\d+[.)])(\\s+)(\\[([ xX])\\]\\s)?" string)
+           (ppcre:scan *item-parts-scanner* string)
          (declare (ignore start))
          (let ((level (floor (aref re 0) 2))
                (marker (char string (aref rs 1))))
@@ -315,11 +367,11 @@ the cursor."
                                  (md-attribute :bullet)))))
            (decorate-text decorator string text))))
       ;; | a | table |
-      ((ppcre:scan "^\\s*\\|" string)
-       (if (ppcre:scan "^[\\s|:-]+$" string)
+      ((ppcre:scan *pipe-row-scanner* string)
+       (if (ppcre:scan *pipe-delimiter-scanner* string)
            (add-overlay decorator 0 length :table)
            (progn
-             (ppcre:do-matches (start end "\\|" string)
+             (ppcre:do-matches (start end *pipe-scanner* string)
                (add-overlay decorator start end :table))
              (decorate-text decorator string 0))))
       (t (decorate-text decorator string 0)))))
@@ -336,13 +388,16 @@ the cursor."
 (defstruct table-layout
   first-line last-line                  ; the lines of the table
   widths                                ; of the columns, or NIL: not a table
-  aligns)                               ; :left :right or :center, by column
+  aligns                                ; :left :right or :center, by column
+  (cells (make-hash-table)))            ; line -> the widths of its cells
 
 (defun table-row-p (string)
-  (ppcre:scan "^ {0,3}\\|" string))
+  "Whether STRING begins with | (after at most three spaces)."
+  (let ((start (position #\Space string :test-not #'char=)))
+    (and start (<= start 3) (char= (char string start) #\|))))
 
 (defun table-delimiter-p (string)
-  (ppcre:scan "^ {0,3}\\|?(\\s*:?-+:?\\s*\\|)*\\s*:?-+:?\\s*\\|?\\s*$" string))
+  (ppcre:scan *table-delimiter-scanner* string))
 
 (defun table-pipes (string)
   "The columns of the | of the row STRING (not those after a \\)."
@@ -374,10 +429,13 @@ last one if something is there."
 (defun rendered-width (text)
   "How wide TEXT (a cell) is as it reads: the marks of code, links and
 emphasis hidden."
-  (let ((text (ppcre:regex-replace-all "(`+)(?!`)(.+?)(?<!`)\\1(?!`)" text "\\2")))
-    (setf text (ppcre:regex-replace-all "!?\\[([^\\]]*)\\]\\([^)]*\\)" text "\\1"))
-    (loop for (regex) in *emphasis*
-          do (setf text (ppcre:regex-replace-all regex text
+  (unless (marked-p text)
+    (return-from rendered-width (lem:string-width text)))
+  (let ((text (ppcre:regex-replace-all *code-span-scanner* text "\\2")))
+    (setf text (ppcre:regex-replace-all *link-or-image-scanner* text "\\1"))
+    (loop for (regex nil marks) in *emphasis*
+          when (find-if (lambda (c) (find c marks)) text)
+            do (setf text (ppcre:regex-replace-all regex text
                                                  (lambda (match &rest groups)
                                                    (declare (ignore match))
                                                    (car (last groups)))
@@ -422,9 +480,11 @@ columns if it is a table (a header, then a row of ---)."
           (loop for (line . string) in rows
                 for i from 0
                 unless (and (= i 1) (not (eql line cursor)))   ; (the --- row, unless it shows its marks)
-                  do (loop for cell in (table-cells string)
+                  do (setf (gethash line (table-layout-cells layout))
+                           (mapcar (lambda (cell) (cell-width string cell (eql line cursor)))
+                                   (table-cells string)))
+                     (loop for width in (gethash line (table-layout-cells layout))
                            for k from 0
-                           for width = (cell-width string cell (eql line cursor))
                            do (if (< k (length widths))
                                   (setf (nth k widths) (max width (nth k widths)))
                                   (setf widths (append widths (list (max 3 width)))))))
@@ -451,14 +511,16 @@ columns if it is a table (a header, then a row of ---)."
        ;; each cell: what comes before its text (after the | before it) and
        ;; after it (before the | after it)
        (let* ((cells (table-cells string))
+              (known (gethash line (table-layout-cells layout)))
               (around
                 (loop for cell in cells
                       for k from 0
+                      for drawn = (or (nth k known) (cell-width string cell reveal))
                       for width = (or (nth k widths) 0)
                       for align = (or (nth k (table-layout-aligns layout)) :left)
                       collect (if reveal
-                                  (cons "" (pad (- width (cell-width string cell t))))
-                                  (let* ((extra (- width (cell-width string cell nil)))
+                                  (cons "" (pad (- width drawn)))
+                                  (let* ((extra (- width drawn))
                                          (left (case align (:right extra) (:center (floor extra 2)) (t 0))))
                                     (cons (concatenate 'string " " (pad left))
                                           (concatenate 'string (pad (- extra left)) " "))))))
@@ -526,7 +588,7 @@ a margin below); the lines of folds are not counted."
 
 (defun hidden-line-p (point)
   "Whether the line of POINT is hidden in a fold."
-  (lem:line-continuation-p point))
+  (and (not (lem:first-line-p point)) (fold-hiding point) t))
 
 (defun folded-lines (buffer)
   "The lines of BUFFER that begin a fold."
@@ -544,76 +606,196 @@ a margin below); the lines of folds are not counted."
     (when attribute
       (add-overlay decorator 0 (length string) attribute))))
 
+(defun fold-hiding (point)
+  "The invisible overlay (a fold) that hides the line of POINT, or NIL."
+  (lem:with-point ((p point))
+    (lem:line-start p)
+    (when (lem:character-offset p -1)
+      (find-if (lambda (overlay)
+                 (and (lem:overlay-get overlay :fold)
+                      (lem:overlay-get overlay :invisible)
+                      (lem:point<= (lem:overlay-start overlay) p)
+                      (lem:point< p (lem:overlay-end overlay))))
+               (lem:buffer-overlays (lem:point-buffer point))))))
+
+;;; What a line is in depends on the lines before it (a code block, a
+;;; table): it is kept for each line, (fence language table) — the fence
+;;; and the language of the code block the line is in or after the fence
+;;; of, and the first line of the table it is a row of — and made again
+;;; from the first line that changed, up to the lines that are shown.
+
+(defun line-contexts (buffer)
+  "The contexts of the first lines of BUFFER that are known: a vector, the
+first line at 0."
+  (or (lem:buffer-value buffer 'markdown-contexts)
+      (setf (lem:buffer-value buffer 'markdown-contexts)
+            (make-array 256 :adjustable t :fill-pointer 0))))
+
+(defun forget-line-contexts (start end old-length)
+  "After a change of a buffer from START: the contexts from its line are not
+known, and the first line that changed is noted (after-change-functions)."
+  (declare (ignore end old-length))
+  (let* ((buffer (lem:point-buffer start))
+         (contexts (lem:buffer-value buffer 'markdown-contexts))
+         (line (lem:line-number-at-point start)))
+    (when contexts
+      (setf (fill-pointer contexts) (min (fill-pointer contexts) (1- line))))
+    (let ((changed (lem:buffer-value buffer 'markdown-changed)))
+      (setf (lem:buffer-value buffer 'markdown-changed) (if changed (min changed line) line)))))
+
+(lem:add-hook (lem:variable-value 'lem:after-change-functions :global) 'forget-line-contexts)
+
+(defun line-context (point line)
+  "The context of LINE, the line of POINT: (fence language table)."
+  (let* ((contexts (line-contexts (lem:point-buffer point)))
+         (known (fill-pointer contexts)))
+    (when (< known line)
+      ;; from the last line known, made again (what is after it is not kept)
+      (let ((from (max 1 known))
+            (fence nil) (language nil) (table nil))
+        (when (plusp known)
+          (destructuring-bind (f l tb) (aref contexts (1- known))
+            (declare (ignore tb))
+            (setf fence f language l))
+          (when (<= 2 known)
+            (setf table (third (aref contexts (- known 2)))))
+          (setf (fill-pointer contexts) (1- known)))
+        (lem:with-point ((p point))
+          (lem:move-to-line p from)
+          (loop for n from from to line
+                do (let* ((string (lem:line-string p))
+                          (this (fence-line fence string)))
+                     (setf table (and (null fence) (null this) (table-row-p string)
+                                      (or table n)))
+                     (vector-push-extend (list fence language table) contexts)
+                     (when this
+                       (setf language (and (null fence)
+                                           (string-trim " `~" (subseq string (+ (search this string)
+                                                                                (length this)))))
+                             fence (if fence nil this))))
+                while (lem:line-offset p 1)))))
+    (aref contexts (1- line))))
+
+(defun decorate-buffer-line (point line cursor folded width tables)
+  "Make the overlays of LINE, the line of POINT (CURSOR: the line of the
+cursor; FOLDED: the lines that begin a fold; TABLES: the layouts of the
+tables, by first line)."
+  (destructuring-bind (fence language table) (line-context point line)
+    (let* ((string (lem:line-string point))
+           (decorator (make-decorator :point point :line line
+                                      :reveal (eql line cursor) :width width
+                                      :folded (member line folded)))
+           (this-fence (fence-line fence string)))
+      (cond
+        ;; ``` lang: the language small, the marks hidden
+        (this-fence
+         (add-line-background decorator :code-block)
+         (let ((marks (+ (search this-fence string) (length this-fence))))
+           (if (decorator-folded decorator)
+               (show-as decorator 0 marks (list "▸ " (md-attribute :bullet)))
+               (hide decorator 0 marks))
+           (add-overlay decorator marks (length string) :fence)))
+        (fence
+         (add-line-background decorator :code-block)
+         (when (equal language "diff")
+           (decorate-diff-line decorator string)))
+        (table
+         (let ((layout (or (gethash table tables)
+                           (setf (gethash table tables)
+                                 (lem:with-point ((p point))
+                                   (lem:line-offset p (- table line))
+                                   (table-layout p cursor))))))
+           (if (table-layout-widths layout)
+               (decorate-table-row decorator string layout)
+               (decorate-line decorator string))))
+        (t
+         (decorate-line decorator string))))))
+
+(defun decorated-lines (buffer)
+  "The lines of BUFFER that have their overlays: line -> T."
+  (or (lem:buffer-value buffer 'markdown-decorated)
+      (setf (lem:buffer-value buffer 'markdown-decorated) (make-hash-table))))
+
+(defun forget-line (buffer line)
+  "LINE of BUFFER is to be decorated again."
+  (clear-line-overlays buffer line)
+  (remhash line (decorated-lines buffer)))
+
+(defun forget-table-of (buffer line)
+  "If LINE of BUFFER is a row of a table, all its rows are to be decorated
+again (the widths of its columns depend on each)."
+  (let* ((contexts (lem:buffer-value buffer 'markdown-contexts))
+         (start (and contexts (<= 1 line (fill-pointer contexts))
+                     (third (aref contexts (1- line))))))
+    (when start
+      (loop for n from start to (fill-pointer contexts)
+            while (eql start (third (aref contexts (1- n))))
+            do (forget-line buffer n)))))
+
+(defun forget-lines-from (buffer from)
+  "The lines of BUFFER from FROM (where the text changed: the lines after
+it may be others now) are to be decorated again."
+  (when (< 1 from) (forget-table-of buffer (1- from)))
+  (dolist (line (loop for line being the hash-keys of (markdown-overlays buffer)
+                      when (<= from line) collect line))
+    (clear-line-overlays buffer line))
+  (let ((done (decorated-lines buffer)))
+    (dolist (line (loop for line being the hash-keys of done
+                        when (<= from line) collect line))
+      (remhash line done)))
+  (let ((rows (lem:buffer-value buffer 'markdown-rows)))
+    (when rows
+      (dolist (line (loop for line being the hash-keys of rows
+                          when (<= from line) collect line))
+        (remhash line rows)))))
+
 (defun decorate-buffer (buffer)
-  "Make again the overlays of the lines of BUFFER that windows show."
+  "Make the overlays of the lines of BUFFER that windows show and do not
+have them: from the first line of each window (with a margin above), as
+many lines as it shows (with a margin below), the folds passed over at
+once.  The overlays of the lines no longer shown are deleted."
+  (let ((cursor (cursor-line buffer))
+        (folded (folded-lines buffer))
+        (tables (make-hash-table))
+        (done (decorated-lines buffer))
+        (shown (make-hash-table)))
+    (dolist (window (buffer-windows buffer))
+      (let ((width (* *char-width* (max 10 (- (lem:window-width window) 2))))
+            (lines (+ (lem:window-height window) 4))
+            (count 0))
+        (lem:with-point ((point (lem:window-view-point window)))
+          (lem:line-start point)
+          (loop repeat 2 while (lem:line-offset point -1))
+          (loop
+            (let ((line (lem:line-number-at-point point))
+                  (fold (and (not (lem:first-line-p point)) (fold-hiding point))))
+              (cond (fold
+                     ;; (its last line: the next one is after it)
+                     (lem:move-point point (lem:overlay-end fold)))
+                    (t
+                     (incf count)
+                     (setf (gethash line shown) t)
+                     (unless (gethash line done)
+                       (setf (gethash line done) t)
+                       (decorate-buffer-line point line cursor folded width tables)))))
+            (unless (and (< count lines) (lem:line-offset point 1))
+              (return))))))
+    (dolist (line (loop for line being the hash-keys of done
+                        unless (gethash line shown) collect line))
+      (forget-line buffer line))))
+
+(defun redecorate-buffer (buffer)
+  "Delete all the overlays of BUFFER and make those of the lines shown."
   (clear-markdown-overlays buffer)
+  (clrhash (decorated-lines buffer))
   (setf (lem:buffer-value buffer 'markdown-rows) nil)
-  (let* ((ranges (shown-lines buffer))
-         (counts (make-list (length ranges) :initial-element 0))
-         (window (first (buffer-windows buffer)))
-         (cursor (cursor-line buffer))
-         (folded (folded-lines buffer))
-         (width (* *char-width* (max 10 (- (if window (lem:window-width window) 80) 2))))
-         (fence nil)
-         (language nil)
-         (table nil))
-    (lem:with-point ((point (lem:buffer-start-point buffer)))
-      (loop for line from 1
-            do (let* ((string (lem:line-string point))
-                      (hidden (and (< 1 line) (hidden-line-p point)))
-                      ;; shown by a window: from its first line, as many as it shows
-                      (shown (and (not hidden)
-                                  (loop for (from . lines) in ranges
-                                        for cell on counts
-                                        thereis (and (<= from line) (< (car cell) lines)))))
-                      (decorator (make-decorator :point point :line line
-                                                 :reveal (eql line cursor) :width width
-                                                 :folded (member line folded)))
-                      (this-fence (fence-line fence string)))
-                 (unless hidden
-                   (loop for (from) in ranges
-                         for cell on counts
-                         when (<= from line) do (incf (car cell))))
-                 ;; a table: laid out from its first row, for each of its rows
-                 (when (and table (< (table-layout-last-line table) line))
-                   (setf table nil))
-                 (when (and (null table) (null fence) (null this-fence) (table-row-p string))
-                   (setf table (table-layout point cursor)))
-                 (cond
-                   ;; ``` lang: the language small, the marks hidden
-                   (this-fence
-                    (when shown
-                      (add-line-background decorator :code-block)
-                      (let ((marks (+ (search this-fence string) (length this-fence))))
-                        (if (decorator-folded decorator)
-                            (show-as decorator 0 marks (list "▸ " (md-attribute :bullet)))
-                            (hide decorator 0 marks))
-                        (add-overlay decorator marks (length string) :fence)))
-                    (setf language (and (null fence)
-                                        (string-trim " `~" (subseq string (+ (search this-fence string)
-                                                                             (length this-fence)))))
-                          fence (if fence nil this-fence)))
-                   (fence
-                    (when shown
-                      (add-line-background decorator :code-block)
-                      (when (equal language "diff")
-                        (decorate-diff-line decorator string))))
-                   ((and shown table (table-layout-widths table))
-                    (decorate-table-row decorator string table))
-                   (shown
-                    (decorate-line decorator string))))
-               ;; (past what every window shows)
-               (unless (and (lem:line-offset point 1)
-                            (loop for (nil . lines) in ranges
-                                  for count in counts
-                                  thereis (< count lines)))
-                 (return))))))
+  (decorate-buffer buffer))
 
 ;;; ---- folding
 
 (defun heading-level (string)
   "The level of the heading STRING (1 for #), or NIL."
-  (when (ppcre:scan "^#{1,6}[ \t]" string)
+  (when (ppcre:scan *heading-scanner* string)
     (position #\# string :test-not #'char=)))
 
 (defun section-end (point level)
@@ -766,6 +948,8 @@ headings, then all of it."
 
 (defun markdown-live-on ()
   (setf (lem:buffer-value (lem:current-buffer) 'markdown-state) nil
+        (lem:buffer-value (lem:current-buffer) 'markdown-contexts) nil
+        (lem:buffer-value (lem:current-buffer) 'markdown-decorated) nil
         (lem:variable-value 'lem/language-mode:fold-region-function :buffer (lem:current-buffer))
         'markdown-fold-region)
   (refresh-markdown-buffers :force t))
@@ -773,7 +957,8 @@ headings, then all of it."
 (defun markdown-live-off ()
   (let ((buffer (lem:current-buffer)))
     (clear-markdown-overlays buffer)
-    (setf (lem:buffer-value buffer 'markdown-state) nil)))
+    (setf (lem:buffer-value buffer 'markdown-state) nil
+          (lem:buffer-value buffer 'markdown-decorated) nil)))
 
 (defun markdown-state (buffer)
   "What the overlays of BUFFER depend on: its text, the line of the cursor,
@@ -828,15 +1013,37 @@ if it moved."
               (return)))))
     moved))
 
+(defun update-decoration (buffer old state force)
+  "Make the overlays of BUFFER for STATE, after OLD: only those of the lines
+that changed (from the first line whose text changed, where the cursor was
+and is) and of the lines newly shown, unless what all the lines depend on
+changed (the folds, the widths of the windows, the theme)."
+  (let ((changed (lem:buffer-value buffer 'markdown-changed)))
+    (setf (lem:buffer-value buffer 'markdown-changed) nil)
+    (cond ((or force (null old)
+               (not (equal (nthcdr 3 old) (nthcdr 3 state))))
+           (redecorate-buffer buffer))
+          (t
+           (unless (eql (first old) (first state))
+             (forget-lines-from buffer (or changed 1)))
+           (unless (eql (second old) (second state))
+             (dolist (line (list (second old) (second state)))
+               (when line
+                 (forget-table-of buffer line)
+                 (forget-line buffer line))))
+           (decorate-buffer buffer)))))
+
 (defun refresh-markdown-buffers (&key force)
   "Decorate again the shown buffers in markdown-live-mode whose state changed
-(all of them with FORCE), and keep the cursor of the current window in it."
+(all of their lines with FORCE), and keep the cursor of the current window
+in it."
   (dolist (buffer (remove-duplicates (mapcar #'lem:window-buffer (lem:window-list))))
     (when (lem:mode-active-p buffer 'markdown-live-mode)
-      (let ((state (markdown-state buffer)))
-        (when (or force (not (equal state (lem:buffer-value buffer 'markdown-state))))
+      (let ((state (markdown-state buffer))
+            (old (lem:buffer-value buffer 'markdown-state)))
+        (when (or force (not (equal state old)))
           (setf (lem:buffer-value buffer 'markdown-state) state)
-          (decorate-buffer buffer)
+          (update-decoration buffer old state force)
           (let ((window (lem:current-window)))
             (when (and (eq (lem:window-buffer window) buffer)
                        (keep-cursor-shown window))
@@ -885,7 +1092,7 @@ if it moved."
     (lem:with-point ((p point))
       (lem:line-start p)
       (multiple-value-bind (start end rs re)
-          (ppcre:scan "^\\s*(?:[-*+]|\\d+[.)])\\s+\\[([ xX])\\]" (lem:line-string p))
+          (ppcre:scan *task-scanner* (lem:line-string p))
         (declare (ignore start end))
         (declare (ignore re))
         (unless rs (lem:editor-error "Not a task"))
