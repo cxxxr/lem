@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lem on Clysm — the Common Lisp editor in your browser</title>
+<meta name="description" content="Lem, the Common Lisp editor, compiled to WebAssembly by Clysm and running in the browser without a server. Edit files and evaluate Lisp in the editor's own image.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Lem on Clysm">
+<meta property="og:description" content="Lem, the Common Lisp editor, compiled to WebAssembly by Clysm and running in your browser. No server: the editor, its libraries and the Lisp compiler are all in the page.">
+<meta name="theme-color" content="#1d1f21">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d1f21'/%3E%3Ctext x='16' y='24' font-family='monospace' font-size='22' font-weight='bold' text-anchor='middle' fill='%2381a2be'%3E%CE%BB%3C/text%3E%3C/svg%3E">
+<!-- Lem on Clysm in one file: open it in a browser, no server is needed.
+     Made by frontends/clysm/build-web.sh from frontends/clysm/web/index.html. -->
+<style>
+@CSS@
+/* the page while Lem loads (and when it cannot) */
+#status { display: block; font: 15px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif; color: #c5c8c6;
+          text-align: left; white-space: normal; overflow: auto; }
+#status .card { box-sizing: border-box; max-width: 34rem; margin: 0 auto; padding: 18vh 24px 32px; }
+#status h1 { margin: 0; font: 600 2.6rem/1.1 'JetBrains Mono', 'DejaVu Sans Mono', ui-monospace, monospace;
+             color: #e0e2e0; letter-spacing: -0.02em; }
+#status h1 span { color: #81a2be; }
+#status .tagline { margin: 0.5rem 0 2.2rem; color: #8a8f98; }
+#status .bar { height: 4px; border-radius: 2px; background: #2c2f33; overflow: hidden; }
+#status .bar div { height: 100%; width: 0; background: #81a2be; border-radius: 2px; transition: width 0.25s ease-out; }
+#status .step { display: flex; justify-content: space-between; gap: 1rem; margin-top: 0.7rem;
+                font-size: 13px; color: #8a8f98; font-variant-numeric: tabular-nums; }
+#status .note { margin-top: 2.4rem; font-size: 13px; color: #6f747c; }
+#status a { color: #81a2be; text-decoration: none; }
+#status a:hover { text-decoration: underline; }
+#status .problem { margin-top: 1rem; padding: 14px 16px; border-left: 3px solid #cc6666; background: #25282c;
+                   white-space: pre-wrap; }
+#status .problem strong { color: #e0e2e0; }
+#status code { font: 13px ui-monospace, monospace; color: #b5bd68; }
+@media (prefers-reduced-motion: reduce) { #status .bar div { transition: none; } }
+</style>
+</head>
+<body>
+<div id="status">
+  <div class="card">
+    <h1>Lem <span>on Clysm</span></h1>
+    <p class="tagline">The Common Lisp editor, compiled to WebAssembly and running in this page. Nothing runs on a server.</p>
+    <div id="loading">
+      <div class="bar"><div id="bar"></div></div>
+      <div class="step"><span id="step">Unpacking</span><span id="count"></span></div>
+    </div>
+    <p class="note">
+      Lem: <a href="https://github.com/lem-project/lem">github.com/lem-project/lem</a> ·
+      Clysm, the Common Lisp that compiled it: <a href="https://github.com/cxxxr/clysm">github.com/cxxxr/clysm</a>
+    </p>
+  </div>
+</div>
+<div id="lem"></div>
+<!-- the image (WebAssembly) and the files that loading Lem reads, gzip in base64 -->
+<script type="application/octet-stream" id="lem-image">@IMAGE@</script>
+<script type="application/octet-stream" id="lem-files">@FILES@</script>
+<script type="module">
+// ---- host/jsffi.mjs, host/common.mjs, host/web/clysm.mjs, host/web/vfs.mjs
+@HOST@
+// ---- the page
+const status = document.getElementById('status');
+const home = @HOME@;
+const loadCount = @COUNT@;   // the files of Lem that boot.lisp loads
+
+// The steps of loading, with the share of the bar that each takes (about
+// its share of the time).
+const steps = { unpack: [0, 6], start: [6, 28], load: [28, 96], editor: [96, 100] };
+const bar = document.getElementById('bar');
+const stepText = document.getElementById('step');
+const countText = document.getElementById('count');
+const show = (step, text, fraction = 0, count = '') => {
+  const [from, to] = steps[step];
+  bar.style.width = (from + (to - from) * Math.min(1, fraction)) + '%';
+  stepText.textContent = text;
+  countText.textContent = count;
+};
+const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+const timing = { begin: performance.now() };
+const problem = (title, text, error) => {
+  const loading = document.getElementById('loading');
+  if (loading) loading.outerHTML = '<div class="problem"><strong></strong>\n<span></span></div>';
+  status.querySelector('.problem strong').textContent = title;
+  status.querySelector('.problem span').textContent = text;
+  if (error) console.error(error);
+};
+let started = false;
+// called by boot.lisp
+globalThis.lemBoot = {
+  progress(n) {
+    if (started) return;
+    if (n < loadCount) show('load', 'Loading Lem', n / loadCount, `${n} / ${loadCount} files`);
+    else show('editor', 'Starting the editor', 0.5);
+  },
+  failed(message) { problem('Lem could not start.', message); },
+};
+// the editor has started when its screen is in the page
+new MutationObserver((records, observer) => {
+  if (!document.getElementById('lem').firstChild) return;
+  observer.disconnect();
+  started = true;
+  timing.editor = performance.now();
+  console.log('Lem started in ' + ((timing.editor - timing.begin) / 1000).toFixed(1) + ' s (unpacking '
+              + ((timing.unpacked - timing.begin) / 1000).toFixed(1) + ' s, starting Lisp '
+              + ((timing.lisp - timing.unpacked) / 1000).toFixed(1) + ' s, loading Lem and starting it '
+              + ((timing.editor - timing.lisp) / 1000).toFixed(1) + ' s)');
+  status.remove();
+}).observe(document.getElementById('lem'), { childList: true });
+
+// the output of Lisp goes to the console, line by line
+const pending = { 1: '', 2: '' };
+const output = (text, fd) => {
+  const lines = (pending[fd] + text).split('\n');
+  pending[fd] = lines.pop();
+  for (const line of lines) (fd === 2 ? console.error : console.log)(line);
+};
+const inline = async (id) => {
+  const base64 = document.getElementById(id).textContent.trim();
+  const response = await fetch('data:application/octet-stream;base64,' + base64);
+  const stream = response.body.pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+};
+if (typeof WebAssembly.Suspending !== 'function') {
+  problem('This browser cannot run Lem on Clysm yet.',
+          'Lem waits for keys and timers by suspending WebAssembly (JavaScript Promise Integration), '
+          + 'which Chrome and Edge 137 or later have. Firefox and Safari do not have it yet.');
+} else {
+  try {
+    show('unpack', 'Unpacking the editor', 0.1);
+    await nextFrame();
+    const [bytes, pack] = await Promise.all([inline('lem-image'), inline('lem-files')]);
+    // the files: those of the pack, and what is written in the home directory
+    // (kept in the browser's localStorage)
+    const fs = makeVfs(pack, { persist: [home + '/'], storageKey: 'lem-clysm:' });
+    if (!fs.existsSync(home)) fs.mkdirSync(home, { recursive: true });
+    let cwd = home + '/';
+    globalThis.process = {
+      platform: 'linux', env: { HOME: home, LANG: 'en_US.UTF-8' },
+      cwd: () => cwd, chdir: (directory) => { cwd = directory; },
+    };
+    timing.unpacked = performance.now();
+    show('start', 'Starting Lisp');
+    await nextFrame();
+    // (lisp.eval(string) evaluates Lisp forms, e.g. from the developer tools)
+    // (from the heap image with Lem loaded, build-web.sh; else boot.lisp loads it)
+    window.lisp = await loadClysm(bytes, output, { fs, root: @ROOT@, args: [@BOOT@],
+                                                   image: @BOOT@.replace(/boot\.lisp$/, 'lem.image') });
+    timing.lisp = performance.now();
+    if (!started) show('load', 'Loading Lem', 0, `0 / ${loadCount} files`);
+  } catch (e) {
+    problem('Lem could not start.', String(e && e.message), e);
+  }
+}
+</script>
+</body>
+</html>

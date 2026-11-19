@@ -1,0 +1,3 @@
+[submodule "frontends/clysm/clysm"]
+	path = frontends/clysm/clysm
+	url = https://github.com/cxxxr/clysm.git

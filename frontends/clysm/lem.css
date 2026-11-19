@@ -1,0 +1,24 @@
+/* lem.css — the page of Lem on Clysm (desktop/index.html, web/index.html) */
+html, body { margin: 0; height: 100%; overflow: hidden; background: #1d1f21; }
+#lem { position: fixed; inset: 0; }
+#status { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+          color: #8a8f98; font: 14px/1.5 system-ui, sans-serif; white-space: pre-wrap; text-align: center; }
+.lem-screen { position: absolute; inset: 0; overflow: hidden; white-space: pre; cursor: text;
+              font-family: 'JetBrains Mono', 'DejaVu Sans Mono', 'Noto Sans Mono CJK JP', 'Noto Sans Mono',
+                           ui-monospace, monospace;
+              font-variant-ligatures: none; -webkit-font-smoothing: antialiased; user-select: none; }
+.lem-view { position: absolute; overflow: hidden; background: inherit; }
+.lem-floating { z-index: 10; }
+.lem-border { position: absolute; z-index: 9; box-sizing: border-box; pointer-events: none;
+              border: 1px solid color-mix(in srgb, currentColor 45%, transparent); }
+.lem-border-left-border { border-width: 0 0 0 1px; }
+.lem-separator { position: absolute; pointer-events: none; }
+.lem-separator::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%;
+                         border-left: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
+.lem-line { position: absolute; left: 0; right: 0; }
+.lem-line > span { position: absolute; top: 0; height: 100%; overflow: hidden; }
+/* the keys are typed here; it stays at the cursor for input methods */
+.lem-input { position: absolute; z-index: 20; width: 1px; padding: 0; margin: 0; border: 0;
+             outline: none; resize: none; overflow: hidden; background: transparent; color: transparent;
+             caret-color: transparent; font-family: inherit; line-height: inherit; white-space: pre; }
+.lem-input.composing { width: 30em; color: inherit; background: inherit; text-decoration: underline; }

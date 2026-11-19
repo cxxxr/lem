@@ -71,6 +71,13 @@ https://lem-project.github.io/installation/webview/
 
 ### SDL2 version
 https://lem-project.github.io/installation/sdl2/
+
+### Clysm version
+Lem compiled to WebAssembly by [Clysm](https://github.com/cxxxr/clysm), as a
+desktop application (Electron) or a page for a browser
+([demo](https://cxxxr.github.io/lem/)): `make clysm`, `make clysm-web`.
+See [frontends/clysm/README.md](frontends/clysm/README.md).
+
 ### Quick summary for Nix and NixOS users
 If you have flakes enabled, you can run:
 

@@ -1,0 +1,58 @@
+# The demo of Lem on Clysm in a browser (frontends/clysm/build-web.sh), on
+# GitHub Pages: https://cxxxr.github.io/lem/
+name: Clysm demo
+
+# Run by hand only (Actions > Clysm demo > Run workflow): the build is too
+# costly to repeat on every push.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install SBCL
+        run: sudo apt-get update && sudo apt-get install -y sbcl
+      - name: Install Quicklisp
+        run: |
+          curl -sfL -o /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp
+          sbcl --non-interactive --load /tmp/quicklisp.lisp --eval '(quicklisp-quickstart:install)'
+      - name: Build the page
+        run: frontends/clysm/build-web.sh
+      - name: Show the log of the compilation
+        if: failure()
+        run: |
+          tail -100 build/clysm/desktop/prepare.log build/clysm/web/trace.log || true
+          head -40 build/clysm/desktop/save-image.log build/clysm/web/save-image.log || true
+      - name: Make the site
+        run: |
+          mkdir -p site
+          cp build/clysm/web/lem.html site/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

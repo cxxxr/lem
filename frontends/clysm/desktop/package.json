@@ -1,0 +1,25 @@
+{
+  "name": "lem-clysm",
+  "productName": "Lem",
+  "version": "0.1.0",
+  "description": "Lem, the Common Lisp editor, running on Clysm (Common Lisp on WebAssembly GC)",
+  "main": "main.js",
+  "private": true,
+  "window": {
+    "width": 960,
+    "height": 720,
+    "minWidth": 400,
+    "minHeight": 300,
+    "backgroundColor": { "light": "#1d1f21", "dark": "#1d1f21" },
+    "node": true,
+    "resident": true,
+    "menu": false,
+    "jsFlags": "--stack-size=7600 --wasm-compilation-hints"
+  },
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "45.3.1"
+  }
+}

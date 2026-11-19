@@ -57,6 +57,19 @@ webview-ncurses:
 
 lem: webview
 
+# Lem on Clysm (frontends/clysm/): Clysm, a submodule, compiles Lem to
+# WebAssembly; a desktop application (Electron) and a page for a browser
+clysm:
+	frontends/clysm/build.sh
+
+clysm-web:
+	frontends/clysm/build-web.sh
+
+test-clysm:
+	frontends/clysm/tests/run.sh
+
+.PHONY: clysm clysm-web test-clysm
+
 .PHONY: legit terminal-lib
 
 legit:
