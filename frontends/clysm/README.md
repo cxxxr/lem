@@ -160,7 +160,10 @@ fold: `Tab` on a heading or an opening fence folds or unfolds it (elsewhere
 it indents), and `Shift-Tab` cycles the buffer through its outline (the
 first headings), all its headings, and all of it; a folded heading has a
 chevron and ends with ⋯. These are Lem's folds (`fold-region-function` is
-`lem-clysm:markdown-fold-region`): the text does not change.
+`lem-clysm:markdown-fold-region`): the text does not change. In source code, `C-c Tab` folds or
+unfolds what begins on the line (a bracket that closes on a later line, or
+the lines indented under it) and `C-c Shift-Tab` folds every outer region
+or unfolds all: Lem's `fold-region-default`.
 
 **Input** (`src/input.lisp`). Keys are typed into a text field that follows
 the cursor, so that an input method shows its composition there: keys with a

@@ -86,6 +86,7 @@
                (:file "attribute")
                (:file "display-cache")
                (:file "visual-line")
+               (:file "fold-region")
                (:file "terminal"))
   :perform (test-op (o c)
                     (symbol-call :rove :run c)))

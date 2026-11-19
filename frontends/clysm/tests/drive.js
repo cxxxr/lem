@@ -311,6 +311,15 @@ module.exports = (win, app) => {
       await lisp('(lem:send-event (lambda () (lem:move-to-line (lem:current-point) 7) (lem-clysm:markdown-toggle-task)))');
       check('markdown task toggled', await until(async () => (await lisp('(lem:buffer-text (lem:current-buffer))')).includes('- [x] a task')));
       await key('x', ['control']); await key('s', ['control']); await sleep(300);   // (saved: C-x C-c does not ask)
+      // folds in source code: C-c Tab on a form
+      await lisp(`(lem:send-event (lambda () (lem:find-file ${lispString(file)}) (lem:buffer-start (lem:current-point))))`);
+      await sleep(500);
+      await key('c', ['control']); await key('Tab'); await sleep(300);
+      const codeText = () => js("[...document.querySelectorAll('.lem-windows .lem-window .lem-line')].map((l) => l.textContent).join(' | ')");
+      check('fold a form', await until(async () => { const t = await codeText(); return t.includes('(defun fact (n)...') && !t.includes('(if (<= n 1)'); }), await codeText());
+      await key('c', ['control']); await key('Tab'); await sleep(300);
+      check('unfold it', await until(async () => (await codeText()).includes('(if (<= n 1)')), await codeText());
+      await lisp(`(lem:send-event (lambda () (lem:find-file ${lispString(md)})))`); await sleep(500);
       // folds: Tab on a heading folds its section; Shift-Tab: the outline, the headings, all
       const shownText = () => js("[...document.querySelectorAll('.lem-windows .lem-window .lem-line')].map((l) => l.textContent).join(' | ')");
       await lisp('(lem:send-event (lambda () (lem:buffer-start (lem:current-point))))'); await sleep(200);
