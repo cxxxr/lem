@@ -351,6 +351,8 @@ module.exports = (win, app) => {
         check('remote: eval', value.trim() === '3', value);
         const [, screen] = await ask('GET', '/screen');
         check('remote: screen', screen.includes('== window'), screen);
+        const [, line] = await ask('POST', '/eval', `(lem-clysm::segments-text '((0 6 "日本語" "" "lem-wide") (6 3 "abc" "") (9 4 "Big" "" nil nil 4/3)) 20)`);
+        check('remote: wide and larger text on the screen', line.trim() === '"日本語abcBig"', line);
         check('remote: no token, no answer', (await fetch(url + '/state')).status === 401);
         await lisp('(lem:send-event (lambda () (lem-clysm:remote-stop)))');
         check('remote: stopped', await until(() => !fs.existsSync(remoteFile)));

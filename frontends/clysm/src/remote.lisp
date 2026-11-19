@@ -79,18 +79,25 @@
 ;;; ---- the screen as text
 
 (defun segments-text (segments width)
-  "The text of a line of SEGMENTS, WIDTH columns wide."
-  (let ((line (make-string (max 0 width) :initial-element #\Space)))
+  "The text of a line of SEGMENTS, WIDTH columns wide: each character in
+its columns (2 for a wide one, more for larger text), as on the screen."
+  (let ((cells (make-array (max 0 width) :initial-element #\Space)))
     (dolist (segment segments)
-      (destructuring-bind (x w text &rest rest) segment
-        (declare (ignore w rest))
-        (let ((text (if (sixth segment) "[image]" text))
-              (x (floor x)))
+      (destructuring-bind (x w text &optional style class image scale) segment
+        (declare (ignore w style class))
+        (let ((text (if image "[image]" text))
+              (scale (or scale 1))
+              (column x))
           (loop for char across text
-                for i from x
-                while (< i (length line))
-                when (<= 0 i) do (setf (char line i) char)))))
-    (string-right-trim " " line)))
+                for columns = (* (lem:string-width (string char)) scale)
+                for start = (floor column)
+                do (when (< -1 start (length cells))
+                     (setf (aref cells start) char)
+                     ;; (the other columns of the character are not characters)
+                     (loop for i from (1+ start) below (min (length cells) (ceiling (+ column columns)))
+                           do (setf (aref cells i) nil)))
+                   (incf column columns)))))
+    (string-right-trim " " (coerce (remove nil (coerce cells 'list)) 'string))))
 
 (defun view-text (view)
   (with-output-to-string (out)
