@@ -271,3 +271,33 @@
              (ok (lem-sdl3/shaper:shaping-font-covers-p (first cjk) #\日))
              (ok (null (font:font-shaping-chain font (font:font-emoji-font font))))))))
       (skip "FreeType or HarfBuzz is not installed")))
+
+(deftest latin-fonts-try-fallbacks-before-the-cjk-font
+  ;; The latin fonts draw only one-cell characters; NotoSansCJK draws
+  ;; symbols such as ★ full-width, so a configured or system font comes
+  ;; first.  The bundled FreeMono has ★, as NotoSansCJK does.
+  (with-ttf ()
+    (let ((free-mono (lem-sdl3/resource:get-resource-pathname
+                      "resources/fonts/FreeMono.ttf")))
+      (call-with-font
+       (font:make-font-config :size 28 :system-fallback nil
+                              :fallback-files (list free-mono))
+       (lambda (font)
+         (let* ((latin (font:font-latin-normal-font font))
+                (cjk (font:font-cjk-normal-font font))
+                (free-mono-ascent (lem-sdl3/ffi:font-ascent
+                                   (first (font:font-fallback-fonts font)))))
+           (testing "the fonts' ascents differ, or the test proves nothing"
+             (ok (/= free-mono-ascent (lem-sdl3/ffi:font-ascent cjk))))
+           (testing "SDL_ttf draws ★ from the fallback, not the CJK font"
+             (ok (has-glyph-p cjk #\★))
+             (ok (= free-mono-ascent (font:glyph-source font latin #\★))))
+           (testing "a glyph only the CJK font has still comes from it"
+             (ok (= (lem-sdl3/ffi:font-ascent cjk) (font:glyph-source font latin #\日))))
+           (when (and (lem-sdl3/ffi-freetype:available-p) (lem-sdl3/ffi-harfbuzz:available-p))
+             (testing "the shaping chain has the same order"
+               (let ((chain (font:font-shaping-chain font latin))
+                     (cjk-chain (font:font-shaping-chain font cjk)))
+                 (ok (= 3 (length chain)))
+                 (ok (eq (third chain) (first cjk-chain)))
+                 (ok (lem-sdl3/shaper:shaping-font-covers-p (second chain) #\★)))))))))))

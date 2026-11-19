@@ -250,8 +250,10 @@ fails to open, FONT gets no chains and text is drawn as before."
                    (braille (open-file (font-config-braille-file font-config)))
                    (fallbacks (mapcar #'open-file fallback-files)))
               (loop :for (ttf-font . chain)
-                      :in (list (list* (font-latin-normal-font font) latin-normal cjk-normal fallbacks)
-                                (list* (font-latin-bold-font font) latin-bold cjk-bold fallbacks)
+                      :in (list (list* (font-latin-normal-font font)
+                                       latin-normal (append fallbacks (list cjk-normal)))
+                                (list* (font-latin-bold-font font)
+                                       latin-bold (append fallbacks (list cjk-bold)))
                                 (list* (font-cjk-normal-font font) cjk-normal fallbacks)
                                 (list* (font-cjk-bold-font font) cjk-bold fallbacks)
                                 (list* (font-braille-font font) braille fallbacks))
@@ -346,12 +348,6 @@ system's) at its size, skipping files that fail to open."
          ;; fallbacks, and the band must come from the latin font itself.
          (latin-normal-box-band (box-drawing-band latin-normal-font))
          (latin-bold-box-band (box-drawing-band latin-bold-font)))
-    ;; Lem picks one font per character type, so a glyph missing from it
-    ;; used to draw as an empty box.  SDL_ttf only consults a font's own
-    ;; fallbacks, not theirs, so each text font gets a flat list: the CJK
-    ;; font (for the latin fonts), the configured and system fonts, then
-    ;; emoji.  The CJK, emoji and braille fonts are only borrowed here; they
-    ;; are closed as primaries.
     (let* ((text-fonts (list latin-normal-font latin-bold-font
                              cjk-normal-font cjk-bold-font))
            ;; Made before the fallbacks are added, so they have none.
@@ -362,17 +358,21 @@ system's) at its size, skipping files that fail to open."
                      (lem-sdl3/ffi:font-ascent ttf-font))))
         (let ((fallbacks
                 (list (cons latin-normal-font
-                            (append (list cjk-normal-font) fallback-fonts (list emoji-font)))
+                            (append fallback-fonts (list cjk-normal-font emoji-font)))
                       (cons latin-bold-font
-                            (append (list cjk-bold-font) fallback-fonts (list emoji-font)))
+                            (append fallback-fonts (list cjk-bold-font emoji-font)))
                       (cons cjk-normal-font (append fallback-fonts (list emoji-font)))
                       (cons cjk-bold-font (append fallback-fonts (list emoji-font))))))
           ;; Lem picks one font per character type, so a glyph missing from it
           ;; used to draw as an empty box.  SDL_ttf only consults a font's own
-          ;; fallbacks, not theirs, so each text font gets a flat list: the CJK
-          ;; font (for the latin fonts), the configured and system fonts, then
-          ;; emoji.  The CJK, emoji and braille fonts are only borrowed here;
-          ;; they are closed as primaries.
+          ;; fallbacks, not theirs, so each text font gets a flat list: the
+          ;; configured and system fonts, the CJK font (for the latin fonts),
+          ;; then emoji.  The latin fonts only draw one-cell characters (wide
+          ;; ones use the CJK font), so they try the configured and system
+          ;; fonts, monospace first, before the CJK font, whose symbols such
+          ;; as ★ and ⌘ are drawn full-width and spill out of one cell.  The
+          ;; CJK, emoji and braille fonts are only borrowed here; they are
+          ;; closed as primaries.
           (loop :for (ttf-font . list) :in fallbacks
                 :do (add-fallback-fonts ttf-font list))
           (destructuring-bind (char-width char-height)
