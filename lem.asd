@@ -23,7 +23,6 @@
                "trivial-types"
                "cl-ppcre"
                "cl-unicode"
-               "micros"
                "inquisitor"
                "babel"
                "bordeaux-threads"
