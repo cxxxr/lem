@@ -311,6 +311,17 @@ module.exports = (win, app) => {
       await lisp('(lem:send-event (lambda () (lem:move-to-line (lem:current-point) 7) (lem-clysm:markdown-toggle-task)))');
       check('markdown task toggled', await until(async () => (await lisp('(lem:buffer-text (lem:current-buffer))')).includes('- [x] a task')));
       await key('x', ['control']); await key('s', ['control']); await sleep(300);   // (saved: C-x C-c does not ask)
+      // folds: Tab on a heading folds its section; Shift-Tab: the outline, the headings, all
+      const shownText = () => js("[...document.querySelectorAll('.lem-windows .lem-window .lem-line')].map((l) => l.textContent).join(' | ')");
+      await lisp('(lem:send-event (lambda () (lem:buffer-start (lem:current-point))))'); await sleep(200);
+      await key('Tab'); await sleep(300);
+      check('fold a section', await until(async () => { const t = await shownText(); return t.includes('⋯') && !t.includes('Some bold text.'); }), await shownText());
+      await key('Tab'); await sleep(300);
+      check('unfold it', await until(async () => (await shownText()).includes('Some bold text.')), await shownText());
+      await key('Tab', ['shift']); await sleep(300);
+      check('outline', await until(async () => { const t = await shownText(); return t.includes('Title') && !t.includes('a task'); }), await shownText());
+      await key('Tab', ['shift']); await key('Tab', ['shift']); await sleep(300);
+      check('all shown again', await until(async () => (await shownText()).includes('a task')), await shownText());
 
       const width = await lisp('(lem:display-width)');
       win.setContentSize(700, 400);

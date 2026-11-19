@@ -155,7 +155,12 @@ Markdown are hidden but on the line of the cursor, where they are shown dim
 to be edited, as in Obsidian's live preview. The text of the file does not
 change: these are overlays, made again after a command for the lines that
 windows show. As headings and images take more than a line, the window is
-scrolled further to keep the cursor in it.
+scrolled further to keep the cursor in it. Sections under headings and code blocks
+fold: `Tab` on a heading or an opening fence folds or unfolds it (elsewhere
+it indents), and `Shift-Tab` cycles the buffer through its outline (the
+first headings), all its headings, and all of it; a folded heading has a
+chevron and ends with ⋯. These are Lem's folds (`fold-region-function` is
+`lem-clysm:markdown-fold-region`): the text does not change.
 
 **Input** (`src/input.lisp`). Keys are typed into a text field that follows
 the cursor, so that an input method shows its composition there: keys with a

@@ -9,6 +9,10 @@
 ;;;; they are shown dim to be edited (as in Obsidian's live preview).  The
 ;;;; overlays are made again after a command that changed the text, moved
 ;;;; the cursor to another line or scrolled, for the lines windows show.
+;;;;
+;;;; Sections under headings and code blocks fold (Lem's folds: overlays
+;;;; that hide lines): Tab on a heading folds or unfolds its section, and
+;;;; Shift-Tab cycles the buffer through its outline, its headings and all.
 
 (in-package :lem-clysm)
 
@@ -141,7 +145,7 @@ value is its height in pixels."
 ;;; the line of the cursor (the marks are then shown), and the width of the
 ;;; window in pixels.
 
-(defstruct decorator point line reveal width)
+(defstruct decorator point line reveal width folded)
 
 (defun note-rows (decorator rows)
   "Note that the line takes ROWS lines of the window (a heading, an image):
@@ -267,7 +271,10 @@ the cursor."
                         length)))
          (add-overlay decorator 0 length (nth (1- level) *heading-attributes*))
          (note-rows decorator (ceiling (or (attribute-scale (md-attribute (nth (1- level) *heading-attributes*))) 1)))
-         (hide decorator 0 text)
+         (if (decorator-folded decorator)
+             ;; a folded section: a chevron in place of the marks
+             (show-as decorator 0 text (list "▸ " (md-attribute :bullet)))
+             (hide decorator 0 text))
          (decorate-text decorator string text)))
       ;; --- a rule
       ((ppcre:scan "^ {0,3}([-*_])( *\\1){2,} *$" string)
@@ -324,49 +331,221 @@ the cursor."
   (remove buffer (lem:window-list) :key #'lem:window-buffer :test-not #'eq))
 
 (defun shown-lines (buffer)
-  "The first and the last line of BUFFER that its windows show (with a margin)."
-  (let ((from nil) (to 0))
-    (dolist (window (buffer-windows buffer))
-      (let ((top (lem:line-number-at-point (lem:window-view-point window))))
-        (setf from (min (or from top) (max 1 (- top 2)))
-              to (max to (+ top (lem:window-height window) 2)))))
-    (values (or from 1) to)))
+  "For each window of BUFFER, (first-line . lines): the first line of the
+buffer it shows (with a margin above) and how many lines it can show (with
+a margin below); the lines of folds are not counted."
+  (mapcar (lambda (window)
+            (cons (max 1 (- (lem:line-number-at-point (lem:window-view-point window)) 2))
+                  (+ (lem:window-height window) 4)))
+          (buffer-windows buffer)))
 
 (defun cursor-line (buffer)
   "The line of the cursor in BUFFER, if it is the buffer of the current window."
   (when (eq buffer (lem:window-buffer (lem:current-window)))
     (lem:line-number-at-point (lem:buffer-point buffer))))
 
+(defun hidden-line-p (point)
+  "Whether the line of POINT is hidden in a fold."
+  (lem:line-continuation-p point))
+
+(defun folded-lines (buffer)
+  "The lines of BUFFER that begin a fold."
+  (loop for overlay in (lem:buffer-overlays buffer)
+        when (lem:overlay-get overlay :fold)
+          collect (lem:line-number-at-point (lem:overlay-start overlay))))
+
 (defun decorate-buffer (buffer)
   "Make again the overlays of the lines of BUFFER that windows show."
   (clear-markdown-overlays buffer)
   (setf (lem:buffer-value buffer 'markdown-rows) nil)
-  (multiple-value-bind (from to) (shown-lines buffer)
-    (let* ((window (first (buffer-windows buffer)))
-           (cursor (cursor-line buffer))
-           (width (* *char-width* (max 10 (- (if window (lem:window-width window) 80) 2))))
-           (fence nil))
-      (lem:with-point ((point (lem:buffer-start-point buffer)))
-        (loop for line from 1 to to
-              do (let* ((string (lem:line-string point))
-                        (shown (<= from line))
-                        (decorator (make-decorator :point point :line line
-                                                   :reveal (eql line cursor) :width width))
-                        (this-fence (fence-p string)))
-                   (cond
-                     ;; ``` lang: the language small, the marks hidden
-                     ((and this-fence (or (null fence) (string= fence this-fence)))
-                      (when shown
-                        (add-line-background decorator :code-block)
-                        (let ((marks (+ (search this-fence string) 3)))
-                          (hide decorator 0 marks)
-                          (add-overlay decorator marks (length string) :fence)))
-                      (setf fence (if fence nil this-fence)))
-                     (fence
-                      (when shown (add-line-background decorator :code-block)))
-                     (shown
-                      (decorate-line decorator string))))
-                 (unless (lem:line-offset point 1) (return)))))))
+  (let* ((ranges (shown-lines buffer))
+         (counts (make-list (length ranges) :initial-element 0))
+         (window (first (buffer-windows buffer)))
+         (cursor (cursor-line buffer))
+         (folded (folded-lines buffer))
+         (width (* *char-width* (max 10 (- (if window (lem:window-width window) 80) 2))))
+         (fence nil))
+    (lem:with-point ((point (lem:buffer-start-point buffer)))
+      (loop for line from 1
+            do (let* ((string (lem:line-string point))
+                      (hidden (and (< 1 line) (hidden-line-p point)))
+                      ;; shown by a window: from its first line, as many as it shows
+                      (shown (and (not hidden)
+                                  (loop for (from . lines) in ranges
+                                        for cell on counts
+                                        thereis (and (<= from line) (< (car cell) lines)))))
+                      (decorator (make-decorator :point point :line line
+                                                 :reveal (eql line cursor) :width width
+                                                 :folded (member line folded)))
+                      (this-fence (fence-p string)))
+                 (unless hidden
+                   (loop for (from) in ranges
+                         for cell on counts
+                         when (<= from line) do (incf (car cell))))
+                 (cond
+                   ;; ``` lang: the language small, the marks hidden
+                   ((and this-fence (or (null fence) (string= fence this-fence)))
+                    (when shown
+                      (add-line-background decorator :code-block)
+                      (let ((marks (+ (search this-fence string) 3)))
+                        (if (decorator-folded decorator)
+                            (show-as decorator 0 marks (list "▸ " (md-attribute :bullet)))
+                            (hide decorator 0 marks))
+                        (add-overlay decorator marks (length string) :fence)))
+                    (setf fence (if fence nil this-fence)))
+                   (fence
+                    (when shown (add-line-background decorator :code-block)))
+                   (shown
+                    (decorate-line decorator string))))
+               ;; (past what every window shows)
+               (unless (and (lem:line-offset point 1)
+                            (loop for (nil . lines) in ranges
+                                  for count in counts
+                                  thereis (< count lines)))
+                 (return))))))
+
+;;; ---- folding
+
+(defun heading-level (string)
+  "The level of the heading STRING (1 for #), or NIL."
+  (when (ppcre:scan "^#{1,6}[ \t]" string)
+    (position #\# string :test-not #'char=)))
+
+(defun section-end (point level)
+  "The point where the section of the heading of LEVEL at POINT ends: the
+start of the next heading of LEVEL or higher (headings in code blocks are
+not headings), or the end of the buffer.  With LEVEL 6, the next heading."
+  (let ((end (lem:copy-point point :temporary))
+        (fence nil))
+    (loop
+      (unless (lem:line-offset end 1)
+        (lem:buffer-end end)
+        (return end))
+      (let* ((string (lem:line-string end))
+             (this-fence (fence-p string)))
+        (cond ((and this-fence (or (null fence) (string= fence this-fence)))
+               (setf fence (if fence nil this-fence)))
+              ((and (null fence)
+                    (let ((other (heading-level string)))
+                      (and other (<= other level))))
+               (return end)))))))
+
+(defun fence-end (point fence)
+  "The start of the line after the code block that the fence at POINT opens."
+  (let ((end (lem:copy-point point :temporary)))
+    (loop
+      (unless (lem:line-offset end 1)
+        (lem:buffer-end end)
+        (return end))
+      (when (equal (fence-p (lem:line-string end)) fence)
+        (unless (lem:line-offset end 1) (lem:line-end end))
+        (return end)))))
+
+(defun in-code-block-p (point)
+  "Whether the line of POINT is in a code block (after an odd number of fences)."
+  (let ((fence nil))
+    (lem:with-point ((p (lem:buffer-start-point (lem:point-buffer point))))
+      (loop until (lem:same-line-p p point)
+            do (let ((this (fence-p (lem:line-string p))))
+                 (when (and this (or (null fence) (string= fence this)))
+                   (setf fence (if fence nil this))))
+               (unless (lem:line-offset p 1) (return))))
+    fence))
+
+(defun markdown-fold-region (point &key (level nil))
+  "The region that folds at the line of POINT, (values start end), or NIL:
+the section of a heading (with LEVEL, up to the next heading of LEVEL or
+higher), or a code block from its opening fence."
+  (let* ((start (lem:copy-point point :temporary))
+         (string (lem:line-string start)))
+    (lem:line-start start)
+    (let ((end (unless (in-code-block-p start)
+                 (let ((heading (heading-level string))
+                       (fence (fence-p string)))
+                   (cond (heading (section-end start (or level heading)))
+                         (fence (fence-end start fence)))))))
+      ;; (not the blank lines before the next heading: they stay)
+      (when end
+        (lem:with-point ((last end))
+          (loop while (and (lem:line-offset last -1)
+                           (lem:point< start last)
+                           (string= "" (string-trim " " (lem:line-string last))))
+                do (lem:move-point end last))))
+      (when (and end (not (lem:same-line-p start end)))
+        (values start end)))))
+
+(defun fold-at (point &key level)
+  "Fold the region at the line of POINT; the fold, or NIL."
+  (multiple-value-bind (start end) (markdown-fold-region point :level level)
+    (when start
+      (lem:place-region-placeholder-overlay start end :placeholder " ⋯"))))
+
+(defun fold-header-p (point)
+  (some (lambda (overlay)
+          (and (lem:overlay-get overlay :fold)
+               (lem:same-line-p (lem:overlay-start overlay) point)))
+        (lem:buffer-overlays (lem:point-buffer point))))
+
+(defun unfold-buffer (buffer)
+  (dolist (overlay (copy-list (lem:buffer-overlays buffer)))
+    (when (lem:overlay-get overlay :fold)
+      (lem:delete-overlay overlay))))
+
+(lem:define-command markdown-fold-or-indent () ()
+  "On a heading or a code block, fold or unfold it; elsewhere, indent."
+  (let ((point (lem:current-point)))
+    (cond ((fold-header-p point)
+           (lem/language-mode:fold-toggle-at-point point))
+          ((markdown-fold-region point)
+           (fold-at point)
+           (lem:line-start point))
+          (t (lem:call-command "indent-line-and-complete-symbol" nil)))))
+
+(defun fold-headings (buffer function)
+  "Fold at each heading of BUFFER (not in code blocks) for which FUNCTION of
+its level returns true, or a level to fold its section to."
+  (let ((fence nil))
+    (lem:with-point ((point (lem:buffer-start-point buffer)))
+      (loop
+        (let* ((string (lem:line-string point))
+               (this-fence (fence-p string))
+               (level (and (null fence) (heading-level string))))
+          (cond ((and this-fence (or (null fence) (string= fence this-fence)))
+                 (setf fence (if fence nil this-fence)))
+                ((and level (not (hidden-line-p point)))
+                 (let ((fold (funcall function level)))
+                   (when fold
+                     (fold-at point :level (if (integerp fold) fold level)))))))
+        (unless (lem:line-offset point 1) (return))))))
+
+(lem:define-command markdown-cycle-folds () ()
+  "Show the outline of the buffer (its first headings), then all its
+headings, then all of it."
+  (let* ((buffer (lem:current-buffer))
+         (state (lem:buffer-value buffer 'markdown-fold-cycle))
+         (top (let ((levels '()))
+                (fold-headings buffer (lambda (level) (push level levels) nil))
+                (and levels (reduce #'min levels)))))
+    (unfold-buffer buffer)
+    (setf (lem:buffer-value buffer 'markdown-fold-cycle)
+          (case state
+            ((nil :all)
+             ;; the outline: the sections of the first headings folded
+             (fold-headings buffer (lambda (level) (= level top)))
+             (lem:message "Outline")
+             :outline)
+            (:outline
+             ;; the headings: what is under each, up to the next one
+             (fold-headings buffer (lambda (level) (declare (ignore level)) 6))
+             (lem:message "Headings")
+             :headings)
+            (t
+             (lem:message "All")
+             :all)))
+    (let ((point (lem:current-point)))
+      (when (hidden-line-p point)
+        (loop while (and (hidden-line-p point) (lem:line-offset point -1))))
+      (lem:line-start point))))
 
 ;;; ---- the mode
 
@@ -381,7 +560,9 @@ the cursor."
   "Whether Markdown buffers are shown with markdown-live-mode.")
 
 (defun markdown-live-on ()
-  (setf (lem:buffer-value (lem:current-buffer) 'markdown-state) nil)
+  (setf (lem:buffer-value (lem:current-buffer) 'markdown-state) nil
+        (lem:variable-value 'lem/language-mode:fold-region-function :buffer (lem:current-buffer))
+        'markdown-fold-region)
   (refresh-markdown-buffers :force t))
 
 (defun markdown-live-off ()
@@ -394,7 +575,8 @@ the cursor."
 the lines and the width its windows show, the theme."
   (list (lem:buffer-modified-tick buffer)
         (cursor-line buffer)
-        (multiple-value-list (shown-lines buffer))
+        (shown-lines buffer)
+        (folded-lines buffer)
         (mapcar #'lem:window-width (buffer-windows buffer))
         *char-width*
         (theme-key)))
@@ -407,6 +589,8 @@ the lines and the width its windows show, the theme."
 (defun line-rows (buffer point columns)
   "The lines of the window that the line of POINT takes (about, when it is
 not decorated: as many as it wraps to)."
+  (when (and (not (lem:first-line-p point)) (hidden-line-p point))
+    (return-from line-rows 0))
   (let ((noted (let ((table (lem:buffer-value buffer 'markdown-rows)))
                  (and table (gethash (lem:line-number-at-point point) table))))
         (wrapped (max 1 (ceiling (lem:string-width (lem:line-string point)) (max 1 (1- columns))))))
@@ -431,7 +615,11 @@ if it moved."
                                       (not (lem:line-offset p 1)))
                             finally (return total)))))
           (if (and (> rows height) (not (lem:same-line-p view cursor)))
-              (progn (lem:line-offset view 1) (setf moved t))
+              (progn
+                (lem:line-offset view 1)
+                ;; (not into a fold)
+                (loop while (and (hidden-line-p view) (lem:line-offset view 1)))
+                (setf moved t))
               (return)))))
     moved))
 
@@ -483,6 +671,8 @@ if it moved."
 ;;; ---- editing
 
 (lem:define-key *markdown-live-mode-keymap* "C-c C-t" 'markdown-toggle-task)
+(lem:define-key *markdown-live-mode-keymap* "Tab" 'markdown-fold-or-indent)
+(lem:define-key *markdown-live-mode-keymap* "Shift-Tab" 'markdown-cycle-folds)
 
 (lem:define-command markdown-toggle-task () ()
   "Check or uncheck the task (- [ ] ...) of the line."
