@@ -40,7 +40,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     const { file, id } = waiting;
     waiting = null;
     if (allow) fs.writeFileSync(file, 'hi\n');
-    out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: allow ? `File created successfully at: ${file}` : 'The user does not allow it.', is_error: !allow }] },
+    out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: allow ? `File created successfully at: ${file}\n\`\`\`lisp\n(a code block cut off` : 'The user does not allow it.', is_error: !allow }] },
           tool_use_result: allow ? { type: 'create', filePath: file, content: 'hi\n', structuredPatch: [] } : undefined, session_id });
     text('m' + (++n), allow ? 'Done: **fake.txt** says hi.' : 'Not written.');
     out({ type: 'result', subtype: 'success', duration_ms: 1200, total_cost_usd: 0.0012, session_id });

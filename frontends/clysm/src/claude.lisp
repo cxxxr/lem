@@ -228,11 +228,21 @@ md-attribute, an attribute or NIL)."
                (js:funcall *json-text* input nil)))))
 
 (defun write-fenced (session language text &key (max-lines 40))
-  "Write TEXT in a code block of LANGUAGE (at most MAX-LINES lines)."
+  "Write TEXT in a code block of LANGUAGE (at most MAX-LINES lines), between
+fences longer than those of TEXT: a ``` of TEXT (a Markdown file read) does
+not end the block."
   (let* ((lines (uiop:split-string (string-right-trim '(#\Newline) text) :separator '(#\Newline)))
-         (shown (subseq lines 0 (min max-lines (length lines)))))
+         (shown (subseq lines 0 (min max-lines (length lines))))
+         (fence (make-string (1+ (reduce #'max shown
+                                         :key (lambda (line)
+                                                (let ((fence (fence-p line)))
+                                                  (if (and fence (char= (char fence 0) #\`))
+                                                      (length fence)
+                                                      2)))
+                                         :initial-value 2))
+                             :initial-element #\`)))
     (fresh-chat-line session)
-    (write-chat session (format nil "```~A~%~{~A~%~}```~%" language shown))
+    (write-chat session (format nil "~A~A~%~{~A~%~}~A~%" fence language shown fence))
     (when (< max-lines (length lines))
       (write-chat session (format nil "… ~D more lines~%" (- (length lines) max-lines)) :missing))))
 
