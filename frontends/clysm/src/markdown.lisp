@@ -324,6 +324,165 @@ the cursor."
              (decorate-text decorator string 0))))
       (t (decorate-text decorator string 0)))))
 
+;;; ---- tables
+;;;
+;;; The rows of a table are drawn in columns: the cells padded to the width
+;;; of their column (as they read: the hidden marks are not counted), the |
+;;; as lines (│) and the row under the header as ├──┼──┤.  The text stays
+;;; as it is: the | show the padding before and after them, and the spaces
+;;; around the text of a cell are hidden.  The row of the cursor shows its
+;;; marks, in the columns too.
+
+(defstruct table-layout
+  first-line last-line                  ; the lines of the table
+  widths                                ; of the columns, or NIL: not a table
+  aligns)                               ; :left :right or :center, by column
+
+(defun table-row-p (string)
+  (ppcre:scan "^ {0,3}\\|" string))
+
+(defun table-delimiter-p (string)
+  (ppcre:scan "^ {0,3}\\|?(\\s*:?-+:?\\s*\\|)*\\s*:?-+:?\\s*\\|?\\s*$" string))
+
+(defun table-pipes (string)
+  "The columns of the | of the row STRING (not those after a \\)."
+  (loop for i from 0 below (length string)
+        when (and (char= (char string i) #\|)
+                  (or (zerop i) (char/= (char string (1- i)) #\\)))
+          collect i))
+
+(defun table-cells (string)
+  "The cells of the row STRING, (start . end) between its |, and after the
+last one if something is there."
+  (let ((pipes (table-pipes string)))
+    (append (loop for (start end) on pipes
+                  while end
+                  collect (cons (1+ start) end))
+            (let ((last (car (last pipes))))
+              (when (and last (string/= "" (string-trim " " (subseq string (1+ last)))))
+                (list (cons (1+ last) (length string))))))))
+
+(defun cell-text (string cell)
+  "The text of CELL of STRING, without the spaces around it: (start . end)."
+  (let* ((start (or (position #\Space string :start (car cell) :end (cdr cell) :test-not #'char=)
+                    (cdr cell)))
+         (end (if (= start (cdr cell))
+                  start
+                  (1+ (position #\Space string :start start :end (cdr cell) :test-not #'char= :from-end t)))))
+    (cons start end)))
+
+(defun rendered-width (text)
+  "How wide TEXT (a cell) is as it reads: the marks of code, links and
+emphasis hidden."
+  (let ((text (ppcre:regex-replace-all "(`+)(?!`)(.+?)(?<!`)\\1(?!`)" text "\\2")))
+    (setf text (ppcre:regex-replace-all "!?\\[([^\\]]*)\\]\\([^)]*\\)" text "\\1"))
+    (loop for (regex) in *emphasis*
+          do (setf text (ppcre:regex-replace-all regex text
+                                                 (lambda (match &rest groups)
+                                                   (declare (ignore match))
+                                                   (car (last groups)))
+                                                 :simple-calls t)))
+    (lem:string-width text)))
+
+(defun table-aligns (string)
+  (mapcar (lambda (cell)
+            (let* ((text (cell-text string cell))
+                   (spec (subseq string (car text) (cdr text)))
+                   (left (and (plusp (length spec)) (char= (char spec 0) #\:)))
+                   (right (and (plusp (length spec)) (char= (char spec (1- (length spec))) #\:))))
+              (cond ((and left right) :center)
+                    (right :right)
+                    (t :left))))
+          (table-cells string)))
+
+(defun cell-width (string cell reveal)
+  "How wide CELL of the row STRING is drawn, with a space on each side: as
+it is on the line of the cursor (REVEAL), as it reads elsewhere."
+  (if reveal
+      (lem:string-width (subseq string (car cell) (cdr cell)))
+      (let ((text (cell-text string cell)))
+        (+ 2 (rendered-width (subseq string (car text) (cdr text)))))))
+
+(defun table-layout (point cursor)
+  "The layout of the table whose first row is the line of POINT (CURSOR:
+the line of the cursor): its lines, and the widths and the alignment of its
+columns if it is a table (a header, then a row of ---)."
+  (let ((first (lem:line-number-at-point point))
+        (rows '()))
+    (lem:with-point ((p point))
+      (loop for line from first
+            for string = (lem:line-string p)
+            while (table-row-p string)
+            do (push (cons line string) rows)
+            while (lem:line-offset p 1)))
+    (setf rows (nreverse rows))
+    (let ((layout (make-table-layout :first-line first :last-line (car (car (last rows))))))
+      (when (and (second rows) (table-delimiter-p (cdr (second rows))))
+        (let ((widths '()))
+          (loop for (line . string) in rows
+                for i from 0
+                unless (and (= i 1) (not (eql line cursor)))   ; (the --- row, unless it shows its marks)
+                  do (loop for cell in (table-cells string)
+                           for k from 0
+                           for width = (cell-width string cell (eql line cursor))
+                           do (if (< k (length widths))
+                                  (setf (nth k widths) (max width (nth k widths)))
+                                  (setf widths (append widths (list (max 3 width)))))))
+          (setf (table-layout-widths layout) widths
+                (table-layout-aligns layout) (table-aligns (cdr (second rows))))))
+      layout)))
+
+(defun pad (n)
+  (make-string (max 0 n) :initial-element #\Space))
+
+(defun decorate-table-row (decorator string layout)
+  "Decorate the row STRING of the table of LAYOUT in its columns."
+  (let ((widths (table-layout-widths layout))
+        (reveal (decorator-reveal decorator))
+        (line (decorator-line decorator)))
+    (cond
+      ;; |---|---|: ├───┼───┤
+      ((and (= line (1+ (table-layout-first-line layout))) (not reveal))
+       (show-as decorator (or (position #\| string) 0) (length string)
+                (list (format nil "├~{~A~^┼~}┤"
+                              (mapcar (lambda (width) (make-string width :initial-element #\─)) widths))
+                      (md-attribute :table))))
+      (t
+       ;; each cell: what comes before its text (after the | before it) and
+       ;; after it (before the | after it)
+       (let* ((cells (table-cells string))
+              (around
+                (loop for cell in cells
+                      for k from 0
+                      for width = (or (nth k widths) 0)
+                      for align = (or (nth k (table-layout-aligns layout)) :left)
+                      collect (if reveal
+                                  (cons "" (pad (- width (cell-width string cell t))))
+                                  (let* ((extra (- width (cell-width string cell nil)))
+                                         (left (case align (:right extra) (:center (floor extra 2)) (t 0))))
+                                    (cons (concatenate 'string " " (pad left))
+                                          (concatenate 'string (pad (- extra left)) " "))))))
+              (bar (if reveal "|" "│")))
+         (loop for pipe in (table-pipes string)
+               for k from 0
+               do (add-overlay decorator pipe (1+ pipe) nil
+                               :display (list (concatenate 'string
+                                                           (if (plusp k) (cdr (nth (1- k) around)) "")
+                                                           bar
+                                                           (or (car (nth k around)) ""))
+                                              (md-attribute :table))))
+         (unless reveal
+           (dolist (cell cells)
+             (let ((text (cell-text string cell)))
+               (add-overlay decorator (car cell) (car text) nil :invisible t)
+               (add-overlay decorator (cdr text) (cdr cell) nil :invisible t))))
+         ;; the header in bold
+         (when (= line (table-layout-first-line layout))
+           (dolist (cell cells)
+             (let ((text (cell-text string cell)))
+               (add-overlay decorator (car text) (cdr text) :bold))))
+         (decorate-text decorator string 0))))))
+
 ;;; ---- the buffer
 
 (defun fence-p (string)
@@ -396,7 +555,8 @@ a margin below); the lines of folds are not counted."
          (folded (folded-lines buffer))
          (width (* *char-width* (max 10 (- (if window (lem:window-width window) 80) 2))))
          (fence nil)
-         (language nil))
+         (language nil)
+         (table nil))
     (lem:with-point ((point (lem:buffer-start-point buffer)))
       (loop for line from 1
             do (let* ((string (lem:line-string point))
@@ -414,6 +574,11 @@ a margin below); the lines of folds are not counted."
                    (loop for (from) in ranges
                          for cell on counts
                          when (<= from line) do (incf (car cell))))
+                 ;; a table: laid out from its first row, for each of its rows
+                 (when (and table (< (table-layout-last-line table) line))
+                   (setf table nil))
+                 (when (and (null table) (null fence) (null this-fence) (table-row-p string))
+                   (setf table (table-layout point cursor)))
                  (cond
                    ;; ``` lang: the language small, the marks hidden
                    (this-fence
@@ -433,6 +598,8 @@ a margin below); the lines of folds are not counted."
                       (add-line-background decorator :code-block)
                       (when (equal language "diff")
                         (decorate-diff-line decorator string))))
+                   ((and shown table (table-layout-widths table))
+                    (decorate-table-row decorator string table))
                    (shown
                     (decorate-line decorator string))))
                ;; (past what every window shows)
