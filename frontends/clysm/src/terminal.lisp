@@ -2,10 +2,17 @@
 ;;;;
 ;;;; Lem's terminal (extensions/terminal/) runs a shell in a pseudo-terminal
 ;;;; and keeps its screen with libvterm, a C library loaded with CFFI, which a
-;;;; page does not have.  Here the same two parts are JavaScript, in the page
-;;;; of the desktop application: node-pty (the pseudo-terminal, Node.js's
-;;;; native module that VS Code uses) and @xterm/headless (xterm.js's terminal
-;;;; without its display), both installed with Electron (desktop/package.json).
+;;;; page does not have.  Here the same two parts are JavaScript packages, in
+;;;; the page of the desktop application: node-pty (the pseudo-terminal,
+;;;; Node.js's native module that VS Code uses) and @xterm/headless
+;;;; (xterm.js's terminal without its display), both installed with Electron
+;;;; (desktop/package.json) at fixed versions.  They are driven from Lisp
+;;;; with the JS package, as Lem's terminal drives libvterm with CFFI.
+;;;; The screen is read as xterm.js keeps it: the cells of a row are an
+;;;; array of 32-bit words (content, foreground, background) that is copied
+;;;; into Lisp at once and decoded here (reading it cell by cell through
+;;;; xterm.js's API would take a call per attribute of each cell, some 30
+;;;; times slower).
 ;;;; This file defines what Lem's terminal-mode.lisp uses of the two packages
 ;;;; it is written against — the key constants of LEM-TERMINAL/FFI and the
 ;;;; terminal of LEM-TERMINAL/TERMINAL — and lem-clysm-terminal.asd loads
@@ -14,14 +21,14 @@
 ;;;;
 ;;;; The terminal's output is parsed by xterm.js as it comes (in the page's
 ;;;; one thread, between the editor's events); when it has changed, the
-;;;; editor renders it at most every TERMINAL-RENDER-THROTTLE-MS: it asks
-;;;; xterm.js for the rows that changed since the last time, each a string
-;;;; and runs of attributes, and puts them in the lines of the buffer.
+;;;; editor renders it at most every TERMINAL-RENDER-THROTTLE-MS: it reads
+;;;; the rows of the screen, and puts those that changed since the last time
+;;;; in the lines of the buffer, as a string and runs of attributes.
 
 (defpackage :lem-terminal/ffi
   (:use :cl)
   (:documentation "The key and modifier codes of libvterm that terminal-mode.lisp
-sends (here they are encoded as xterm does, in JavaScript)."))
+sends (here they are encoded as xterm does, by KEY-SEQUENCE)."))
 (in-package :lem-terminal/ffi)
 
 (defconstant vterm_key_none 0)
@@ -79,6 +86,24 @@ sends (here they are encoded as xterm does, in JavaScript)."))
 (defparameter *bell-interval-seconds* 1
   "Minimum seconds between two bell notices from the same terminal.")
 
+(defparameter *palette*
+  (let ((palette (make-array 256)))
+    ;; the 16 colours of xterm.js's own theme
+    (replace palette #(#x2e3436 #xcc0000 #x4e9a06 #xc4a000 #x3465a4 #x75507b #x06989a #xd3d7cf
+                       #x555753 #xef2929 #x8ae234 #xfce94f #x729fcf #xad7fa8 #x34e2e2 #xeeeeec))
+    ;; then the 6x6x6 cube and the 24 greys of xterm
+    (flet ((level (v) (if (zerop v) 0 (+ 55 (* v 40)))))
+      (dotimes (i 216)
+        (setf (aref palette (+ 16 i))
+              (logior (ash (level (floor i 36)) 16)
+                      (ash (level (mod (floor i 6) 6)) 8)
+                      (level (mod i 6))))))
+    (dotimes (i 24)
+      (let ((v (+ 8 (* i 10))))
+        (setf (aref palette (+ 232 i)) (logior (ash v 16) (ash v 8) v))))
+    palette)
+  "The RGB values of the 256 indexed colours.")
+
 (defparameter *attribute-cache-limit* 4096
   "Maximum entries in a terminal's attribute cache (then it is cleared).")
 
@@ -89,157 +114,34 @@ sends (here they are encoded as xterm does, in JavaScript)."))
   "When non-NIL, a terminal buffer is renamed after the window title its
 program sets (e.g. bash's \"user@host: ~/dir\"), as \"*Terminal: TITLE*\".")
 
-;;; ---- the pseudo-terminal and the screen (JavaScript)
-
-(sys::%defvar-host *terminal-spawn*
-  (js:eval "(directory, program, args, rows, cols, scrollback, onOutput, onExit, onTitle, onBell) => {
-     const pty = require('node-pty');
-     const { Terminal } = require('@xterm/headless');
-     const fs = require('node:fs'), os = require('node:os');
-     const term = new Terminal({ rows, cols, scrollback, allowProposedApi: true });
-     const exists = (d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } };
-     const file = program || process.env.SHELL || '/bin/sh';
-     const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
-     for (const name of Object.keys(env)) if (name.startsWith('ELECTRON_') || name.startsWith('CLYSM_')) delete env[name];
-     const child = pty.spawn(file, args || [], {
-       name: 'xterm-256color', rows, cols, env,
-       cwd: directory && exists(directory) ? directory : os.homedir() });
-     // the editor is told once that the screen changed, until it reads it
-     let notified = false, ended = false;
-     child.onData((data) => {
-       if (ended) return;
-       term.write(data, () => { if (!notified && !ended) { notified = true; onOutput(); } });
-     });
-     child.onExit(({ exitCode, signal }) => {
-       if (ended) return;
-       // after what was written before it is parsed
-       term.write('', () => { if (!ended) { ended = true; onExit(signal ? 128 + signal : exitCode); } });
-     });
-     term.onTitleChange((title) => { if (!ended) onTitle(title); });
-     term.onBell(() => { if (!ended) onBell(); });
-
-     // 16 colours of xterm.js's own theme; then the cube and the greys of xterm
-     const palette = ['2e3436','cc0000','4e9a06','c4a000','3465a4','75507b','06989a','d3d7cf',
-                      '555753','ef2929','8ae234','fce94f','729fcf','ad7fa8','34e2e2','eeeeec'];
-     const hex = (n) => n.toString(16).padStart(6, '0');
-     for (let i = 0; i < 216; i++) {
-       const level = (v) => v ? 55 + v * 40 : 0;
-       palette.push(hex((level(Math.floor(i / 36)) << 16) | (level(Math.floor(i / 6) % 6) << 8) | level(i % 6)));
-     }
-     for (let i = 0; i < 24; i++) { const v = 8 + i * 10; palette.push(hex((v << 16) | (v << 8) | v)); }
-     const fg = (c) => c.isFgDefault() ? '' : c.isFgRGB() ? hex(c.getFgColor()) : palette[c.getFgColor()] || '';
-     const bg = (c) => c.isBgDefault() ? '' : c.isBgRGB() ? hex(c.getBgColor()) : palette[c.getBgColor()] || '';
-
-     // a row: its text, one character per glyph (the second cell of a wide
-     // character is skipped), without the blanks that pad it, and runs
-     // (start end key) of attributes, in characters; a key is FG/BG/FLAGS
-     const row = (line, cols, cell) => {
-       const glyphs = [];
-       let end = 0;
-       for (let x = 0; x < cols; x++) {
-         line.getCell(x, cell);
-         if (cell.getWidth() === 0) continue;
-         const chars = cell.getChars() || ' ';
-         const flags = (cell.isBold() ? 1 : 0) | (cell.isUnderline() ? 2 : 0) | (cell.isInverse() ? 4 : 0);
-         const b = bg(cell);
-         glyphs.push([chars, fg(cell) + '/' + b + '/' + flags]);
-         if (chars !== ' ' || b !== '' || (flags & 6)) end = glyphs.length;
-       }
-       let text = '', index = 0, start = 0, key = null;
-       const runs = [];
-       for (let i = 0; i < end; i++) {
-         const [chars, k] = glyphs[i];
-         if (k !== key) {
-           if (key !== null && key !== '//0') runs.push(start, index, key);
-           start = index; key = k;
-         }
-         text += chars;
-         index += [...chars].length;
-       }
-       if (key !== null && key !== '//0') runs.push(start, index, key);
-       return [text, runs];
-     };
-     let previous = [];
-     return {
-       // [cursor-row cursor-col {row text runs}...]: the rows that changed
-       // since the last snapshot, or all of them
-       snapshot: (all) => {
-         notified = false;
-         const buffer = term.buffer.active, rows = term.rows, cols = term.cols, out = [buffer.cursorY, buffer.cursorX];
-         const cell = buffer.getNullCell();
-         if (all || previous.length !== rows) previous = new Array(rows).fill(null);
-         for (let y = 0; y < rows; y++) {
-           const line = buffer.getLine(buffer.baseY + y);
-           const [text, runs] = line ? row(line, cols, cell) : ['', []];
-           const id = text + '\\0' + runs.join(',');
-           if (previous[y] !== id) { previous[y] = id; out.push(y, text, runs); }
-         }
-         return out;
-       },
-       cursor: () => [term.buffer.active.cursorY, term.buffer.active.cursorX],
-       scrollbackCount: () => term.buffer.active.baseY,
-       scrollback: () => {
-         const buffer = term.buffer.active, lines = [];
-         for (let y = 0; y < buffer.baseY; y++) lines.push(buffer.getLine(y).translateToString(true) + '\\n');
-         return lines.join('');
-       },
-       cwd: () => { try { return fs.readlinkSync('/proc/' + child.pid + '/cwd'); } catch { return null; } },
-       write: (text) => { if (!ended) child.write(text); },
-       paste: (text) => {
-         if (ended) return;
-         child.write(term.modes.bracketedPasteMode ? '\\x1b[200~' + text + '\\x1b[201~' : text);
-       },
-       // what xterm sends for a key of libvterm (VTERM_KEY_...) with VTERM_MOD_... (shift 1, alt 2, ctrl 4)
-       key: (key, mod) => {
-         if (ended) return;
-         const app = term.modes.applicationCursorKeysMode, m = mod ? ';' + (1 + mod) : '';
-         const esc = (s) => (mod & 2 ? '\\x1b' : '') + s;
-         const cursor = (c) => mod ? '\\x1b[1' + m + c : (app ? '\\x1bO' : '\\x1b[') + c;
-         const tilde = (n) => '\\x1b[' + n + m + '~';
-         const sequences = {
-           1: () => esc('\\r'), 2: () => mod & 1 ? '\\x1b[Z' : esc('\\t'),
-           3: () => esc(mod & 4 ? '\\x08' : '\\x7f'), 4: () => '\\x1b',
-           5: () => cursor('A'), 6: () => cursor('B'), 7: () => cursor('D'), 8: () => cursor('C'),
-           9: () => tilde(2), 10: () => tilde(3), 11: () => cursor('H'), 12: () => cursor('F'),
-           13: () => tilde(5), 14: () => tilde(6) };
-         let s = sequences[key] && sequences[key]();
-         if (!s && key > 256 && key <= 268) {
-           const n = key - 256;
-           s = n <= 4 ? (mod ? '\\x1b[1' + m : '\\x1bO') + 'PQRS'[n - 1]
-                      : tilde([15, 17, 18, 19, 20, 21, 23, 24][n - 5]);
-         }
-         if (s) child.write(s);
-       },
-       // a character, with control and meta as xterm sends them
-       char: (code, mod) => {
-         if (ended) return;
-         if (mod & 4) {
-           if (code >= 0x61 && code <= 0x7a) code -= 0x60;
-           else if (code >= 0x40 && code <= 0x5f) code -= 0x40;
-           else if (code === 0x20 || code === 0x32) code = 0;
-           else if (code >= 0x33 && code <= 0x37) code -= 0x18;
-           else if (code === 0x3f || code === 0x38) code = 0x7f;
-           else if (code === 0x2f) code = 0x1f;
-         }
-         child.write((mod & 2 ? '\\x1b' : '') + String.fromCodePoint(code));
-       },
-       resize: (rows, cols) => {
-         term.resize(cols, rows);
-         if (!ended) { try { child.resize(cols, rows); } catch {} }
-       },
-       kill: () => {
-         if (!ended) { ended = true; try { child.kill(); } catch {} }
-         term.dispose();
-       },
-     };
-   }"))
+(defconstant +cell-octets+ 12
+  "The octets of a cell in xterm.js's arrays of a row (BufferLine's _data):
+three 32-bit words, little-endian: content, foreground, background.")
 
 ;;; ---- a terminal
 
 (defclass terminal ()
-  ((handle :initarg :handle
-           :accessor terminal-handle
-           :documentation "The pseudo-terminal and its screen (JavaScript).")
+  ((pty :initarg :pty
+        :accessor terminal-pty
+        :documentation "The pseudo-terminal and its child process (node-pty).")
+   (xterm :initarg :xterm
+          :accessor terminal-xterm
+          :documentation "The screen (@xterm/headless's Terminal).")
+   (output-subscription :initform nil
+                        :accessor terminal-output-subscription
+                        :documentation "The handler of the pty's output (its dispose() removes it).")
+   (closed :initform nil
+           :accessor terminal-closed
+           :documentation "T once the process has ended (and its output is
+parsed) or was killed: nothing is written to it any more.")
+   (render-notified :initform nil
+                    :accessor terminal-render-notified
+                    :documentation "T when the editor was told that the screen
+changed and has not read it yet.")
+   (shown-rows :initform (vector)
+               :accessor terminal-shown-rows
+               :documentation "The octets of each row of the screen as last rendered,
+to render only the rows that changed.")
    (buffer :initarg :buffer
            :reader terminal-buffer)
    (rows :initarg :rows
@@ -256,7 +158,7 @@ program sets (e.g. bash's \"user@host: ~/dir\"), as \"*Terminal: TITLE*\".")
                       :documentation "T when the lines above the screen are in the buffer.")
    (attribute-cache :initform (make-hash-table :test #'equal)
                     :accessor terminal-attribute-cache
-                    :documentation "Attributes by the keys of xterm.js's runs.")
+                    :documentation "Attributes by their keys (see CELL-KEYS).")
    (render-timer :initform nil
                  :accessor terminal-render-timer)
    (render-timer-armed :initform nil
@@ -286,6 +188,125 @@ still running, or NIL."
   (alexandria:when-let (terminal (find-if-not #'process-exited-p *terminals*))
     (terminal-buffer terminal)))
 
+;;; ---- node-pty and xterm.js
+
+(defun node-module (name)
+  "The Node.js module NAME, with the page's require()."
+  (let ((require (js:global "require")))
+    (unless (eq (js:typeof require) :function)
+      (editor-error "Cannot start the terminal: it runs in the desktop application"))
+    (js:funcall require name)))
+
+(defun child-environment ()
+  "The environment of the shell: the editor's, as xterm-256color, without
+the variables of Electron and Clysm."
+  (let* ((object (js:global "Object"))
+         (env (js:call object "assign" (js:object)
+                       (js:get (js:global "process") "env")))
+         (names (js:call object "keys" env)))
+    (dotimes (i (js:get names "length"))
+      (let ((name (js:get names i)))
+        (when (or (alexandria:starts-with-subseq "ELECTRON_" name)
+                  (alexandria:starts-with-subseq "CLYSM_" name))
+          (js:call (js:global "Reflect") "deleteProperty" env name))))
+    (js:set env "TERM" "xterm-256color")
+    (js:set env "COLORTERM" "truecolor")
+    env))
+
+(defun existing-directory (directory)
+  "DIRECTORY if it is a directory, otherwise the home directory."
+  (if (and directory
+           (ignore-errors
+            (js:call (js:call (node-module "node:fs") "statSync" directory) "isDirectory")))
+      directory
+      (js:call (node-module "node:os") "homedir")))
+
+(defun exit-status-code (event)
+  "The exit status of node-pty's exit EVENT: 128+signal when it was killed."
+  (let ((signal (js:get event "signal")))
+    (if (and (integerp signal) (plusp signal))
+        (+ 128 signal)
+        (js:get event "exitCode"))))
+
+(defun start-process (terminal directory program args)
+  "Start PROGRAM with ARGS, or the user's shell, in DIRECTORY, in a
+pseudo-terminal whose output goes to a new xterm.js screen; the editor is
+told of the changes of the screen, the exit, the title and the bell."
+  (let* ((rows (terminal-rows terminal))
+         (cols (terminal-cols terminal))
+         (xterm (js:new (js:get (node-module "@xterm/headless") "Terminal")
+                        (js:object "rows" rows "cols" cols
+                                   "scrollback" *scrollback-limit*
+                                   "allowProposedApi" t)))
+         (env (child-environment))
+         (pty (js:call (node-module "node-pty") "spawn"
+                       (or program (js:get env "SHELL") "/bin/sh")
+                       (coerce args 'vector)
+                       ;; the output as Buffers, given to xterm.js as they are
+                       ;; (not made Lisp strings), which decodes UTF-8 itself
+                       (js:object "name" "xterm-256color" "rows" rows "cols" cols
+                                  "env" env "cwd" (existing-directory directory)
+                                  "encoding" :null)))
+         (parsed (lambda ()
+                   ;; the editor is told once that the screen changed, until it reads it
+                   (unless (or (terminal-render-notified terminal)
+                               (terminal-closed terminal))
+                     (setf (terminal-render-notified terminal) t)
+                     (send-event (lambda () (arm-render-timer terminal))))
+                   nil)))
+    (setf (terminal-xterm terminal) xterm
+          (terminal-pty terminal) pty)
+    (setf (terminal-output-subscription terminal)
+          (js:call pty "onData"
+                   (lambda (data)
+                     (unless (terminal-closed terminal)
+                       (js:call xterm "write" data parsed))
+                     nil)))
+    (js:call pty "onExit"
+             (lambda (event)
+               (unless (terminal-closed terminal)
+                 (let ((status (exit-status-code event)))
+                   ;; after what was written before it is parsed
+                   (js:call xterm "write" ""
+                            (lambda ()
+                              (unless (terminal-closed terminal)
+                                (setf (terminal-closed terminal) t)
+                                (send-event (lambda () (finish-process terminal status))))
+                              nil))))
+               nil))
+    (js:call xterm "onTitleChange"
+             (lambda (title)
+               (unless (terminal-closed terminal)
+                 (send-event (lambda () (apply-title terminal title))))
+               nil))
+    (js:call xterm "onBell"
+             (lambda ()
+               (unless (terminal-closed terminal)
+                 (send-event (lambda () (notify-bell terminal))))
+               nil))))
+
+(defun write-to-process (terminal string)
+  "Send STRING to TERMINAL's process, unless it has ended."
+  (unless (terminal-closed terminal)
+    (js:call (terminal-pty terminal) "write" string)))
+
+(defun kill-process (terminal)
+  "Kill TERMINAL's process if it still runs, and free its screen."
+  (unless (terminal-closed terminal)
+    (setf (terminal-closed terminal) t)
+    (ignore-errors (js:call (terminal-pty terminal) "kill")))
+  (alexandria:when-let ((subscription (terminal-output-subscription terminal)))
+    (js:call subscription "dispose"))
+  (js:call (terminal-xterm terminal) "dispose"))
+
+(defun active-screen (terminal)
+  "xterm.js's active buffer (the normal screen or the alternate one)."
+  (js:get (js:get (terminal-xterm terminal) "buffer") "active"))
+
+(defun xterm-mode-p (terminal mode)
+  "Whether the program has turned on xterm.js's MODE (e.g. \"bracketedPasteMode\")."
+  (js:get (js:get (terminal-xterm terminal) "modes") mode))
+
 (defun create (&key (rows (alexandria:required-argument :rows))
                     (cols (alexandria:required-argument :cols))
                     (buffer (alexandria:required-argument :buffer))
@@ -296,29 +317,14 @@ still running, or NIL."
 user's shell in DIRECTORY, in a pseudo-terminal of ROWS and COLS whose screen
 is rendered into BUFFER."
   (let ((terminal (make-instance 'terminal :buffer buffer :rows rows :cols cols)))
-    (setf (terminal-handle terminal)
-          (handler-case
-              (js:funcall *terminal-spawn*
-                          (and (plusp (length directory))
-                               (uiop:native-namestring (uiop:ensure-directory-pathname directory)))
-                          program (rest argv) rows cols *scrollback-limit*
-                          (lambda ()
-                            (send-event (lambda () (arm-render-timer terminal)))
-                            nil)
-                          (lambda (status)
-                            (send-event (lambda () (finish-process terminal status)))
-                            nil)
-                          (lambda (title)
-                            (send-event (lambda () (apply-title terminal title)))
-                            nil)
-                          (lambda ()
-                            (send-event (lambda () (notify-bell terminal)))
-                            nil))
-            (js:js-error (e)
-              (editor-error "Cannot start the terminal: ~A~@[ (~A)~]"
-                            (js:js-error-message e)
-                            (and (not (js:funcall (js:eval "() => typeof require === 'function'")))
-                                 "the terminal runs in the desktop application")))))
+    (handler-case
+        (start-process terminal
+                       (and (plusp (length directory))
+                            (uiop:native-namestring (uiop:ensure-directory-pathname directory)))
+                       program
+                       (rest argv))
+      (js:js-error (e)
+        (editor-error "Cannot start the terminal: ~A" (js:js-error-message e))))
     (push terminal *terminals*)
     terminal))
 
@@ -393,7 +399,7 @@ terminal and append an exit notice."
     (alexandria:when-let ((timer (terminal-render-timer terminal)))
       (ignore-errors (stop-timer timer)))
     (alexandria:deletef *terminals* terminal)
-    (js:call (terminal-handle terminal) "kill")))
+    (kill-process terminal)))
 
 (defgeneric copy-mode-on (terminal))
 (defgeneric copy-mode-off (terminal))
@@ -413,43 +419,161 @@ terminal and append an exit notice."
   "The current directory of TERMINAL's process (the shell) as a directory
 namestring, or NIL when it is unknown (it is known on Linux)."
   (when (live-p terminal)
-    (let ((cwd (js:call (terminal-handle terminal) "cwd")))
+    (let ((cwd (ignore-errors
+                (js:call (node-module "node:fs") "readlinkSync"
+                         (format nil "/proc/~D/cwd" (js:get (terminal-pty terminal) "pid"))))))
       (when (stringp cwd)
         (uiop:native-namestring (uiop:ensure-directory-pathname
                                  (uiop:parse-native-namestring cwd)))))))
 
 ;;; ---- rendering
 
-(defun parse-color-part (string)
-  (and (plusp (length string))
-       (parse-color (concatenate 'string "#" string))))
+(defun octet-word-24 (octets index)
+  "The low 24 bits of the little-endian 32-bit word at INDEX of OCTETS."
+  (logior (aref octets index)
+          (ash (aref octets (+ index 1)) 8)
+          (ash (aref octets (+ index 2)) 16)))
 
-(defun run-attribute (terminal key)
-  "The attribute of KEY, \"FG/BG/FLAGS\" (FLAGS: 1 bold, 2 underline, 4 reverse)."
-  (let ((cache (terminal-attribute-cache terminal)))
-    (or (gethash key cache)
-        (let* ((slash1 (position #\/ key))
-               (slash2 (position #\/ key :start (1+ slash1)))
-               (flags (parse-integer key :start (1+ slash2))))
-          (when (>= (hash-table-count cache) *attribute-cache-limit*)
-            (clrhash cache))
-          (setf (gethash key cache)
-                (make-attribute :foreground (parse-color-part (subseq key 0 slash1))
-                                :background (parse-color-part (subseq key (1+ slash1) slash2))
-                                :bold (logtest flags 1)
-                                :underline (logtest flags 2)
-                                :reverse (logtest flags 4)))))))
+(defun cell-content-index (cell)
+  (* cell +cell-octets+))
 
-(defun set-row (terminal line text runs)
-  "Put TEXT and its RUNS (start end key...) of attributes in LINE.  This sets
+(defun cell-code-point (octets cell)
+  "The code point of CELL, 0 when it is empty."
+  (ldb (byte 21 0) (octet-word-24 octets (cell-content-index cell))))
+
+(defun cell-combined-p (octets cell)
+  "Whether CELL holds several code points (BufferLine's _combined has them)."
+  (logbitp 5 (aref octets (+ (cell-content-index cell) 2))))
+
+(defun cell-width (octets cell)
+  "The width of CELL: 0 for the second cell of a wide character."
+  (ldb (byte 2 6) (aref octets (+ (cell-content-index cell) 2))))
+
+(defun cell-extended-p (octets cell)
+  "Whether CELL has extended attributes (an underline style, a URL)."
+  (logbitp 4 (aref octets (+ (cell-content-index cell) 11))))
+
+(defun cell-color (octets index)
+  "The colour bits of the foreground (INDEX 4) or background (INDEX 8) word of
+a cell: its mode (1 and 2 indexed, 3 RGB) and value, 26 bits; 0 for the
+default colour."
+  (let ((mode (ldb (byte 2 0) (aref octets (+ index 3)))))
+    (if (zerop mode)
+        0
+        (logior (octet-word-24 octets index) (ash mode 24)))))
+
+(defun cell-keys (octets cell extended-underline-p)
+  "The attribute keys of CELL, two fixnums: the foreground colour with the
+flags (1 bold, 2 underline, 4 reverse), and the background colour."
+  (let* ((base (cell-content-index cell))
+         (fg-flags (aref octets (+ base 7))))
+    (values (logior (ash (cell-color octets (+ base 4)) 3)
+                    (if (logbitp 3 fg-flags) 1 0)
+                    (if (or (logbitp 4 fg-flags) extended-underline-p) 2 0)
+                    (if (logbitp 2 fg-flags) 4 0))
+            (cell-color octets (+ base 8)))))
+
+(defun color-from-bits (bits)
+  "The colour of 26 colour bits (see CELL-COLOR), NIL for the default."
+  (let ((mode (ldb (byte 2 24) bits))
+        (value (ldb (byte 24 0) bits)))
+    (unless (zerop mode)
+      (parse-color (format nil "#~(~6,'0x~)"
+                           (if (= mode 3) value (aref *palette* (ldb (byte 8 0) value))))))))
+
+(defun keys-attribute (terminal fg-key bg-key)
+  "The attribute of the keys of CELL-KEYS, NIL for the default one."
+  (unless (and (zerop fg-key) (zerop bg-key))
+    (let ((cache (terminal-attribute-cache terminal))
+          (key (cons fg-key bg-key)))
+      (or (gethash key cache)
+          (progn
+            (when (>= (hash-table-count cache) *attribute-cache-limit*)
+              (clrhash cache))
+            (setf (gethash key cache)
+                  (make-attribute :foreground (color-from-bits (ash fg-key -3))
+                                  :background (color-from-bits bg-key)
+                                  :bold (logtest fg-key 1)
+                                  :underline (logtest fg-key 2)
+                                  :reverse (logtest fg-key 4))))))))
+
+(defun screen-line (terminal row)
+  "xterm.js's line (BufferLine) of screen ROW, or NIL."
+  (let* ((screen (active-screen terminal))
+         (view (js:call screen "getLine" (+ (js:get screen "baseY") row))))
+    (and view (js:get view "_line"))))
+
+(defun line-octets (line cols)
+  "The octets of the first COLS cells of xterm.js's LINE."
+  (let ((octets (js:to-octets (js:get line "_data")))
+        (length (* cols +cell-octets+)))
+    (if (> (length octets) length) (subseq octets 0 length) octets)))
+
+(defun row-unchanged-p (octets previous)
+  "Whether a row of OCTETS shows what PREVIOUS showed: the same octets, and
+no cell whose text or underline is kept outside them."
+  (and previous
+       (equalp octets previous)
+       (loop :for cell :from 0 :below (floor (length octets) +cell-octets+)
+             :never (or (cell-combined-p octets cell)
+                        (cell-extended-p octets cell)))))
+
+(defun cell-string (line octets cell)
+  "The text of CELL: a space for an empty cell."
+  (cond ((cell-combined-p octets cell)
+         (js:get (js:get line "_combined") cell))
+        ((zerop (cell-code-point octets cell)) " ")
+        (t (string (code-char (cell-code-point octets cell))))))
+
+(defun extended-underline-p (line octets cell)
+  (and (cell-extended-p octets cell)
+       (let ((extended (js:get (js:get line "_extendedAttrs") cell)))
+         (and extended
+              (plusp (js:get extended "underlineStyle"))))))
+
+(defun row-text-and-attributes (terminal line octets)
+  "The text of a row, one character per glyph (the second cell of a wide
+character is skipped), without the blanks that pad it, and its attributes,
+a list of (start end attribute) in characters."
+  (let ((glyphs '())
+        (count 0)
+        (end 0))
+    ;; the glyphs: (string fg-key bg-key), and how many of them are not padding
+    (dotimes (cell (floor (length octets) +cell-octets+))
+      (unless (zerop (cell-width octets cell))
+        (let ((string (cell-string line octets cell)))
+          (multiple-value-bind (fg-key bg-key)
+              (cell-keys octets cell (extended-underline-p line octets cell))
+            (push (list string fg-key bg-key) glyphs)
+            (incf count)
+            (when (or (string/= string " ")
+                      (/= bg-key 0)
+                      (logtest fg-key 6))
+              (setf end count))))))
+    (let ((text (make-string-output-stream))
+          (attributes '())
+          (index 0)
+          (start 0)
+          (run-fg nil)
+          (run-bg nil))
+      (flet ((close-run ()
+               (alexandria:when-let ((attribute (and run-fg (keys-attribute terminal run-fg run-bg))))
+                 (push (list start index attribute) attributes))))
+        (loop :for (string fg-key bg-key) :in (subseq (nreverse glyphs) 0 end)
+              :do (unless (and (eql fg-key run-fg) (eql bg-key run-bg))
+                    (close-run)
+                    (setf start index run-fg fg-key run-bg bg-key))
+                  (write-string string text)
+                  (incf index (length string)))
+        (close-run))
+      (values (get-output-stream-string text) (nreverse attributes)))))
+
+(defun set-row (line text attributes)
+  "Put TEXT and its ATTRIBUTES, (start end attribute)..., in LINE.  This sets
 the line directly, as Lem's terminal does: the terminal buffer is only
 rendered into (no undo, no change hooks)."
   (line:set-line-string text line)
-  (setf (getf (line:line-plist line) :attribute)
-        (loop :for i :from 0 :below (or (js:get runs "length") 0) :by 3
-              :collect (list (js:get runs i)
-                             (js:get runs (+ i 1))
-                             (run-attribute terminal (js:get runs (+ i 2)))))))
+  (setf (getf (line:line-plist line) :attribute) attributes))
 
 (defun move-to-cursor (point row col)
   "Move POINT to screen ROW and COL, padding the line with spaces when the
@@ -481,34 +605,41 @@ cursor is past the end of its text."
   (let* ((buffer (terminal-buffer terminal))
          (point (buffer-point buffer))
          (rows (terminal-rows terminal))
-         (snapshot (js:call (terminal-handle terminal) "snapshot"
-                            (if (terminal-redraw-all terminal) t :false)))
-         (length (js:get snapshot "length")))
-    (setf (terminal-redraw-all terminal) nil)
+         (cols (terminal-cols terminal))
+         (screen (active-screen terminal)))
+    (setf (terminal-render-notified terminal) nil)
+    (when (or (terminal-redraw-all terminal)
+              (/= (length (terminal-shown-rows terminal)) rows))
+      (setf (terminal-shown-rows terminal) (make-array rows :initial-element nil)
+            (terminal-redraw-all terminal) nil))
     (deactivate-scrollback terminal)
     (with-buffer-read-only buffer nil
       (fit-lines buffer rows)
       (move-to-line point 1)
-      (let ((lines (make-array rows)))
-        (loop :for i :from 0 :below rows
-              :for line := (point-line point) :then (line:line-next line)
-              :do (setf (aref lines i) line))
-        (loop :for i :from 2 :below length :by 3
-              :for row := (js:get snapshot i)
-              :when (< row rows)
-                :do (set-row terminal (aref lines row)
-                             (js:get snapshot (+ i 1))
-                             (js:get snapshot (+ i 2)))))
-      (move-to-cursor point (js:get snapshot 0) (js:get snapshot 1)))))
+      (loop :with shown := (terminal-shown-rows terminal)
+            :for row :from 0 :below rows
+            :for buffer-line := (point-line point) :then (line:line-next buffer-line)
+            :for line := (screen-line terminal row)
+            :for octets := (and line (line-octets line cols))
+            :unless (and octets (row-unchanged-p octets (aref shown row)))
+              :do (setf (aref shown row) octets)
+                  (if line
+                      (multiple-value-bind (text attributes)
+                          (row-text-and-attributes terminal line octets)
+                        (set-row buffer-line text attributes))
+                      (set-row buffer-line "" nil)))
+      (move-to-cursor point (js:get screen "cursorY") (js:get screen "cursorX")))))
 
 (defgeneric adjust-point (terminal))
 
 (defmethod adjust-point ((terminal terminal))
   (unless (terminal-dead terminal)
-    (let ((cursor (js:call (terminal-handle terminal) "cursor"))
+    (let ((screen (active-screen terminal))
           (buffer (terminal-buffer terminal)))
       (with-buffer-read-only buffer nil
-        (move-to-cursor (buffer-point buffer) (js:get cursor 0) (js:get cursor 1))))))
+        (move-to-cursor (buffer-point buffer)
+                        (js:get screen "cursorY")
+                        (js:get screen "cursorX"))))))
 
 ;;; ---- the lines above the screen
 
@@ -516,7 +647,14 @@ cursor is past the end of its text."
   "The number of lines above the screen."
   (if (terminal-dead terminal)
       0
-      (js:call (terminal-handle terminal) "scrollbackCount")))
+      (js:get (active-screen terminal) "baseY")))
+
+(defun scrollback-text (terminal)
+  "The lines above the screen, each ended by a newline."
+  (let ((screen (active-screen terminal)))
+    (with-output-to-string (out)
+      (dotimes (y (js:get screen "baseY"))
+        (write-line (js:call (js:call screen "getLine" y) "translateToString" t) out)))))
 
 (defun buffer-view-points (buffer)
   (cons (buffer-point buffer)
@@ -555,7 +693,7 @@ cursor is past the end of its text."
 the windows on what they showed."
   (unless (or (terminal-scrollback-active terminal)
               (terminal-dead terminal))
-    (let ((text (js:call (terminal-handle terminal) "scrollback")))
+    (let ((text (scrollback-text terminal)))
       (when (plusp (length text))
         (setf (terminal-scrollback-active terminal) t)
         (let* ((buffer (terminal-buffer terminal))
@@ -579,13 +717,71 @@ the windows on what they showed."
 (defgeneric paste-string (terminal string))
 (defgeneric resize (terminal &key rows cols))
 
+(defun escape-sequence (&rest parts)
+  "ESC followed by PARTS (strings, characters and numbers) as by PRINC."
+  (format nil "~C~{~A~}" (code-char 27) parts))
+
+(defun key-sequence (key mod application-cursor-keys)
+  "What xterm sends for KEY, a VTERM_KEY_..., with MOD, VTERM_MOD_... (shift
+1, alt 2, ctrl 4), or NIL for a key it does not know."
+  (let ((modifier (if (zerop mod) "" (format nil ";~D" (1+ mod)))))
+    (flet ((meta (string)
+             (if (logtest mod 2) (escape-sequence string) string))
+           (cursor (final)
+             (cond ((plusp mod) (escape-sequence "[1" modifier final))
+                   (application-cursor-keys (escape-sequence "O" final))
+                   (t (escape-sequence "[" final))))
+           (tilde (n)
+             (escape-sequence "[" n modifier "~")))
+      (case key
+        (1 (meta (string #\Return)))
+        (2 (if (logtest mod 1) (escape-sequence "[Z") (meta (string #\Tab))))
+        (3 (meta (string (code-char (if (logtest mod 4) #x08 #x7f)))))
+        (4 (escape-sequence))
+        (5 (cursor "A"))
+        (6 (cursor "B"))
+        (7 (cursor "D"))
+        (8 (cursor "C"))
+        (9 (tilde 2))
+        (10 (tilde 3))
+        (11 (cursor "H"))
+        (12 (cursor "F"))
+        (13 (tilde 5))
+        (14 (tilde 6))
+        (t
+         ;; F1 to F12 (VTERM_KEY_FUNCTION_0 + n)
+         (let ((n (- key 256)))
+           (cond ((<= 1 n 4)
+                  (escape-sequence (if (zerop mod) "O" (format nil "[1~A" modifier))
+                                   (char "PQRS" (1- n))))
+                 ((<= 5 n 12)
+                  (tilde (nth (- n 5) '(15 17 18 19 20 21 23 24)))))))))))
+
+(defun control-code (code)
+  "The code that xterm sends for the character CODE with control."
+  (cond ((<= #x61 code #x7a) (- code #x60))           ; a-z
+        ((<= #x40 code #x5f) (- code #x40))           ; @ A-Z [ \ ] ^ _
+        ((or (= code #x20) (= code #x32)) 0)          ; space 2
+        ((<= #x33 code #x37) (- code #x18))           ; 3-7: ESC to US
+        ((or (= code #x3f) (= code #x38)) #x7f)       ; ? 8
+        ((= code #x2f) #x1f)                          ; /
+        (t code)))
+
+(defun character-sequence (character mod)
+  "What xterm sends for CHARACTER with MOD (control and meta)."
+  (let* ((code (char-code character))
+         (string (string (code-char (if (logtest mod 4) (control-code code) code)))))
+    (if (logtest mod 2) (escape-sequence string) string)))
+
 (defmethod input-character ((terminal terminal) character &key (mod 0))
   (when (live-p terminal)
-    (js:call (terminal-handle terminal) "char" (char-code character) mod)))
+    (write-to-process terminal (character-sequence character mod))))
 
 (defmethod input-key ((terminal terminal) key &key (mod 0))
   (when (live-p terminal)
-    (js:call (terminal-handle terminal) "key" key mod)))
+    (alexandria:when-let ((sequence (key-sequence key mod
+                                                  (xterm-mode-p terminal "applicationCursorKeysMode"))))
+      (write-to-process terminal sequence))))
 
 (defun paste-text (string)
   "STRING with its line breaks as a terminal sends them when pasting: CR."
@@ -602,7 +798,11 @@ the windows on what they showed."
   "Send STRING as pasted text (between ESC[200~ and ESC[201~ when the program
 has turned on bracketed paste)."
   (when (live-p terminal)
-    (js:call (terminal-handle terminal) "paste" (paste-text string))))
+    (let ((text (paste-text string)))
+      (write-to-process terminal
+                        (if (xterm-mode-p terminal "bracketedPasteMode")
+                            (concatenate 'string (escape-sequence "[200~") text (escape-sequence "[201~"))
+                            text)))))
 
 (defmethod resize ((terminal terminal)
                    &key (rows (alexandria:required-argument :rows))
@@ -614,7 +814,9 @@ has turned on bracketed paste)."
     (setf (terminal-rows terminal) rows
           (terminal-cols terminal) cols
           (terminal-redraw-all terminal) t)
-    (js:call (terminal-handle terminal) "resize" rows cols)
+    (js:call (terminal-xterm terminal) "resize" cols rows)
+    (unless (terminal-closed terminal)
+      (ignore-errors (js:call (terminal-pty terminal) "resize" cols rows)))
     (arm-render-timer terminal)))
 
 ;;; ---- the title and the bell

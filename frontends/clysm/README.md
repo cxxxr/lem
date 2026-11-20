@@ -207,7 +207,9 @@ desktop application). `M-x terminal` is Lem's terminal
 it does with libvterm and CFFI there is done in the page by node-pty (the
 pseudo-terminal, a native module of Node-API, which `build.sh` installs with
 Electron and builds where it has no prebuilt one) and `@xterm/headless`
-(xterm.js's terminal without a display). The shell is `$SHELL` in the
+(xterm.js's terminal without a display), both driven from Lisp with the
+`js:` package (the key sequences, colours and rows of the screen are made
+in Lisp). The shell is `$SHELL` in the
 directory of the buffer; the buffer follows the shell's directory on Linux
 only (`/proc`).
 
