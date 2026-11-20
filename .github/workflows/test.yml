@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
 
       - name: Lint - Check for internal symbol usage
         run: |
@@ -44,10 +44,10 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       # Build image using Buildah action
       - name: Build Image
-        uses: redhat-actions/buildah-build@v2
+        uses: redhat-actions/buildah-build@v3
         id: build_image
         with:
           containerfiles: ./Dockerfile
@@ -56,7 +56,7 @@ jobs:
 
       # Push the image to GHCR (Image Registry)
       - name: Push To GHCR
-        uses: redhat-actions/push-to-registry@v2
+        uses: redhat-actions/push-to-registry@v3
         id: push
         with:
           image: ${{ steps.build_image.outputs.image }}

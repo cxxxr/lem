@@ -35,7 +35,7 @@ jobs:
       built: ${{ steps.flag.outputs.built }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with: { fetch-depth: 0 }
 
       - name: Fetch tags
@@ -58,7 +58,7 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.diff.outputs.skip != 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build AppImage
         if: steps.diff.outputs.skip != 'true'
@@ -69,7 +69,7 @@ jobs:
 
       - name: Upload artifact (Linux)
         if: steps.diff.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lem-linux
           path: dist/Lem-x86_64.AppImage
@@ -87,7 +87,7 @@ jobs:
       built: ${{ steps.flag.outputs.built }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with: { fetch-depth: 0 }
 
       - name: Fetch tags
@@ -130,7 +130,7 @@ jobs:
 
       - name: Upload artifact (macOS)
         if: steps.diff.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lem-macos
           path: lem-macos.zip
@@ -148,7 +148,7 @@ jobs:
       needs.linux.result != 'cancelled' || needs.macos.result != 'cancelled'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with: { fetch-depth: 0 }
 
       - name: Fetch tags
@@ -159,7 +159,7 @@ jobs:
         run: echo "date=$(date +'%Y%m%d-%H%M')" >> "$GITHUB_OUTPUT"
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: lem-*
           path: download
@@ -189,7 +189,7 @@ jobs:
           git push -f origin "${{ env.NIGHTLY_TAG }}"
 
       - name: Create/Update unified nightly pre-release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         if: steps.collect.outputs.files != ''
         with:
           tag_name: ${{ env.NIGHTLY_TAG }}
