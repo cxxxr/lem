@@ -39,7 +39,7 @@ jobs:
 
   # The SDL3 frontend tests draw with SDL's software renderer and open no
   # window.  The test image (Debian 12) and Ubuntu 24.04 have no SDL3, so
-  # they run on Debian 13 and on macOS with Homebrew.
+  # they run on Debian 13.  sdl3-macos.yml runs them on macOS weekly.
   sdl3-test-linux:
     name: SDL3 frontend tests (Linux)
     runs-on: ubuntu-latest
@@ -75,46 +75,6 @@ jobs:
         run: qlot install
 
       - name: Run SDL3 frontend tests
-        run: |
-          CL_SOURCE_REGISTRY="(:source-registry (:tree \"$PWD/\") :ignore-inherited-configuration)" \
-            sbcl --noinform --non-interactive --load .qlot/setup.lisp \
-                 --eval '(ql:quickload :rove :silent t)' \
-                 --eval '(unless (rove:run :lem-sdl3/tests) (uiop:quit 1))'
-
-  sdl3-test-macos:
-    name: SDL3 frontend tests (macOS)
-    runs-on: macos-15
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install SBCL, qlot, SDL3 and the text shaping libraries
-        run: |
-          brew install sbcl sdl3 sdl3_ttf sdl3_image freetype harfbuzz enchant openssl@3
-          # cl+ssl (used by qlot) needs OpenSSL 3; see nightly-builds.yml.
-          ln -sfn "$(brew --prefix openssl@3)" "$(brew --prefix)/opt/openssl"
-          curl -L https://qlot.tech/installer | sh
-          echo "$HOME/.qlot/bin" >> $GITHUB_PATH
-
-      # Every native library lem-sdl3/tests loads (cffi:list-foreign-libraries
-      # after a test run), so a missing one is reported by name.  libffi and
-      # the frameworks come with macOS.
-      - name: Check native libraries
-        run: |
-          missing=0
-          lib="$(brew --prefix)/lib"
-          for file in "$lib/libSDL3.dylib" "$lib/libSDL3_ttf.dylib" "$lib/libSDL3_image.dylib" \
-                      "$lib/libfreetype.6.dylib" "$lib/libharfbuzz.0.dylib" "$lib/libenchant-2.dylib" \
-                      "$(brew --prefix)/opt/openssl/lib/libssl.dylib"; do
-            test -e "$file" || { echo "missing: $file"; missing=1; }
-          done
-          exit $missing
-
-      - name: Install dependencies
-        run: qlot install
-
-      - name: Run SDL3 frontend tests
-        # Through SBCL rather than .qlot/bin/rove, which needs Roswell.
         run: |
           CL_SOURCE_REGISTRY="(:source-registry (:tree \"$PWD/\") :ignore-inherited-configuration)" \
             sbcl --noinform --non-interactive --load .qlot/setup.lisp \
