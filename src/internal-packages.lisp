@@ -21,6 +21,7 @@
    :line-end-object
    :line-end-object-offset
    :text-object
+   :variable-text-object
    :text-object-attribute
    :text-object-string
    :text-object-surface
@@ -287,6 +288,9 @@
   ;; window.lisp
   (:export
    :line-wrap
+   :variable-pitch
+   :variable-pitch-mode
+   :proportional-text-p
    :*window-sufficient-width*
    :*scroll-recenter-p*
    :*window-scroll-functions*
@@ -694,6 +698,7 @@
    :redraw-after-modifying-floating-window
    :support-floating-window
    :support-pixel-positioning-p
+   :support-proportional-text-p
    :html-support-p
    :underline-color-support-p
    :no-force-needed-p
@@ -836,6 +841,7 @@
    :get-font
    :get-mouse-position
    :get-char-width
+   :char-pixel-width
    :get-char-height
    :clear-to-end-of-window
    :js-eval

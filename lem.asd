@@ -137,6 +137,7 @@
                (:file "streams")
                (:file "completion")
                (:file "typeout")
+               (:file "variable-pitch")
                (:file "cursors")
                (:file "command-advices")
                (:file "interface")

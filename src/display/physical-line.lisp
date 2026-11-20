@@ -38,6 +38,9 @@
 (defclass icon-object (text-object) ())
 (defclass folder-object (text-object) ())
 (defclass emoji-object (text-object) ())
+(defclass variable-text-object (text-object) ()
+  (:documentation "Text drawn in a proportional font, its width the sum of
+lem-if:char-pixel-width of its characters."))
 
 (defclass eol-cursor-object (drawing-object)
   ((color :initarg :color
@@ -237,6 +240,10 @@
        (make-instance 'icon-object
                       :string resolved-string :attribute resolved-attribute
                       :type type :within-cursor within-cursor))
+      (:variable
+       (make-instance 'variable-text-object
+                      :string resolved-string :attribute resolved-attribute
+                      :type type :within-cursor within-cursor))
       (:emoji
        (make-instance 'emoji-object
                       :string resolved-string :attribute resolved-attribute
@@ -250,7 +257,14 @@
                       :string resolved-string :attribute resolved-attribute
                       :type type :within-cursor within-cursor)))))
 
-(defun create-drawing-object (item)
+(defun proportional-type (type proportional)
+  "Return the char-type a text object of TYPE takes: :variable for the
+monospace types when PROPORTIONAL (see proportional-text-p)."
+  (if (and proportional (member type '(:latin :other)))
+      :variable
+      type))
+
+(defun create-drawing-object (item &optional proportional)
   (cond ((and *line-wrap* (typep item 'eol-cursor-item))
          (list (make-instance 'eol-cursor-object
                               :attribute (eol-cursor-item-attribute item)
@@ -283,13 +297,16 @@
                  (t
                   (loop :for (type . string) :in (split-string-by-character-type string)
                         :unless (alexandria:emptyp string)
-                        :collect (make-object-with-type string attribute type))))))))
+                        :collect (make-object-with-type
+                                  string
+                                  attribute
+                                  (proportional-type type proportional)))))))))
 
-(defun create-drawing-objects (logical-line)
+(defun create-drawing-objects (logical-line &optional proportional)
   (multiple-value-bind (items line-end-item)
       (compute-items-from-logical-line logical-line)
     (append (loop :for item :in items
-                  :append (create-drawing-object item))
+                  :append (create-drawing-object item proportional))
             (when line-end-item
               (create-drawing-object line-end-item)))))
 
@@ -302,7 +319,7 @@
   (flet ((explode-object (text-object)
            (check-type text-object text-object)
            (let* ((string (text-object-string text-object))
-                  (char-type (char-type (char string 0)))
+                  (char-type (text-object-type text-object))
                   (n (floor (length string) 2)))
              (loop :for part-string :in (list (subseq string 0 n)
                                               (subseq string n))
@@ -310,14 +327,21 @@
                    :collect (make-object-with-type
                              part-string
                              (text-object-attribute text-object) char-type)))))
-    (let ((wrap-line-character (variable-value 'wrap-line-character :default buffer))
-          (wrap-line-attribute (variable-value 'wrap-line-attribute :default buffer)))
+    (let* ((wrap-line-character (variable-value 'wrap-line-character :default buffer))
+           (wrap-line-attribute (variable-value 'wrap-line-attribute :default buffer))
+           ;; Proportional text can end anywhere, so leave room for the wrap
+           ;; character; monospace text always leaves exactly one cell.
+           (limit (if (proportional-text-p buffer)
+                      (- view-width
+                         (object-width (make-letter-object wrap-line-character
+                                                           wrap-line-attribute)))
+                      (1- view-width))))
       (loop :with total-width := 0
             :and physical-line-objects := '()
             :for object := (pop objects)
             :while object
             :do (cond ((and (typep object 'text-object)
-                            (<= view-width (+ total-width (object-width object))))
+                            (< limit (+ total-width (object-width object))))
                        (cond ((< 1 (length (text-object-string object)))
                               (setf objects (nconc (explode-object object) objects)))
                              (t
@@ -566,7 +590,9 @@ over the top-level spine and tolerant of improper (dotted) lists."
                                      :when (typep obj 'text-object)
                                      :sum (length (text-object-string obj)))))
     (multiple-value-bind (first-line-objects rest-line-objects)
-        (separate-objects-by-width (create-drawing-objects logical-line)
+        (separate-objects-by-width (create-drawing-objects logical-line
+                                                           (proportional-text-p
+                                                            (window-buffer window)))
                                    (- (window-view-width window) left-side-width)
                                    (window-buffer window))
       (let ((wrapped-left-side-objects
@@ -674,7 +700,8 @@ creating zero temporary letter-objects."
     ;; Early exit if line content unchanged
     (alexandria:when-let ((cached-height (check-line-fingerprint window y fingerprint)))
       (return-from redraw-logical-line-when-horizontal-scroll cached-height))
-    (let* ((objects (create-drawing-objects logical-line))
+    (let* ((objects (create-drawing-objects logical-line
+                                            (proportional-text-p (window-buffer window))))
            (height
              (max (max-height-of-objects left-side-objects)
                   (max-height-of-objects objects))))

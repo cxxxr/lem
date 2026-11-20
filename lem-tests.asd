@@ -85,6 +85,7 @@
                (:file "interface")
                (:file "attribute")
                (:file "display-cache")
-               (:file "visual-line"))
+               (:file "visual-line")
+               (:file "proportional-text"))
   :perform (test-op (o c)
                     (symbol-call :rove :run c)))

@@ -84,6 +84,7 @@ windows placed by pixels."
                          :pixel-y (mouse-event-pixel-y mouse-event)))
 
 (defun get-point-from-window-with-coordinates (window x y &optional (allow-overflow-column t))
+  (setf x (window-column-x window x))
   (with-point ((point (buffer-point (window-buffer window))))
     (move-point point (window-view-point window))
     (move-to-next-virtual-line point y window)
@@ -95,12 +96,37 @@ windows placed by pixels."
   (switch-to-window window)
   (move-point (current-point) (window-view-point window))
   (move-to-next-virtual-line (current-point) y)
-  (move-to-virtual-line-column (current-point) x))
+  (move-to-virtual-line-column (current-point) (window-column-x window x)))
 
 (defvar *last-mouse-event*)
 (defun last-mouse-event () *last-mouse-event*)
 (defun set-last-mouse-event (mouse-event)
   (setf *last-mouse-event* mouse-event))
+
+(defun last-mouse-pixel-x-in-column (window column)
+  "Return the last mouse event's pixel x relative to the start of WINDOW's
+text, if the event has one and it falls in cell COLUMN; otherwise NIL."
+  (let ((event (and (boundp '*last-mouse-event*) (last-mouse-event)))
+        (char-width (lem-if:get-char-width (implementation))))
+    (when (and event (mouse-event-pixel-x event))
+      (let* ((window-left (if (pixel-positioned-window-p window)
+                              (nth-value 0 (floating-window-pixel-bounds window))
+                              (* (window-x window) char-width)))
+             (x (- (mouse-event-pixel-x event)
+                   window-left
+                   (* (window-left-width window) char-width))))
+        (when (= column (floor x char-width))
+          x)))))
+
+(defun window-column-x (window column)
+  "Return cell COLUMN of WINDOW as the x move-to-virtual-line-column takes:
+the column itself for monospace text, and a pixel x for proportional text:
+the mouse's, when the last mouse event is in that column, so a click lands
+on the character under the pointer."
+  (if (proportional-text-p (window-buffer window))
+      (or (last-mouse-pixel-x-in-column window column)
+          (* column (lem-if:get-char-width (implementation))))
+      column))
 
 (defvar *last-dragged-separator* nil)
 
