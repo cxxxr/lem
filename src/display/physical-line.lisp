@@ -611,7 +611,9 @@ over the top-level spine and tolerant of improper (dotted) lists."
               (incf y height)
               (setq left-side-objects wrapped-left-side-objects)
               (incf total-height height)
-              (unless (< y (window-height window))
+              ;; y is in the frontend's units (pixels in GUI frontends), so
+              ;; compare it with the view's height, not window-height in rows.
+              (unless (< y (window-view-height window))
                 (return)))
             (setf (values objects rest-line-objects)
                   (separate-objects-by-width rest-line-objects
