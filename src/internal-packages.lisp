@@ -851,4 +851,5 @@
    :render-line-on-modeline
    :object-width
    :object-height
+   :point-at-window-position
    :set-frame-color))
