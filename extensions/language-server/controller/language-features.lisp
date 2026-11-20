@@ -280,42 +280,43 @@
   line-string)
 
 (defun collect-definition-symbols-in-buffer (buffer default-package-name)
-  (lem:with-point ((point (lem:buffer-point buffer)))
-    (lem:buffer-start point)
-    (loop :while (lem:search-forward-regexp point "^\\s*\\(def")
-          :when (cond ((lem:in-comment-p point)
-                       (lem:maybe-beginning-of-comment point)
-                       (lem:skip-space-and-comment-forward point)
-                       nil)
-                      ((lem:in-string-p point)
-                       (lem:maybe-beginning-of-string point)
-                       (lem:form-offset point 1)
-                       nil)
-                      (t
-                       (when (and (lem:form-offset point 1)
-                                  (lem:skip-space-and-comment-forward point)
-                                  (or (lem:syntax-symbol-char-p (lem:character-at point))
-                                      (forward-down-list point)))
-                         (let ((symbol-string (lem:symbol-string-at-point point)))
-                           (multiple-value-bind (symbol-name package-name internalp)
-                               (micros::tokenize-symbol-thoroughly symbol-string)
-                             (declare (ignore internalp))
-                             (when symbol-name
-                               (cond ((equal package-name "") nil) ; keyword
-                                     ((equal package-name "#") nil) ; uninternal symbol
-                                     (t
-                                      (lem:with-point ((start point)
-                                                       (end point))
-                                        (lem:skip-symbol-forward start)
-                                        (lem:skip-symbol-forward end)
-                                        (let ((package (or package-name default-package-name)))
-                                          (make-symbol-definition
-                                           :symbol-spec (micros/lsp-api:make-symbol-spec
-                                                         :name symbol-name
-                                                         :package package)
-                                           :range (points-to-lsp-range start end)
-                                           :line-string (lem:line-string point))))))))))))
-          :collect :it)))
+  (lem:with-current-buffer buffer
+    (lem:with-point ((point (lem:buffer-point buffer)))
+      (lem:buffer-start point)
+      (loop :while (lem:search-forward-regexp point "^\\s*\\(def")
+            :when (cond ((lem:in-comment-p point)
+                         (lem:maybe-beginning-of-comment point)
+                         (lem:skip-space-and-comment-forward point)
+                         nil)
+                        ((lem:in-string-p point)
+                         (lem:maybe-beginning-of-string point)
+                         (lem:form-offset point 1)
+                         nil)
+                        (t
+                         (when (and (lem:form-offset point 1)
+                                    (lem:skip-space-and-comment-forward point)
+                                    (or (lem:syntax-symbol-char-p (lem:character-at point))
+                                        (forward-down-list point)))
+                           (let ((symbol-string (lem:symbol-string-at-point point)))
+                             (multiple-value-bind (symbol-name package-name internalp)
+                                 (micros::tokenize-symbol-thoroughly symbol-string)
+                               (declare (ignore internalp))
+                               (when symbol-name
+                                 (cond ((equal package-name "") nil) ; keyword
+                                       ((equal package-name "#") nil) ; uninternal symbol
+                                       (t
+                                        (lem:with-point ((start point)
+                                                         (end point))
+                                          (lem:skip-symbol-forward start)
+                                          (lem:skip-symbol-forward end)
+                                          (let ((package (or package-name default-package-name)))
+                                            (make-symbol-definition
+                                             :symbol-spec (micros/lsp-api:make-symbol-spec
+                                                           :name symbol-name
+                                                           :package package)
+                                             :range (points-to-lsp-range start end)
+                                             :line-string (lem:line-string point))))))))))))
+            :collect :it))))
 
 (defun document-symbol (buffer)
   ;; Assumes there is only one `in-package` at the start of the file.
