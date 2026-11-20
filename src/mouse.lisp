@@ -70,18 +70,27 @@
                   (lem-if:get-char-height (implementation)))))))
 
 (defun get-point-from-window-with-coordinates (window x y &optional (allow-overflow-column t))
-  (with-point ((point (buffer-point (window-buffer window))))
-    (move-point point (window-view-point window))
-    (move-to-next-virtual-line point y window)
-    (let ((moved (move-to-virtual-line-column point x window)))
-      (when (or moved allow-overflow-column)
-        point))))
+  (multiple-value-bind (drawn within)
+      (lem-if:point-at-window-position (implementation) window x y)
+    (if drawn
+        (when (or within allow-overflow-column)
+          drawn)
+        (with-point ((point (buffer-point (window-buffer window))))
+          (move-point point (window-view-point window))
+          (move-to-next-virtual-line point y window)
+          (let ((moved (move-to-virtual-line-column point x window)))
+            (when (or moved allow-overflow-column)
+              point))))))
 
 (defun move-current-point-to-x-y-position (window x y)
-  (switch-to-window window)
-  (move-point (current-point) (window-view-point window))
-  (move-to-next-virtual-line (current-point) y)
-  (move-to-virtual-line-column (current-point) x))
+  (let ((drawn (lem-if:point-at-window-position (implementation) window x y)))
+    (switch-to-window window)
+    (cond (drawn
+           (move-point (current-point) drawn))
+          (t
+           (move-point (current-point) (window-view-point window))
+           (move-to-next-virtual-line (current-point) y)
+           (move-to-virtual-line-column (current-point) x)))))
 
 (defvar *last-mouse-event*)
 (defun last-mouse-event () *last-mouse-event*)

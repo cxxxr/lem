@@ -20,5 +20,6 @@
                (:file "image")
                (:file "extensions")
                (:file "markdown")
+               (:file "click")
                (:file "claude")
                (:file "remote")))

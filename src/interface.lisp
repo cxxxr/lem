@@ -183,6 +183,14 @@ PIXEL-X, PIXEL-Y, PIXEL-WIDTH, PIXEL-HEIGHT are in pixels (may be nil for auto-c
                                             default-attribute height))
 (defgeneric lem-if:object-width (implementation drawing-object))
 (defgeneric lem-if:object-height (implementation drawing-object))
+(defgeneric lem-if:point-at-window-position (implementation window x y)
+  (:documentation "The point of what WINDOW shows at column X, line Y (relative to its text
+area), when the frontend knows it better than counting the text of the buffer (text hidden or
+replaced by overlays, lines taller than one); NIL to let Lem count it.  A second value, true
+when X is on the text of the line and not past its end.")
+  (:method (implementation window x y)
+    (declare (ignore implementation window x y))
+    nil))
 (defgeneric lem-if:clear-to-end-of-window (implementation view y))
 
 (defgeneric lem-if:js-eval (implementation view code &key wait)
