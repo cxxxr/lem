@@ -573,12 +573,14 @@ or NIL: a ``` in a block of ```` is a line of the block."
   (remove buffer (lem:window-list) :key #'lem:window-buffer :test-not #'eq))
 
 (defun shown-lines (buffer)
-  "For each window of BUFFER, (first-line . lines): the first line of the
-buffer it shows (with a margin above) and how many lines it can show (with
-a margin below); the lines of folds are not counted."
+  "For each window of BUFFER, (first-line lines covered): the first line of
+the buffer it shows (with a margin above), how many lines it can show (with
+a margin below; the lines of folds are not counted), and how many of them
+the window attached to it covers."
   (mapcar (lambda (window)
-            (cons (max 1 (- (lem:line-number-at-point (lem:window-view-point window)) 2))
-                  (+ (lem:window-height window) 4)))
+            (list (max 1 (- (lem:line-number-at-point (lem:window-view-point window)) 2))
+                  (+ (lem:window-height window) 4)
+                  (bottom-margin window)))
           (buffer-windows buffer)))
 
 (defun cursor-line (buffer)
@@ -971,10 +973,40 @@ the lines and the width its windows show, the theme."
         *char-width*
         (theme-key)))
 
-;;; Lem keeps the cursor in a window counting the lines of the buffer, as
-;;; if each took one line of the window: here headings and images take
-;;; more, so the window is scrolled further when the cursor would be under
-;;; its bottom.
+;;; Lem counts the lines of a window as the lines of the buffer (and their
+;;; wrapping, from their text): here headings and images take more lines,
+;;; the marks hidden take none, and a conversation of Claude has its input
+;;; over the bottom of the window (claude.lisp).  So the view is placed
+;;; here, with the lines the lines take: to keep the cursor in the window
+;;; and to put it in the middle (C-l).
+
+(defun line-display-width (buffer point)
+  "The columns that the line of POINT takes when drawn (about): its marks
+hidden by its overlays are not counted, what they show instead is, and text
+of other sizes is counted at its size."
+  (let* ((string (lem:line-string point))
+         (length (length string))
+         (scales (make-array length :initial-element 1))
+         (shown (make-array length :initial-element t))
+         (extra 0))
+    (dolist (overlay (gethash (lem:line-number-at-point point) (markdown-overlays buffer)))
+      (let ((start (min length (lem:point-charpos (lem:overlay-start overlay))))
+            (end (if (lem:same-line-p (lem:overlay-end overlay) point)
+                     (min length (lem:point-charpos (lem:overlay-end overlay)))
+                     length))
+            (display (lem:overlay-get overlay :display))
+            (scale (attribute-scale (lem:overlay-attribute overlay))))
+        (cond ((or (lem:overlay-get overlay :invisible) display)
+               (fill shown nil :start start :end end)
+               (when (and (consp display) (stringp (first display)))
+                 (incf extra (lem:string-width (first display)))))
+              (scale
+               (loop :for i :from start :below end
+                     :do (setf (aref scales i) (* scale (aref scales i))))))))
+    (+ extra
+       (loop :for i :below length
+             :when (aref shown i)
+               :sum (* (aref scales i) (lem:string-width (string (char string i))))))))
 
 (defun line-rows (buffer point columns)
   "The lines of the window that the line of POINT takes (about, when it is
@@ -983,35 +1015,91 @@ not decorated: as many as it wraps to)."
     (return-from line-rows 0))
   (let ((noted (let ((table (lem:buffer-value buffer 'markdown-rows)))
                  (and table (gethash (lem:line-number-at-point point) table))))
-        (wrapped (max 1 (ceiling (lem:string-width (lem:line-string point)) (max 1 (1- columns))))))
+        (wrapped (max 1 (ceiling (line-display-width buffer point) (max 1 (1- columns))))))
     (max wrapped (or noted 1))))
 
+(defun bottom-margin (window)
+  "The lines at the bottom of WINDOW that the window attached to it (the
+input of Claude, a box with its border) covers."
+  (let ((attached (lem-core::window-attached-window window)))
+    (if attached (+ (lem:window-height attached) 2) 0)))
+
+(defun shown-rows (window)
+  "The lines of WINDOW that show its buffer, uncovered."
+  (max 1 (- (lem:window-height window)
+            (if (lem:window-use-modeline-p window) 1 0)
+            (bottom-margin window))))
+
+(defun rows-through (buffer from to columns limit)
+  "The lines of the window that the lines of FROM to TO take (counted up to
+a little more than LIMIT)."
+  (lem:with-point ((p from))
+    (lem:line-start p)
+    (loop :with total := 0
+          :do (incf total (line-rows buffer p columns))
+          :until (or (lem:same-line-p p to) (> total limit) (not (lem:line-offset p 1)))
+          :finally (return total))))
+
+(defun show-line-at-row (window row)
+  "Scroll WINDOW so that the line of its cursor begins ROW lines under its
+top (or as low as it can, near the start of the buffer)."
+  (let ((buffer (lem:window-buffer window))
+        (columns (lem:window-width window)))
+    (lem:with-point ((p (lem:window-point window))
+                     (top (lem:window-point window)))
+      (lem:line-start p)
+      (lem:line-start top)
+      (loop :with above := 0
+            :while (lem:line-offset p -1)
+            :do (let ((rows (line-rows buffer p columns)))
+                  (when (> (+ above rows) row)
+                    (return))
+                  (incf above rows)
+                  ;; (not into a fold)
+                  (when (plusp rows)
+                    (lem:move-point top p))))
+      (lem:move-point (lem:window-view-point window) top))))
+
 (defun keep-cursor-shown (window)
-  "Move the view of WINDOW down until the line of its cursor is in it; true
-if it moved."
+  "Move the view of WINDOW down until the line of its cursor is in it, above
+what is attached to it; true if it moved."
   (let* ((buffer (lem:window-buffer window))
          (view (lem:window-view-point window))
-         (cursor (lem:buffer-point buffer))
-         (height (max 1 (1- (lem:window-height window))))
-         (columns (lem:window-width window))
-         (moved nil))
-    (when (lem:point<= view cursor)
-      (loop
-        (let ((rows (lem:with-point ((p view))
-                      (lem:line-start p)
-                      (loop with total = 0
-                            do (incf total (line-rows buffer p columns))
-                            until (or (lem:same-line-p p cursor) (> total height)
-                                      (not (lem:line-offset p 1)))
-                            finally (return total)))))
-          (if (and (> rows height) (not (lem:same-line-p view cursor)))
-              (progn
-                (lem:line-offset view 1)
-                ;; (not into a fold)
-                (loop while (and (hidden-line-p view) (lem:line-offset view 1)))
-                (setf moved t))
-              (return)))))
-    moved))
+         (cursor (lem:window-point window))
+         (height (shown-rows window))
+         (columns (lem:window-width window)))
+    (when (and (lem:point<= view cursor)
+               (not (lem:same-line-p view cursor))
+               (> (rows-through buffer view cursor columns height) height))
+      (show-line-at-row window (max 0 (- height (line-rows buffer cursor columns))))
+      t)))
+
+(defun cursor-wrap-rows (window)
+  "The lines of WINDOW that the line of its cursor takes before the cursor."
+  (let ((point (lem:window-point window)))
+    (floor (lem:string-width (subseq (lem:line-string point) 0 (lem:point-charpos point)))
+           (max 1 (1- (lem:window-width window))))))
+
+(defun recenter-markdown (window)
+  "Scroll WINDOW so that its cursor is in the middle of what it shows: the
+lines newly shown are decorated (a heading takes more lines), then counted
+again."
+  (let ((buffer (lem:window-buffer window)))
+    (loop :repeat 4
+          :for before := (lem:position-at-point (lem:window-view-point window))
+          :do (show-line-at-row window (max 0 (- (floor (shown-rows window) 2)
+                                                 (cursor-wrap-rows window))))
+              (decorate-buffer buffer)
+          :until (= before (lem:position-at-point (lem:window-view-point window))))))
+
+(lem:define-command markdown-recenter () ()
+  "Scroll so that the cursor is in the middle of the window, counting the
+lines that headings, images and wrapped lines take."
+  (lem:clear-screens-of-window-list)
+  (recenter-markdown (lem:current-window))
+  (lem:redraw-display))
+
+(lem:define-key *markdown-live-mode-keymap* "C-l" 'markdown-recenter)
 
 (defun update-decoration (buffer old state force)
   "Make the overlays of BUFFER for STATE, after OLD: only those of the lines
@@ -1035,8 +1123,8 @@ changed (the folds, the widths of the windows, the theme)."
 
 (defun refresh-markdown-buffers (&key force)
   "Decorate again the shown buffers in markdown-live-mode whose state changed
-(all of their lines with FORCE), and keep the cursor of the current window
-in it."
+(all of their lines with FORCE), and keep the cursor of each of their
+windows in it."
   (dolist (buffer (remove-duplicates (mapcar #'lem:window-buffer (lem:window-list))))
     (when (lem:mode-active-p buffer 'markdown-live-mode)
       (let ((state (markdown-state buffer))
@@ -1044,12 +1132,11 @@ in it."
         (when (or force (not (equal state old)))
           (setf (lem:buffer-value buffer 'markdown-state) state)
           (update-decoration buffer old state force)
-          (let ((window (lem:current-window)))
-            (when (and (eq (lem:window-buffer window) buffer)
-                       (keep-cursor-shown window))
+          (let ((moved (remove-if-not #'keep-cursor-shown (buffer-windows buffer))))
+            (when moved
               ;; the lines now shown are decorated, and counted again
               (decorate-buffer buffer)
-              (keep-cursor-shown window)
+              (mapc #'keep-cursor-shown moved)
               (setf (lem:buffer-value buffer 'markdown-state) (markdown-state buffer)))))))))
 
 (defun refresh-markdown-after-command ()

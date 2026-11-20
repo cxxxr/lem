@@ -46,11 +46,16 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     out({ type: 'result', subtype: 'success', duration_ms: 1200, total_cost_usd: 0.0012, session_id });
   } else if (m.type === 'user') {
     const said = m.message.content[0].text;
-    text('m' + (++n), `You said *${said}*.\n\nI will write a file:`);
-    const file = path.join(process.cwd(), 'fake.txt');
-    const id = 'toolu_' + (++n);
-    waiting = { file, id };
-    out({ type: 'assistant', message: { id: 'm' + n, role: 'assistant', content: [{ type: 'tool_use', id, name: 'Write', input: { file_path: file, content: 'hi\n' } }] }, session_id });
-    out({ type: 'control_request', request_id: 'req-' + n, request: { subtype: 'can_use_tool', tool_name: 'Write', input: { file_path: file, content: 'hi\n' }, permission_suggestions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }], tool_use_id: id } });
+    // ("... later": the question comes a while after, when something else is typed)
+    setTimeout(() => answer(said), said.includes('later') ? 1500 : 0);
   }
 });
+
+function answer(said) {
+  text('m' + (++n), `You said *${said}*.\n\nI will write a file:`);
+  const file = path.join(process.cwd(), 'fake.txt');
+  const id = 'toolu_' + (++n);
+  waiting = { file, id };
+  out({ type: 'assistant', message: { id: 'm' + n, role: 'assistant', content: [{ type: 'tool_use', id, name: 'Write', input: { file_path: file, content: 'hi\n' } }] }, session_id });
+  out({ type: 'control_request', request_id: 'req-' + n, request: { subtype: 'can_use_tool', tool_name: 'Write', input: { file_path: file, content: 'hi\n' }, permission_suggestions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }], tool_use_id: id } });
+}
