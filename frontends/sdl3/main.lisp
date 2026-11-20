@@ -30,10 +30,12 @@
                 ((eql button event:+button-x1+) :button-4))))
     (when button
       (let ((char-x (display:scaled-char-width display x))
-            (char-y (display:scaled-char-height display y)))
+            (char-y (display:scaled-char-height display y))
+            (pixel-x (display:scaled-pixel-x display x))
+            (pixel-y (display:scaled-pixel-y display y)))
         (lem:send-event
          (lambda ()
-           (lem:receive-mouse-button-down char-x char-y x y button
+           (lem:receive-mouse-button-down char-x char-y pixel-x pixel-y button
                                           clicks)))))))
 
 (defun on-mouse-button-up (display button x y)
@@ -44,10 +46,12 @@
                 ((eql button event:+button-middle+) :button-2)
                 ((eql button event:+button-x1+) :button-4)))
         (char-x (display:scaled-char-width display x))
-        (char-y (display:scaled-char-height display y)))
+        (char-y (display:scaled-char-height display y))
+        (pixel-x (display:scaled-pixel-x display x))
+        (pixel-y (display:scaled-pixel-y display y)))
     (lem:send-event
      (lambda ()
-       (lem:receive-mouse-button-up char-x char-y x y button)))))
+       (lem:receive-mouse-button-up char-x char-y pixel-x pixel-y button)))))
 
 (defun on-mouse-motion (display x y state)
   (show-cursor)
@@ -55,19 +59,23 @@
                     :button-1
                     nil)))
     (let ((char-x (display:scaled-char-width display x))
-          (char-y (display:scaled-char-height display y)))
+          (char-y (display:scaled-char-height display y))
+          (pixel-x (display:scaled-pixel-x display x))
+          (pixel-y (display:scaled-pixel-y display y)))
       (lem:send-event
        (lambda ()
-         (lem:receive-mouse-motion char-x char-y x y button))))))
+         (lem:receive-mouse-motion char-x char-y pixel-x pixel-y button))))))
 
 (defun on-mouse-wheel (display wheel-x wheel-y)
   (show-cursor)
   (multiple-value-bind (x y) (mouse-position)
     (let ((char-x (display:scaled-char-width display x))
-          (char-y (display:scaled-char-height display y)))
+          (char-y (display:scaled-char-height display y))
+          (pixel-x (display:scaled-pixel-x display x))
+          (pixel-y (display:scaled-pixel-y display y)))
       (lem:send-event
        (lambda ()
-         (lem:receive-mouse-wheel char-x char-y x y wheel-x wheel-y)
+         (lem:receive-mouse-wheel char-x char-y pixel-x pixel-y wheel-x wheel-y)
          (when (= 0 (lem:event-queue-length))
            (lem:redraw-display)))))))
 

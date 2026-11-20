@@ -40,6 +40,8 @@
            :render-margin-line
            :scaled-char-width
            :scaled-char-height
+           :scaled-pixel-x
+           :scaled-pixel-y
            :notify-required-redisplay
            :update-texture
            :update-display
@@ -265,6 +267,15 @@ box-drawing band, to be stretched to the cell height.  Otherwise NIL."
 (defmethod scaled-char-height ((display display) y)
   (let ((scale-y (round (second (display-scale display)))))
     (floor (* scale-y y) (display-char-height display))))
+
+(defmethod scaled-pixel-x ((display display) x)
+  "Return window coordinate X in the display's render pixels, the unit
+views and pixel-placed floating windows are in."
+  (* (round (first (display-scale display))) x))
+
+(defmethod scaled-pixel-y ((display display) y)
+  "Return window coordinate Y in the display's render pixels."
+  (* (round (second (display-scale display))) y))
 
 (defmethod update-display ((display display))
   (lem-sdl3/ffi:render-present (display-renderer display)))
