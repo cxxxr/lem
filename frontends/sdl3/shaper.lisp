@@ -20,6 +20,8 @@
            :itemize
            :snap-glyphs
            :shape-text
+           :shaping-cache
+           :make-shaping-cache
            :clear-shaping-cache))
 (in-package :lem-sdl3/shaper)
 
@@ -36,11 +38,12 @@
   "When more shaped runs than this are cached, the cache is emptied; runs
 still on screen are shaped again on the next frame.")
 
-(defvar *cache* (make-hash-table :test 'equal)
-  "Cache key -> (string -> list of placed glyphs).")
-
-(defvar *cached-runs* 0
-  "Number of runs in *CACHE*.")
+(defstruct shaping-cache
+  "Shaped runs, so that a line drawn again is not shaped again."
+  ;; Cache key -> (string -> list of placed glyphs).
+  (runs (make-hash-table :test 'equal))
+  ;; Number of runs in RUNS.
+  (count 0))
 
 (defstruct (shaping-font (:constructor %make-shaping-font))
   "A FreeType face and the HarfBuzz font shaping with it."
@@ -156,33 +159,35 @@ pen.  Return a list of placed-glyph."
                   (incf pen (round (shaped-glyph-x-advance glyph) 64)))))
     (nreverse placed)))
 
-(defun clear-shaping-cache ()
-  "Forget every shaped run.  Call this before closing a font they use."
-  (clrhash *cache*)
-  (setf *cached-runs* 0))
+(defun clear-shaping-cache (cache)
+  "Forget every run CACHE holds.  Call this before closing a font they use."
+  (clrhash (shaping-cache-runs cache))
+  (setf (shaping-cache-count cache) 0))
 
 (defun shape-text (string chain-function cell-width
-                   &key cache-key (features (cffi:null-pointer)) (feature-count 0))
+                   &key cache cache-key (features (cffi:null-pointer)) (feature-count 0))
   "Shape STRING onto the cell grid and return its glyphs as a list of
 placed-glyph, X relative to the start of STRING.  CHAIN-FUNCTION gives each
-character's fonts in fallback order (see ITEMIZE).  When CACHE-KEY is
-non-NIL, the result is cached under it and STRING: the key must identify
-CHAIN-FUNCTION's choices, CELL-WIDTH and FEATURES."
+character's fonts in fallback order (see ITEMIZE).  When CACHE, a
+shaping-cache, and CACHE-KEY are given, the result is cached under the key
+and STRING: the key must identify CHAIN-FUNCTION's choices, CELL-WIDTH and
+FEATURES."
   (flet ((shape ()
            (let ((columns (character-columns string)))
              (loop :for (font start end) :in (itemize string chain-function)
                    :nconc (snap-glyphs (shape-run font string start end features feature-count)
                                        columns cell-width end)))))
-    (if (null cache-key)
+    (if (or (null cache) (null cache-key))
         (shape)
-        (let ((runs (or (gethash cache-key *cache*)
-                        (setf (gethash cache-key *cache*) (make-hash-table :test 'equal)))))
+        (let* ((all-runs (shaping-cache-runs cache))
+               (runs (or (gethash cache-key all-runs)
+                         (setf (gethash cache-key all-runs) (make-hash-table :test 'equal)))))
           (multiple-value-bind (placed found) (gethash string runs)
             (if found
                 placed
                 (progn
-                  (when (>= *cached-runs* *max-cached-runs*)
-                    (clear-shaping-cache)
-                    (setf runs (setf (gethash cache-key *cache*) (make-hash-table :test 'equal))))
-                  (incf *cached-runs*)
+                  (when (>= (shaping-cache-count cache) *max-cached-runs*)
+                    (clear-shaping-cache cache)
+                    (setf runs (setf (gethash cache-key all-runs) (make-hash-table :test 'equal))))
+                  (incf (shaping-cache-count cache))
                   (setf (gethash string runs) (shape)))))))))
