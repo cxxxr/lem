@@ -4,6 +4,15 @@
                 :fake-interface))
 (in-package :lem-tests/proportional-text)
 
+;;; These are white-box tests of lem-core's line layout: they call the
+;;; unexported map-wrapping-line, and build a mouse event with the unexported
+;;; mouse-button-down class and set-last-mouse-event, as a frontend's event
+;;; would, because no exported function exposes either.
+
+(defparameter *long-line*
+  (format nil "~{~A~}" (loop :repeat 30 :collect "mim "))
+  "A line wide enough to wrap once in an 80-column window.")
+
 (defclass proportional-fake-interface (fake-interface)
   ((rendered-rows
     :initform '()
@@ -73,9 +82,6 @@ out proportionally when VARIABLE-PITCH."
 
 (defun width-of (string)
   (reduce #'+ string :key #'advance))
-
-(defparameter *long-line*
-  (format nil "~{~A~}" (loop :repeat 30 :collect "mim ")))
 
 (deftest wrapping-matches-the-drawn-rows
   (call-with-proportional-buffer

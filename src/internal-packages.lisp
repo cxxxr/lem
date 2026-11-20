@@ -289,7 +289,6 @@
   (:export
    :line-wrap
    :variable-pitch
-   :variable-pitch-mode
    :proportional-text-p
    :*window-sufficient-width*
    :*scroll-recenter-p*
