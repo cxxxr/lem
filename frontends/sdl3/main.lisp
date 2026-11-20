@@ -273,17 +273,19 @@ watch while the platform's resize loop keeps the event loop from running."
       (log:error "Redraw during live resize failed: ~A" condition))))
 
 (cffi:defcallback live-resize-watch :bool ((userdata :pointer) (event :pointer))
-  ;; While the user drags a window edge, macOS (and Windows) run their own
-  ;; resize loop, and SDL_WaitEvent does not return until it ends, so the
-  ;; window server stretches the last frame to the window's changing size.
-  ;; SDL reports each step as SDL_EVENT_WINDOW_EXPOSED with data1 = 1 and
-  ;; lets an event watch redraw then.  Watches run on the thread that adds
-  ;; the event, so only the main thread's events are handled.
+  ;; While the user drags a window edge, and while macOS animates a zoom or
+  ;; maximize, the platform runs its own loop and SDL_WaitEvent does not
+  ;; return until it ends, so the window server stretches the last frame to
+  ;; the window's changing size.  SDL reports each step with
+  ;; SDL_EVENT_WINDOW_EXPOSED (data1 = 1 for a drag, 0 for an animation) and
+  ;; lets an event watch redraw then; the watch redraws whenever the window's
+  ;; pixel size has changed since the texture was made.  Watches run on the
+  ;; thread that adds the event, so only the main thread's events are handled.
   (declare (ignore userdata))
   (when (and (= (event:event-type event) event:+window-exposed+)
-             (= 1 (event:window-event-data1 event))
              (sdl3:is-main-thread)
-             (display:current-display))
+             (display:current-display)
+             (display:texture-size-stale-p (display:current-display)))
     (redraw-during-live-resize (display:current-display)))
   t)
 
