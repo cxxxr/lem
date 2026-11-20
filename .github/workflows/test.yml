@@ -4,7 +4,9 @@ on:
   push:
     branches: ["*"]
   pull_request:
-    branches: ["*"]
+    # "**" so pull requests into branches with a slash (stacked PRs such as
+    # sdl3/foo) are tested too; "*" does not match "/".
+    branches: ["**"]
   workflow_dispatch:
 
 env:
@@ -34,6 +36,32 @@ jobs:
 
       - name: Run tests
         run: docker run --rm lem-tests
+
+  sdl3-test:
+    # The test image has no SDL3, and Ubuntu 24.04 has no SDL3 packages, so
+    # the SDL3 frontend is tested on macOS with Homebrew's libraries.  The
+    # tests draw with SDL's software renderer and open no window.
+    name: SDL3 frontend tests (macOS)
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL, qlot, SDL3 and the text shaping libraries
+        run: |
+          brew install sbcl sdl3 sdl3_ttf sdl3_image freetype harfbuzz openssl@3
+          # cl+ssl (used by qlot) needs OpenSSL 3; see nightly-builds.yml.
+          ln -sfn "$(brew --prefix openssl@3)" "$(brew --prefix)/opt/openssl"
+          curl -L https://qlot.tech/installer | sh
+          echo "$HOME/.qlot/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: qlot install
+
+      - name: Run SDL3 frontend tests
+        run: |
+          CL_SOURCE_REGISTRY="(:source-registry (:tree \"$PWD/\") :ignore-inherited-configuration)" \
+            .qlot/bin/rove frontends/sdl3/lem-sdl3.asd
 
   push_image:
     name: Push Image to GHCR
