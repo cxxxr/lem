@@ -37,10 +37,37 @@ jobs:
       - name: Run tests
         run: docker run --rm lem-tests
 
-  sdl3-test:
-    # The test image has no SDL3, and Ubuntu 24.04 has no SDL3 packages, so
-    # the SDL3 frontend is tested on macOS with Homebrew's libraries.  The
-    # tests draw with SDL's software renderer and open no window.
+  # The SDL3 frontend tests draw with SDL's software renderer and open no
+  # window.  The test image (Debian 12) and Ubuntu 24.04 have no SDL3, so
+  # they run on Debian 13 and on macOS with Homebrew.
+  sdl3-test-linux:
+    name: SDL3 frontend tests (Linux)
+    runs-on: ubuntu-latest
+    container: debian:trixie
+
+    steps:
+      - name: Install SBCL, qlot, SDL3 and the text shaping libraries
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            sbcl git curl ca-certificates build-essential libffi-dev libssl-dev \
+            libsdl3-dev libsdl3-ttf-dev libsdl3-image-dev libfreetype-dev libharfbuzz-dev
+          curl -L https://qlot.tech/installer | sh
+          echo "$HOME/.qlot/bin" >> $GITHUB_PATH
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: qlot install
+
+      - name: Run SDL3 frontend tests
+        run: |
+          CL_SOURCE_REGISTRY="(:source-registry (:tree \"$PWD/\") :ignore-inherited-configuration)" \
+            sbcl --noinform --non-interactive --load .qlot/setup.lisp \
+                 --eval '(ql:quickload :rove :silent t)' \
+                 --eval '(unless (rove:run :lem-sdl3/tests) (uiop:quit 1))'
+
+  sdl3-test-macos:
     name: SDL3 frontend tests (macOS)
     runs-on: macos-15
 
