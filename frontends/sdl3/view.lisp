@@ -27,6 +27,11 @@
    :view-pixel-height
    :view-pixel-rect
    :view-layout-size
+   :view-render-height
+   :view-texture-size
+   :view-scroll-offset
+   :view-scroll-anchor
+   :add-scroll-delta
    :view-use-modeline
    :view-texture
    :sync-texture))
@@ -87,7 +92,18 @@ its cell height.")
     :accessor view-last-cursor-x)
    (last-cursor-y
     :initform nil
-    :accessor view-last-cursor-y))
+    :accessor view-last-cursor-y)
+   (scroll-offset
+    :initform 0
+    :accessor view-scroll-offset
+    :documentation "How many pixels, less than a line, the body is scrolled
+past the line lem-core has at the top (see add-scroll-delta).")
+   (scroll-anchor
+    :initform nil
+    :accessor view-scroll-anchor
+    :documentation "Where the window's view point was when SCROLL-OFFSET was
+last set, as (LINE-NUMBER . CHARPOS), so the offset can be dropped when
+something else scrolls the window."))
   (:documentation "The SDL texture a Lem window draws into, and where it sits
 on the display: in cells, and optionally in pixels (see view-pixel-rect)."))
 
@@ -137,29 +153,55 @@ the right or bottom edge (see edge-extra)."
               (+ width extra-x)
               (+ height extra-y)))))
 
-(defun replace-texture (view display)
-  "Give VIEW a new texture the size of its pixel rectangle on DISPLAY, at
-least one pixel each way, destroying the old one."
+(defun overscan-rows (view)
+  "How many rows past its last one VIEW's texture holds: one for a view with
+a modeline, so that the line the modeline covers is drawn and can be shown
+while the body is scrolled by part of a line."
+  (if (view-use-modeline view) 1 0))
+
+(defun view-render-height (view display)
+  "Return the height in pixels lem-core draws VIEW in: its layout height plus
+the overscan row (see overscan-rows).  The modeline goes at the bottom of it,
+below the overscan row."
+  (+ (nth-value 1 (view-layout-size view display))
+     (* (overscan-rows view) (display:display-char-height display))))
+
+(defun view-texture-size (view display)
+  "Return the WIDTH and HEIGHT in pixels of VIEW's texture on DISPLAY: its
+pixel rectangle plus the overscan row, at least one pixel each way."
   (multiple-value-bind (x y width height) (view-pixel-rect view display)
     (declare (ignore x y))
-    (let ((width (max width 1))
-          (height (max height 1)))
-      (when (view-texture view)
-        (lem-sdl3/ffi:destroy-texture (view-texture view)))
-      (setf (view-texture view) (display:create-view-texture display width height)
-            (view-texture-pixel-size view) (cons width height)))))
+    (values (max width 1)
+            (max (+ height (* (overscan-rows view) (display:display-char-height display)))
+                 1))))
+
+(defun replace-texture (view display)
+  "Give VIEW a new texture of its texture size on DISPLAY, destroying the
+old one."
+  (multiple-value-bind (width height) (view-texture-size view display)
+    (when (view-texture view)
+      (lem-sdl3/ffi:destroy-texture (view-texture view)))
+    (setf (view-texture view) (display:create-view-texture display width height)
+          (view-texture-pixel-size view) (cons width height))))
 
 (defun sync-texture (view display)
-  "Recreate VIEW's texture if its pixel rectangle on DISPLAY no longer has
-the texture's size, and return true if it did.  The rectangle can change
-without lem-core resizing the view: the remainder past the last cell (see
-edge-extra) changes with the display's size and cell size."
-  (multiple-value-bind (x y width height) (view-pixel-rect view display)
-    (declare (ignore x y))
-    (unless (equal (view-texture-pixel-size view)
-                   (cons (max width 1) (max height 1)))
-      (replace-texture view display)
-      t)))
+  "Recreate VIEW's texture if it no longer has VIEW's texture size on
+DISPLAY, and return true if it did.  The size can change without lem-core
+resizing the view: the remainder past the last cell (see edge-extra)
+changes with the display's size and cell size."
+  (unless (equal (view-texture-pixel-size view)
+                 (multiple-value-call #'cons (view-texture-size view display)))
+    (replace-texture view display)
+    t))
+
+(defun add-scroll-delta (view pixels line-height)
+  "Scroll VIEW's body by PIXELS (positive moves the text up) and return how
+many whole lines lem-core must scroll the window: the offset keeps the rest,
+from 0 up to LINE-HEIGHT."
+  (multiple-value-bind (lines offset)
+      (floor (+ (view-scroll-offset view) pixels) line-height)
+    (setf (view-scroll-offset view) offset)
+    lines))
 
 (defmethod set-cursor-position ((view view) x y)
   (setf (view-last-cursor-x view) x
@@ -247,14 +289,33 @@ pixel position overrides."
 (defmethod render-border-using-view ((view view) display)
   (draw-window-border view display (view-window view)))
 
-(defun render-view-texture-to-display (view display)
-  (lem-sdl3/ffi:set-render-target (display:display-renderer display) (display:display-texture display))
-  (multiple-value-bind (x y width height) (view-pixel-rect view display)
+(defun copy-texture-rect (display texture source-y x y width height)
+  "Copy the WIDTH by HEIGHT rows of TEXTURE starting at row SOURCE-Y to X, Y
+on DISPLAY's current render target."
+  (lem-sdl3/ffi:with-frect (source-rect 0 source-y width height)
     (lem-sdl3/ffi:with-frect (dest-rect x y width height)
       (lem-sdl3/ffi:render-texture (display:display-renderer display)
-                                   (view-texture view)
-                                   nil
+                                   texture
+                                   source-rect
                                    dest-rect))))
+
+(defun render-view-texture-to-display (view display)
+  "Composite VIEW's texture onto DISPLAY's texture.  A view with an overscan
+row is copied in two parts: the body, shifted up by the scroll offset, and
+the modeline below it, unshifted."
+  (lem-sdl3/ffi:set-render-target (display:display-renderer display) (display:display-texture display))
+  (multiple-value-bind (x y width height) (view-pixel-rect view display)
+    (if (zerop (overscan-rows view))
+        (copy-texture-rect display (view-texture view) 0 x y width height)
+        (let* ((char-height (display:display-char-height display))
+               (body-height (- (nth-value 1 (view-layout-size view display)) char-height))
+               (offset (if (< (view-scroll-offset view) char-height)
+                           (view-scroll-offset view)
+                           0)))
+          (copy-texture-rect display (view-texture view) offset x y width body-height)
+          (copy-texture-rect display (view-texture view)
+                             (- (view-render-height view display) char-height)
+                             x (+ y body-height) width (- height body-height))))))
 
 (defun refresh-all-view-textures (display)
   "Recreate the SDL texture backing every live view at the current

@@ -12,7 +12,8 @@
                     (:view :lem-sdl3/view)
                     (:event :lem-sdl3/event)
                     (:ffi :lem-sdl3/ffi))
-  (:export :change-font
+  (:export :*smooth-scroll*
+           :change-font
            :set-keyboard-layout
            :render
            :current-renderer))
@@ -20,6 +21,58 @@
 
 (defconstant +display-width+ 100)
 (defconstant +display-height+ 40)
+
+(defvar *smooth-scroll* t
+  "When true, the mouse wheel and trackpad scroll a window with a modeline
+by pixels, including fractions of a line, instead of by whole lines.")
+
+(defun view-point-anchor (window)
+  "Return where WINDOW's view point is, as (LINE-NUMBER . CHARPOS)."
+  (let ((point (lem:window-view-point window)))
+    (cons (lem:line-number-at-point point) (lem:point-charpos point))))
+
+(defun smooth-scroll-window-p (window)
+  "True if WINDOW is scrolled by pixels (see *smooth-scroll*)."
+  (let ((view (lem:window-view window)))
+    (and *smooth-scroll*
+         (typep view 'view:view)
+         (view:view-use-modeline view))))
+
+(defun scroll-window-by-pixels (window display notches)
+  "Scroll WINDOW by NOTCHES of the wheel (positive scrolls toward the top of
+the buffer), each *scroll-speed* lines of DISPLAY's cell height.  Whole lines
+are scrolled by lem-core; the rest is the view's scroll offset."
+  (let* ((view (lem:window-view window))
+         (char-height (display:display-char-height display))
+         (anchor (view-point-anchor window))
+         (lines (view:add-scroll-delta view
+                                       (- (round (* notches char-height lem:*scroll-speed*)))
+                                       char-height)))
+    (unless (zerop lines)
+      (lem:with-current-window window
+        (lem:call-command (lem:find-command "scroll-down") lines))
+      ;; The window could not move: it is at the top or bottom of its buffer.
+      (when (equal anchor (view-point-anchor window))
+        (setf (view:view-scroll-offset view) 0)))
+    (setf (view:view-scroll-anchor view) (view-point-anchor window))))
+
+(defun scrolled-char-y (display char-x char-y pixel-y)
+  "Return CHAR-Y, the cell row under the pointer at PIXEL-Y, corrected for
+the scroll offset of the window there: its body is drawn that many pixels
+higher than its cells."
+  (let ((window (lem:focus-window-position (lem:current-frame) char-x char-y)))
+    (if (null window)
+        char-y
+        (let ((view (lem:window-view window))
+              (last-body-row (+ (lem:window-y window) (lem:window-height window) -2)))
+          (if (and (typep view 'view:view)
+                   (view:view-use-modeline view)
+                   (plusp (view:view-scroll-offset view))
+                   (<= char-y last-body-row))
+              (min (floor (+ pixel-y (view:view-scroll-offset view))
+                          (display:display-char-height display))
+                   last-body-row)
+              char-y)))))
 
 (defun on-mouse-button-down (display button x y clicks)
   (show-cursor)
@@ -35,8 +88,9 @@
             (pixel-y (display:scaled-pixel-y display y)))
         (lem:send-event
          (lambda ()
-           (lem:receive-mouse-button-down char-x char-y pixel-x pixel-y button
-                                          clicks)))))))
+           (lem:receive-mouse-button-down char-x
+                                          (scrolled-char-y display char-x char-y pixel-y)
+                                          pixel-x pixel-y button clicks)))))))
 
 (defun on-mouse-button-up (display button x y)
   (show-cursor)
@@ -51,7 +105,9 @@
         (pixel-y (display:scaled-pixel-y display y)))
     (lem:send-event
      (lambda ()
-       (lem:receive-mouse-button-up char-x char-y pixel-x pixel-y button)))))
+       (lem:receive-mouse-button-up char-x
+                                    (scrolled-char-y display char-x char-y pixel-y)
+                                    pixel-x pixel-y button)))))
 
 (defun on-mouse-motion (display x y state)
   (show-cursor)
@@ -64,9 +120,14 @@
           (pixel-y (display:scaled-pixel-y display y)))
       (lem:send-event
        (lambda ()
-         (lem:receive-mouse-motion char-x char-y pixel-x pixel-y button))))))
+         (lem:receive-mouse-motion char-x
+                                   (scrolled-char-y display char-x char-y pixel-y)
+                                   pixel-x pixel-y button))))))
 
-(defun on-mouse-wheel (display wheel-x wheel-y)
+(defun on-mouse-wheel (display wheel-x wheel-y precise-y)
+  "Scroll by a wheel event.  WHEEL-X and WHEEL-Y are whole notches;
+PRECISE-Y is the vertical scroll with its fraction, used to scroll a window
+by pixels (see *smooth-scroll*)."
   (show-cursor)
   (multiple-value-bind (x y) (mouse-position)
     (let ((char-x (display:scaled-char-width display x))
@@ -75,7 +136,12 @@
           (pixel-y (display:scaled-pixel-y display y)))
       (lem:send-event
        (lambda ()
-         (lem:receive-mouse-wheel char-x char-y pixel-x pixel-y wheel-x wheel-y)
+         (let ((window (lem:focus-window-position (lem:current-frame) char-x char-y)))
+           (if (and window
+                    (/= 0 precise-y)
+                    (smooth-scroll-window-p window))
+               (scroll-window-by-pixels window display precise-y)
+               (lem:receive-mouse-wheel char-x char-y pixel-x pixel-y wheel-x wheel-y)))
          (when (= 0 (lem:event-queue-length))
            (lem:redraw-display)))))))
 
@@ -171,7 +237,10 @@ single :windowevent; SDL3 gives each its own event type."
                         (event:mouse-state event))
        nil)
       (event:+mouse-wheel+
-       (on-mouse-wheel display (event:wheel-x event) (event:wheel-y event))
+       (on-mouse-wheel display
+                       (event:wheel-x event)
+                       (event:wheel-y event)
+                       (event:wheel-precise-y event))
        nil)
       (event:+drop-file+
        (on-filedrop (event:drop-file-name event))
@@ -455,6 +524,12 @@ keeping its cell size."
 
 (defmethod lem-if:redraw-view-after ((implementation sdl3) view)
   (with-debug ("lem-if:redraw-view-after" view)
+    ;; Something other than the wheel scrolled the window (the cursor moved
+    ;; off screen, a recenter, a new buffer): drop the partial line.
+    (let ((anchor (view-point-anchor (view:view-window view))))
+      (unless (equal anchor (view:view-scroll-anchor view))
+        (setf (view:view-scroll-offset view) 0
+              (view:view-scroll-anchor view) anchor)))
     (display:with-display (display)
       (display:with-renderer (display)
         (multiple-value-bind (width height) (view:view-layout-size view display)
@@ -585,7 +660,7 @@ keeping its cell size."
 
 (defmethod lem-if:view-height ((implementation sdl3) view)
   (display:with-display (display)
-    (nth-value 1 (view:view-layout-size view display))))
+    (view:view-render-height view display)))
 
 #-windows
 (defmethod lem-if:clipboard-paste ((implementation sdl3))

@@ -69,3 +69,27 @@ with INITARGS overriding those."
   (ok (equal (pixel-rect (make-view :x 90 :y 36 :pixel-width 50) :width 905 :height 690)
              '(810 612 50 68))
       "a view placed by pixels keeps its size"))
+
+(deftest scroll-delta-keeps-less-than-a-line
+  (let ((view (make-view)))
+    (ok (= 0 (view:add-scroll-delta view 10 17)) "part of a line scrolls no lines")
+    (ok (= 10 (view:view-scroll-offset view)))
+    (ok (= 1 (view:add-scroll-delta view 10 17)) "crossing a line scrolls one")
+    (ok (= 3 (view:view-scroll-offset view)) "and keeps the rest")
+    (ok (= -1 (view:add-scroll-delta view -5 17)) "scrolling back past the line")
+    (ok (= 15 (view:view-scroll-offset view)) "leaves the offset into the line above")
+    (ok (= 2 (view:add-scroll-delta view 19 17)) "several lines at once")
+    (ok (= 0 (view:view-scroll-offset view)))))
+
+(deftest a-view-with-a-modeline-has-an-overscan-row
+  (let ((display (stub-display))
+        (view (make-view :use-modeline t)))
+    (ok (= 85 (view:view-render-height view display))
+        "lem-core draws one row more than the view shows")
+    (ok (equal (multiple-value-list (view:view-texture-size view display)) '(90 85))
+        "and the texture holds it")
+    (ok (equal (pixel-rect view) '(18 51 90 68))
+        "the view's rectangle on the display is unchanged"))
+  (let ((display (stub-display))
+        (view (make-view)))
+    (ok (= 68 (view:view-render-height view display)) "no modeline, no overscan row")))

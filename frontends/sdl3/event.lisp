@@ -69,6 +69,7 @@
    :mouse-state
    :wheel-x
    :wheel-y
+   :wheel-precise-y
    :drop-file-name))
 (in-package :lem-sdl3/event)
 
@@ -238,6 +239,11 @@ Computed on first use.")
   (if (integer-wheel-p)
       (cffi:mem-ref event :int32 +offset-wheel-integer-y+)
       (round (cffi:mem-ref event :float +offset-wheel-y+))))
+
+(defun wheel-precise-y (event)
+  "Return the vertical scroll of a wheel event in notches, with the
+fraction a trackpad or high-resolution wheel reports."
+  (cffi:mem-ref event :float +offset-wheel-y+))
 
 (defun drop-file-name (event)
   "Return the file name of a drop-file event."

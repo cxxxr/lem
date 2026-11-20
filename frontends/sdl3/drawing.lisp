@@ -581,10 +581,8 @@ width so the rasterizer's right-edge anti-aliasing tail is preserved."
 (defun texture-size (view display)
   "Return the WIDTH and HEIGHT in pixels of VIEW's texture on DISPLAY, which
 can reach past the area lem-core lays lines out in (see
-view:view-pixel-rect); fills run to its edge."
-  (multiple-value-bind (x y width height) (view:view-pixel-rect view display)
-    (declare (ignore x y))
-    (values width height)))
+view:view-texture-size); fills run to its edge."
+  (view:view-texture-size view display))
 
 (defmethod draw-object ((drawing-object extend-to-eol-object) x bottom-y display view)
   (display:set-render-color display (extend-to-eol-object-color drawing-object))
