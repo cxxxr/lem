@@ -245,3 +245,46 @@ horizontal or vertical line, is ink."
           "nothing reaches the row below"))))
 
 
+
+(defun call-with-bundled-variable-pitch-font (function)
+  "Call FUNCTION with the bundled Noto Sans CJK, whose Latin is
+proportional, as the proportional font."
+  (let ((display::*variable-pitch-font-candidates*
+          (list (namestring (lem-sdl3/resource:get-resource-pathname
+                             "resources/fonts/NotoSansCJK-Regular.ttc")))))
+    (funcall function)))
+
+(deftest proportional-text-advances-glyph-by-glyph
+  (call-with-bundled-variable-pitch-font
+   (lambda ()
+     (with-headless-display (display surface)
+       (unwind-protect
+            (let* ((advances (mapcar (lambda (character)
+                                       (display:variable-pitch-advance display character))
+                                     '(#\m #\i #\l)))
+                   (object (make-instance 'lem-core/display:variable-text-object
+                                          :string "mil"
+                                          :attribute (lem:make-attribute :foreground "white"
+                                                                         :background "black")
+                                          :type :variable)))
+              (ok (< (second advances) (first advances))
+                  (format nil "proportional: i ~D, m ~D" (second advances) (first advances)))
+              (ok (= (nth-value 4 (ffi:glyph-metrics (display:display-variable-pitch-font display)
+                                                     #\m))
+                     (first advances))
+                  "an advance is the glyph's")
+              (ok (= (reduce #'+ advances) (drawing::object-width object display))
+                  "a text object is as wide as its glyphs' advances")
+              (let ((width (drawing::draw-object object 0 (display:display-char-height display)
+                                                 display nil)))
+                (sdl3:flush-renderer (display:display-renderer display))
+                (ok (= width (reduce #'+ advances)) "drawing returns that width")
+                (ok (loop :for x :below width
+                          :thereis (loop :for y :below (display:display-char-height display)
+                                         :thereis (ink-p surface x y)))
+                    "ink inside it")
+                (ok (loop :for x :from (+ width 2) :below (+ width 20)
+                          :never (loop :for y :below (display:display-char-height display)
+                                       :thereis (ink-p surface x y)))
+                    "none past it")))
+         (display::close-variable-pitch-font display))))))

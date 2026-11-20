@@ -29,6 +29,8 @@
            :display-renderer
            :display-text-engine
            :display-text-shaper
+           :display-variable-pitch-font
+           :variable-pitch-advance
            :set-render-color
            :display-background-color
            :display-foreground-color
@@ -62,6 +64,17 @@
 
 (defvar *display* nil
   "The display, set once the SDL window has been created.")
+
+(defparameter *variable-pitch-font-candidates*
+  '("/System/Library/Fonts/Supplemental/Arial.ttf"
+    "/System/Library/Fonts/Helvetica.ttc"
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
+    "/usr/share/fonts/noto/NotoSans-Regular.ttf"
+    "/usr/share/fonts/TTF/DejaVuSans.ttf"
+    "C:/Windows/Fonts/arial.ttf")
+  "Proportional font files tried, in order, when :sdl3-variable-pitch-font
+is not set.")
 
 (defvar *post-display-change-hooks* '()
   "Hook variable (analogous to Lem's other `*...-hooks*' registries): a list
@@ -125,6 +138,14 @@ lem-sdl3/text-engine), or NIL to draw every glyph from a surface.")
                 :reader display-text-shaper
                 :documentation "The renderer's text shaper (see
 lem-sdl3/text-shaping), or NIL when text runs are not shaped.")
+   (variable-pitch-font :initform nil
+                        :accessor %display-variable-pitch-font
+                        :documentation "The open proportional font (see
+display-variable-pitch-font), or NIL until it is first needed.")
+   (variable-pitch-advances :initform (make-hash-table)
+                            :reader display-variable-pitch-advances
+                            :documentation "Each character's advance in the
+proportional font, by character.")
    (scale :initform '(1 1)
           :initarg :scale
           :accessor display-scale)
@@ -452,8 +473,47 @@ is at pixel X, from pixel Y down HEIGHT pixels."
                                 height
                                 :color (lem-core:attribute-foreground-color attribute))))
 
+(defun variable-pitch-font-file ()
+  "Return the proportional font file to open: the :sdl3-variable-pitch-font
+config if set, otherwise the first of *variable-pitch-font-candidates* that
+exists, or NIL."
+  (or (lem:config :sdl3-variable-pitch-font)
+      (find-if #'probe-file *variable-pitch-font-candidates*)))
+
+(defun display-variable-pitch-font (display)
+  "Return the font proportional text is drawn in, at DISPLAY's font size:
+the proportional font, opened the first time it is needed, or the latin
+font if none can be opened."
+  (or (%display-variable-pitch-font display)
+      (setf (%display-variable-pitch-font display)
+            (let ((file (variable-pitch-font-file)))
+              (and file
+                   (handler-case
+                       (lem-sdl3/ffi:open-font file (font:font-config-size
+                                                     (display-font-config display)))
+                     (error () nil)))))
+      (display-latin-font display)))
+
+(defun variable-pitch-advance (display character)
+  "Return how far CHARACTER advances in DISPLAY's proportional font, in
+pixels, falling back to a cell for a character it has no glyph for."
+  (let ((advances (display-variable-pitch-advances display)))
+    (or (gethash character advances)
+        (setf (gethash character advances)
+              (or (nth-value 4 (lem-sdl3/ffi:glyph-metrics
+                                (display-variable-pitch-font display) character))
+                  (display-char-width display))))))
+
+(defun close-variable-pitch-font (display)
+  "Close DISPLAY's proportional font, if open, and forget its advances."
+  (when (%display-variable-pitch-font display)
+    (lem-sdl3/ffi:close-font (%display-variable-pitch-font display))
+    (setf (%display-variable-pitch-font display) nil))
+  (clrhash (display-variable-pitch-advances display)))
+
 (defmethod change-font ((display display) font-config &optional (save-font-size-p t))
   (let ((font-config (font:merge-font-config font-config (display-font-config display))))
+    (close-variable-pitch-font display)
     ;; Cached texts, shaped runs and atlas glyphs refer to the fonts being
     ;; closed.
     (when (display-text-engine display)

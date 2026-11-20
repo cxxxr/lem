@@ -750,3 +750,68 @@ fill; a modeline's background covers it."
           (view:sync-texture (lem:window-view window) display))
         (call-next-method implementation buffer window t)
         (call-next-method))))
+
+;;; Proportional text (variable-text-object).  Each character advances by
+;;; its glyph's integer advance in the proportional font, the width lem-core
+;;; measures with lem-if:char-pixel-width, so wrapping, the cursor and the
+;;; mouse agree with what is drawn.  Glyphs are drawn one by one at those
+;;; advances; kerning and ligatures would make the drawn width differ.
+
+(defmethod lem-if:char-pixel-width ((implementation lem-sdl3/sdl3:sdl3) character)
+  "Return CHARACTER's advance in the proportional font, in pixels."
+  (display:with-display (display)
+    (display:variable-pitch-advance display character)))
+
+(defmethod object-width ((drawing-object variable-text-object) display)
+  "Return the sum of the advances of DRAWING-OBJECT's characters."
+  (loop :for character :across (text-object-string drawing-object)
+        :sum (display:variable-pitch-advance display character)))
+
+(defun variable-pitch-glyph-surface (display character attribute)
+  "Return the cached surface of CHARACTER in DISPLAY's proportional font,
+in ATTRIBUTE's foreground colour."
+  (let ((string (string character)))
+    (or (lem-sdl3/text-surface-cache:get-text-surface-cache string attribute :variable)
+        (let* ((foreground (lem-core:attribute-foreground-with-reverse attribute))
+               (surface (lem-sdl3/ffi:render-text-blended
+                         (display:display-variable-pitch-font display)
+                         string
+                         (lem:color-red foreground)
+                         (lem:color-green foreground)
+                         (lem:color-blue foreground))))
+          (when surface
+            (lem-sdl3/text-surface-cache:register-text-surface-cache
+             string attribute :variable surface))
+          surface))))
+
+(defmethod draw-object ((drawing-object variable-text-object) x bottom-y display view)
+  "Draw DRAWING-OBJECT's background or cursor, then its glyphs one by one at
+their advances from X, and return its width."
+  (let* ((attribute (text-object-attribute drawing-object))
+         (width (object-width drawing-object display))
+         (height (display:display-char-height display))
+         (y (- bottom-y height))
+         (background (lem-core:attribute-background-with-reverse attribute))
+         (glyph-attribute (glyph-attribute drawing-object display))
+         ;; The proportional font's baseline goes on the row's baseline.
+         (top (- (+ y (display:display-font-ascent display))
+                 (lem-sdl3/ffi:font-ascent (display:display-variable-pitch-font display))))
+         (renderer (display:display-renderer display)))
+    (cond ((and attribute (lem-core:cursor-attribute-p attribute))
+           (lem-sdl3/view:set-cursor-position view x y)
+           (draw-cursor display x y width height background))
+          (t
+           (draw-rect display x y width height background)))
+    (loop :with glyph-x := x
+          :for character :across (text-object-string drawing-object)
+          :for surface := (variable-pitch-glyph-surface display character glyph-attribute)
+          :do (when surface
+                (lem-sdl3/ffi:with-frect (rect glyph-x top
+                                               (lem-sdl3/ffi:surface-width surface)
+                                               (lem-sdl3/ffi:surface-height surface))
+                  (lem-sdl3/ffi:render-texture
+                   renderer
+                   (lem-sdl3/text-surface-cache:get-or-create-texture renderer surface)
+                   nil rect)))
+              (incf glyph-x (display:variable-pitch-advance display character)))
+    width))
