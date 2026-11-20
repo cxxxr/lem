@@ -84,15 +84,15 @@
       (font:close-font font))))
 
 (deftest box-drawing-characters-use-the-monospace-font
-  ;; Lem classifies U+2500..U+259F as :cjk; the CJK font draws them
-  ;; full-width in a one-cell slot, so lines and corners did not meet.
+  ;; U+2500..U+259F are :other; the CJK font drew them full-width in a
+  ;; one-cell slot, so lines and corners did not meet.
   (with-ttf ()
     (call-with-display-for-font
      14
      (lambda (display)
        (flet ((font-for (character &key bold)
                 (lem-sdl3/display:get-display-font display
-                                                   :type :cjk
+                                                   :type (lem-core/display:char-type character)
                                                    :bold bold
                                                    :character character)))
          (testing "box drawing and block elements use the latin fonts"
@@ -206,9 +206,9 @@
                        (font:font-box-drawing-band b nil))))))))))
 
 (deftest narrow-characters-use-the-monospace-font
-  ;; Lem classifies every character it does not otherwise know (Greek,
-  ;; Cyrillic, arrows, math) as :cjk, which drew them with the CJK font in
-  ;; its own style and, being taller, below the row's baseline.
+  ;; One-cell characters outside the latin ranges (Greek, Cyrillic, arrows,
+  ;; math) are :other; drawn with the CJK font they took its style and,
+  ;; being taller, sat below the row's baseline.
   (with-ttf ()
     (call-with-display-for-font
      14
@@ -216,7 +216,7 @@
        (let ((font (lem-sdl3/display::display-font display)))
          (flet ((font-for (character &key bold)
                   (lem-sdl3/display:get-display-font display
-                                                     :type :cjk
+                                                     :type (lem-core/display:char-type character)
                                                      :bold bold
                                                      :character character)))
            (testing "one-cell characters use the latin fonts"

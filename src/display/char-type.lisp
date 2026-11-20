@@ -1,7 +1,11 @@
 (in-package :lem-core)
 
 (deftype char-type ()
-  '(member :latin :cjk :braille :emoji :icon :control :zero-width))
+  "The kind of a character, as returned by `char-type'.  Frontends use it to
+choose a font: :latin (ASCII and Latin-1 to Latin Extended-B), :cjk (wide
+characters), :other (any other one-cell character), :braille, :emoji, :icon,
+:control and :zero-width."
+  '(member :latin :cjk :other :braille :emoji :icon :control :zero-width))
 
 (defun cjk-char-code-p (code)
   (or (<= #x4E00 code #x9FFF)
@@ -33,6 +37,9 @@
       (= code #xFEFF)))
 
 (defun char-type (char)
+  "Return CHAR's `char-type'.  A character in none of the known ranges is
+:cjk if it is wide (two cells, see `wide-char-p') and :other otherwise,
+e.g. Greek, Cyrillic, arrows, math symbols and box drawing."
   (let ((code (char-code char)))
     (cond ((control-char char)
            :control)
@@ -54,5 +61,7 @@
            :latin)
           ((zero-width-char-code-p code)
            :zero-width)
+          ((wide-char-p char)
+           :cjk)
           (t
-           :cjk))))
+           :other))))

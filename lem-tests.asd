@@ -58,6 +58,7 @@
                (:file "language-mode")
                (:file "killring")
                (:file "string-width-utils")
+               (:file "char-type")
                (:file "syntax-test")
                (:file "syntax-scanner")
                (:file "buffer-list-test")

@@ -1,6 +1,7 @@
 (defpackage :lem-core/display
   (:use)
   (:export
+   :char-type
    :wrap-line-character
    :wrap-line-attribute
    :control-character-object

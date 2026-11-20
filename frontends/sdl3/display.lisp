@@ -194,16 +194,6 @@ e.g. -3 for NotoSansMono at 12pt). |descent| pixels sit below the baseline."
   (and character
        (<= #x2500 (char-code character) #x259f)))
 
-(defun narrow-non-cjk-char-p (type character)
-  "Return true if CHARACTER, of char-type TYPE, is one Lem classifies as
-:cjk but gives a single cell: Greek, Cyrillic, arrows, math and other
-symbols, box drawing.  Lem calls every character it does not otherwise know
-:cjk, but the CJK font draws these in its own (often full-width) style; the
-monospace font draws them to fit the cell."
-  (and (eq type :cjk)
-       character
-       (not (lem:wide-char-p character))))
-
 (defun display-glyph-ascent (display ttf-font character)
   "Return the ascent of the font that draws CHARACTER when it is rendered
 with TTF-FONT: TTF-FONT's own, or that of the fallback font providing the
@@ -224,15 +214,9 @@ box-drawing band, to be stretched to the cell height.  Otherwise NIL."
        (font:font-box-drawing-band (display-font display) bold)))
 
 (defmethod get-display-font ((display display) &key type bold character)
-  (check-type type lem-core::char-type)
+  (check-type type lem-core/display:char-type)
   (cond ((eq type :control)
          (display-latin-font display))
-        ((narrow-non-cjk-char-p type character)
-         ;; The latin fonts fall back to the CJK font and then the others
-         ;; for glyphs they lack.
-         (if bold
-             (display-latin-bold-font display)
-             (display-latin-font display)))
         ((eq type :icon)
          (or (and character (icon-font:icon-font
                              character
@@ -242,13 +226,16 @@ box-drawing band, to be stretched to the cell height.  Otherwise NIL."
          (display-emoji-font display))
         ((eq type :braille)
          (display-braille-font display))
+        ;; :other characters (Greek, Cyrillic, symbols, box drawing) take one
+        ;; cell, so they use the monospace fonts, which fall back to the CJK
+        ;; font and then the others for glyphs they lack.
         (bold
          (case type
-           ((:latin :zero-width) (display-latin-bold-font display))
+           ((:latin :other :zero-width) (display-latin-bold-font display))
            (otherwise (display-cjk-bold-font display))))
         (t
          (case type
-           ((:latin :zero-width) (display-latin-font display))
+           ((:latin :other :zero-width) (display-latin-font display))
            (otherwise (display-cjk-normal-font display))))))
 
 (defmethod scaled-char-width ((display display) x)
