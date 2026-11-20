@@ -181,13 +181,15 @@ horizontal or vertical line, is ink."
                       :always (ink-p surface x y))))
 
 (deftest letters-share-the-latin-baseline
-  ;; Greek and Cyrillic are :cjk to lem-core but drawn with the latin font;
-  ;; their flat or round bottoms must rest on the same row as x's.
+  ;; Greek and Cyrillic are drawn with the latin font; their flat or round
+  ;; bottoms must rest on the same row as x's.  Round bottoms may overshoot
+  ;; the baseline by a pixel, as they do in the font itself, depending on how
+  ;; FreeType rasterizes them.
   (with-each-mode (display surface)
     (draw-line display 0 " x α Ж П ω Ω ẞ ")
     (let ((bottoms (mapcar (lambda (entry) (fourth (second entry)))
                            (character-boxes display surface 0 " x α Ж П ω Ω ẞ "))))
-      (ok (every (lambda (bottom) (= bottom (first bottoms))) bottoms)
+      (ok (every (lambda (bottom) (<= 0 (- bottom (first bottoms)) 1)) bottoms)
           (format nil "bottoms ~A" bottoms))
       (ok (<= (abs (- (first bottoms) (display:display-font-ascent display))) 1)
           "on the baseline, ascent pixels below the row's top"))))
