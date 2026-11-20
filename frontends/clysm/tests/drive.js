@@ -336,6 +336,20 @@ module.exports = (win, app) => {
             await until(() => js("[...document.querySelectorAll('.lem-windows .lem-line')].some((l) => l.textContent.includes('│ ccc │ d  │'))")),
             await js("[...document.querySelectorAll('.lem-windows .lem-line')].map((l) => l.textContent).join(' | ')"));
       await key('x', ['control']); await key('s', ['control']); await sleep(300);   // (saved: C-x C-c does not ask)
+      // C-l puts the cursor in the middle, counting the lines that headings take
+      const headings = path.join(work, 'headings.md');
+      await writeFile(headings, Array.from({ length: 60 }, (_, i) => (i % 2 ? `text ${i}` : `## Heading ${i}`)).join('\n') + '\n');
+      await lisp(`(lem:send-event (lambda () (lem:find-file ${lispString(headings)}) (lem:move-to-line (lem:current-point) 46)))`);
+      await key('n', ['control']); await sleep(300);
+      await key('l', ['control']); await sleep(500);
+      const cursorAt = () => js(`(() => {
+        const cursor = document.querySelector('.lem-windows .lem-cursor');
+        if (!cursor) return null;
+        const view = cursor.closest('.lem-view').getBoundingClientRect(), c = cursor.getBoundingClientRect();
+        return (c.top + c.height / 2 - view.top) / view.height;
+      })()`);
+      const middle = await cursorAt();
+      check('markdown C-l in the middle', middle !== null && Math.abs(middle - 0.5) < 0.12, String(middle));
       // Claude Code, with tests/fake-claude.mjs (LEM_CLAUDE_COMMAND): in the desktop application
       if (!web) {
         const project = path.join(work, 'project');
@@ -343,12 +357,38 @@ module.exports = (win, app) => {
         fs.writeFileSync(path.join(project, 'notes.txt'), 'notes\n');
         await lisp(`(lem:send-event (lambda () (lem:find-file ${lispString(path.join(project, 'notes.txt'))}) (lem-clysm:claude)))`);
         await sleep(1000);
+        // the input is a box attached to the conversation's window
+        check('claude input attached', (await lisp('(lem:attached-window-p (lem:current-window))')) === 'T');
         await type('hello claude'); await key('Return');
-        const chat = () => lisp('(lem:buffer-text (lem-clysm::session-chat (first lem-clysm::*claude-sessions*)))');
+        const session = '(first lem-clysm::*claude-sessions*)';
+        const chat = () => lisp(`(lem:buffer-text (lem-clysm::session-chat ${session}))`);
+        const input = () => lisp(`(lem:buffer-text (lem-clysm::session-input ${session}))`);
         check('claude asks', await until(async () => (await chat()).includes('Allow?'), 10000), await chat());
+        // the question is in the input box
+        check('claude asks in the input', (await input()).includes('Allow Write'), await input());
+        await sleep(400);   // (*claude-answer-delay*: keys typed just before it are not answers)
         await key('y');
         check('claude answers', await until(async () => { const c = await chat(); return c.includes('Done: **fake.txt** says hi.') && c.includes('$0.0012'); }, 10000), await chat());
         check('claude wrote the file', fs.existsSync(path.join(project, 'fake.txt')));
+        check('claude input back after the question', (await input()) === '""', await input());
+        // what is typed in the input when the question comes is put back after it
+        await type('ask later'); await key('Return');
+        await type('a draft');
+        check('claude asks over a draft', await until(async () => (await input()).includes('Allow Write'), 10000), await input());
+        await sleep(400);
+        await key('n'); await sleep(300); await key('Return');   // (no, and nothing to tell)
+        check('claude draft put back', await until(async () => (await input()) === '"a draft"'), await input());
+        check('claude not allowed', await until(async () => (await chat()).includes('Not written.'), 10000), await chat());
+        await lisp(`(lem:send-event (lambda () (lem:erase-buffer (lem-clysm::session-input ${session}))))`);
+        // C-x 1, in the conversation or in its input, keeps the input with the conversation
+        const inputShown = () => lisp(`(let ((w (first (lem:get-buffer-windows (lem-clysm::session-chat ${session}))))) (and w (lem-core::window-attached-window w) (eq (lem:window-buffer (lem-core::window-attached-window w)) (lem-clysm::session-input ${session}))))`);
+        await key('x', ['control']); await key('1'); await sleep(300);
+        check('claude C-x 1 in the input', (await inputShown()) === 'T' && (await lisp('(lem:one-window-p)')) === 'T');
+        await lisp('(lem:send-event (lambda () (lem-clysm:claude-focus-chat)))'); await sleep(200);
+        await key('x', ['control']); await key('1'); await sleep(300);
+        check('claude C-x 1 in the conversation', (await inputShown()) === 'T');
+        await key('i'); await sleep(200);
+        check('claude i goes to the input', (await lisp('(lem:attached-window-p (lem:current-window))')) === 'T');
         // a ``` in what a tool said (the fake's result has one) does not end the block it is shown in
         check('claude: the end is not in a code block',
               (await lisp('(lem:with-point ((p (lem:buffer-end-point (lem-clysm::session-chat (first lem-clysm::*claude-sessions*))))) (lem:line-offset p -1) (lem-clysm::in-code-block-p p))')) === 'NIL');
@@ -373,7 +413,7 @@ module.exports = (win, app) => {
         }))()`);
         check('modelines do not overlap', !overlaps);
         // the input of Claude keeps its height when the screen changes (larger text: fewer lines)
-        const inputHeight = () => lisp('(lem:window-height (first (lem:get-buffer-windows (lem-clysm::session-input (first lem-clysm::*claude-sessions*)))))');
+        const inputHeight = () => lisp('(lem:window-height (lem-core::window-attached-window (first (lem:get-buffer-windows (lem-clysm::session-chat (first lem-clysm::*claude-sessions*))))))');
         const before = await inputHeight();
         await lisp('(lem:send-event (lambda () (lem-clysm::set-font-size (+ lem-clysm::*font-size* 4))))');
         await sleep(800);

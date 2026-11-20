@@ -60,8 +60,16 @@
     (set-window-attached-window nil parent-window)
     (set-attached-window-parent-window nil window)))
 
+(defun attached-window-rows (window)
+  "The lines of WINDOW its buffer takes (wrapped lines counted), at most half
+of its parent window: then it scrolls."
+  (let ((buffer (window-buffer window)))
+    (min (+ (buffer-nlines buffer)
+            (window-wrapping-offset window (buffer-start-point buffer) (buffer-end-point buffer)))
+         (max 1 (floor (window-height (attached-window-parent-window window)) 2)))))
+
 (defmethod window-redraw ((window attached-window) force)
-  (let ((height (buffer-nlines (window-buffer window))))
+  (let ((height (attached-window-rows window)))
     (unless (= height (window-height window))
       (multiple-value-bind (x y)
           (compute-attached-window-position (attached-window-parent-window window) height)

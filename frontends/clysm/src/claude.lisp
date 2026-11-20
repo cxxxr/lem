@@ -3,7 +3,10 @@
 ;;;; M-x claude starts Claude Code (the claude command) for the project
 ;;;; of the buffer, in the background, and talks with it in two buffers: the
 ;;;; conversation (*claude: PROJECT*), shown as Markdown as it reads
-;;;; (markdown.lisp), and the input under it, where Return sends.
+;;;; (markdown.lisp), and the input, a box attached to the bottom of the
+;;;; conversation's window (Lem's attached windows: it goes with the
+;;;; conversation when windows are deleted, split or switched), where Return
+;;;; sends.
 ;;;;
 ;;;; claude runs as the Agent SDK runs it: claude -p with JSON lines in and
 ;;;; out (--input-format/--output-format stream-json), started by Node.js's
@@ -11,7 +14,8 @@
 ;;;; written as it comes (--include-partial-messages); before using a tool
 ;;;; that needs it, claude asks (a control_request can_use_tool), and the
 ;;;; conversation shows what it would do (the diff of an edit, the command)
-;;;; and waits for y (yes), a (yes, and the same from now on) or n (no).
+;;;; and waits for y (yes), a (yes, and the same from now on) or n (no),
+;;;; asked in the input box (what was typed there is put back after).
 ;;;; What each tool did is under a line that Tab unfolds.  Files that claude
 ;;;; changed are read again in the buffers that have them (unless they were
 ;;;; changed there).  Shift-Tab in the input cycles the permission mode
@@ -126,6 +130,8 @@ claude's default.")
   session-id model (mode "default") cost
   (bypass-allowed nil)                  ; started with --allow-dangerously-skip-permissions
   (pending '())                         ; permission requests waiting for an answer
+  (draft nil)                           ; (text . position) of the input while it asks
+  (asked-at 0)                          ; when the question was put in the input
   (streamed '())                        ; ids of the messages whose text was streamed
   (in-text nil)                         ; a text is being streamed
   (tools (make-hash-table :test 'equal)) ; tool_use_id -> name
@@ -329,6 +335,52 @@ not end the block."
 
 ;;; ---- permissions
 
+(defvar *claude-answer-delay* 0.3
+  "Seconds after a question is put in the input during which y, a and n do
+not answer it: keys typed for the input just before it came are not taken
+as an answer.")
+
+(defun permission-question (session request)
+  "The question of REQUEST, for the input: (string . attribute) pieces."
+  (let ((name (or (jstring request "request" "tool_name") "?")))
+    (list (cons "Allow " :bold)
+          (cons name :bold)
+          (cons (format nil "  ~A~%" (tool-summary session name (jget request "request" "input")))
+                :mark)
+          (cons (format nil "y yes · a yes, and don't ask again~@[ (~A)~] · n no"
+                        (permission-suggestion request))
+                :link))))
+
+(defun ask-in-input (session request)
+  "Put the question of REQUEST in the input (what was typed is kept, to be
+put back), read-only until it is answered."
+  (let ((input (session-input session))
+        (lem:*inhibit-read-only* t))
+    (unless (session-draft session)
+      (setf (session-draft session)
+            (cons (lem:buffer-text input)
+                  (lem:position-at-point (lem:buffer-point input)))))
+    (lem:erase-buffer input)
+    (lem:with-point ((p (lem:buffer-end-point input) :left-inserting))
+      (loop :for (string . attribute) :in (permission-question session request)
+            :do (lem:insert-string p string :attribute (claude-attribute attribute))))
+    (lem:buffer-start (lem:buffer-point input))
+    (setf (lem:buffer-read-only-p input) t
+          (session-asked-at session) (get-internal-real-time))))
+
+(defun restore-input (session)
+  "Put back in the input what was typed before a question."
+  (let ((draft (session-draft session))
+        (input (session-input session))
+        (lem:*inhibit-read-only* t))
+    (when draft
+      (setf (session-draft session) nil
+            (lem:buffer-read-only-p input) nil)
+      (lem:erase-buffer input)
+      (lem:insert-string (lem:buffer-end-point input) (car draft))
+      (lem:move-to-position (lem:buffer-point input)
+                            (min (cdr draft) (1+ (length (car draft))))))))
+
 (defun write-permission-request (session request)
   (let* ((name (or (jstring request "request" "tool_name") "?"))
          (input (jget request "request" "input")))
@@ -338,7 +390,8 @@ not end the block."
     (write-chat session "  Allow?  " :bold)
     (write-chat session (format nil "y yes · a yes, and don't ask again~@[ (~A)~] · n no~%"
                                 (permission-suggestion request))
-                :link)))
+                :link)
+    (ask-in-input session request)))
 
 (defun permission-suggestion (request)
   "What \"don't ask again\" would allow, in a few words."
@@ -359,8 +412,9 @@ not end the block."
           (note-mode session (jstring suggestion "mode")))))
     (write-chat session (if allow "  ✓ allowed" "  ✗ not allowed") (if allow :added :removed))
     (write-chat session (format nil "~@[: ~A~]~%" (and (not allow) (plusp (length message)) message)))
-    (when (session-pending session)
-      (write-permission-request session (first (session-pending session))))))
+    (if (session-pending session)
+        (write-permission-request session (first (session-pending session)))
+        (restore-input session))))
 
 ;;; ---- what claude says
 
@@ -469,6 +523,7 @@ mode, or why it refused one."
 (defun handle-claude-exit (session code why)
   (setf (session-state session) :exited
         (session-pending session) '())
+  (restore-input session)
   (blank-chat-line session)
   (write-chat session (format nil "Claude Code ended~@[ (~A)~].~%" (and (realp code) (/= code 0) code))
               :removed)
@@ -527,7 +582,11 @@ mode, or why it refused one."
     (lem:with-current-buffer chat
       (markdown-live-mode t))
     (lem:change-buffer-mode input 'claude-input-mode)
-    (lem:modeline-add-status-list 'session-status input)
+    ;; the input goes with the conversation: shown in a box at the bottom of
+    ;; each window that shows it (an attached window has no modeline: the
+    ;; status is in the conversation's)
+    (lem:attach-buffer chat input)
+    (lem:modeline-add-status-list 'session-status chat)
     (setf (session-bypass-allowed session) (and *claude-allow-bypass-permissions* t))
     (when *claude-permission-mode*
       (setf (session-mode session) *claude-permission-mode*))
@@ -535,7 +594,7 @@ mode, or why it refused one."
     (write-chat session (format nil "Claude Code in ~A~%" directory) :mark)
     (when (equal *claude-permission-mode* "bypassPermissions")
       (write-chat session (format nil "⚠ bypassPermissions: Claude runs every tool without asking~%") :removed))
-    (write-chat session (format nil "Return send · C-j newline · S-Tab mode · C-c C-c stop~%") :mark)
+    (write-chat session (format nil "Return send · C-j newline · S-Tab mode · C-c C-c stop · C-c C-o conversation~%") :mark)
     (setf (session-handle session)
           (js:funcall *claude-spawn* *claude-command* (namestring directory)
                       (append '("-p" "--input-format" "stream-json" "--output-format" "stream-json"
@@ -558,29 +617,29 @@ mode, or why it refused one."
     (js:call (session-handle session) "control" "initialize" :false :false)
     session))
 
+(defun input-window (chat-window session)
+  "The input box of CHAT-WINDOW, a window of the conversation of SESSION."
+  (or (lem-core::window-attached-window chat-window)
+      (lem-core::make-attached-window chat-window :buffer (session-input session))))
+
 (defun show-session (session)
-  "Show the conversation and its input under it, and go to the input."
+  "Show the conversation, with its input in a box at its bottom, and go to
+the input.  The current window shows it if it showed a conversation, or if
+it is narrow; otherwise the conversation is put on its right."
   (let ((chat-window (first (lem:get-buffer-windows (session-chat session)))))
     (unless chat-window
       (let ((window (lem:current-window)))
-        (if (< 100 (lem:window-width window))
-            ;; side by side with what is edited
-            (progn
-              (lem:split-window-horizontally window)
-              (setf chat-window (lem:get-next-window window)))
-            (setf chat-window window))
-        (lem:switch-to-window chat-window)
-        (lem:switch-to-buffer (session-chat session))))
-    (let ((input-window (first (lem:get-buffer-windows (session-input session)))))
-      (unless input-window
-        (lem:switch-to-window chat-window)
-        (lem:split-window-vertically chat-window :height (max 3 (- (lem:window-height chat-window) 7)))
-        (setf input-window (lem:get-next-window chat-window))
-        (lem:switch-to-window input-window)
-        (lem:switch-to-buffer (session-input session)))
-      ;; (its height stays when the screen is resized or windows balanced)
-      (setf (lem:window-height-fixed-p input-window) t)
-      (lem:switch-to-window input-window))))
+        (when (lem:attached-window-p window)
+          (setf window (lem-core::attached-window-parent-window window)))
+        (lem:switch-to-window window)
+        (when (and (not (buffer-session (lem:window-buffer window)))
+                   (< 100 (lem:window-width window)))
+          ;; side by side with what is edited
+          (lem:split-window-horizontally window)
+          (lem:switch-to-window (lem:get-next-window window)))
+        (lem:switch-to-buffer (session-chat session))
+        (setf chat-window (first (lem:get-buffer-windows (session-chat session))))))
+    (lem:switch-to-window (input-window chat-window session))))
 
 (defun live-session (directory)
   (find-if (lambda (session)
@@ -610,6 +669,8 @@ mode, or why it refused one."
          (text (string-trim '(#\Space #\Newline #\Tab) (lem:buffer-text input))))
     (cond ((eq (session-state session) :exited)
            (lem:editor-error "Claude Code has ended: M-x claude starts it again"))
+          ((session-pending session)
+           (lem:editor-error "Claude asks first: y, a or n"))
           ((zerop (length text)))
           (t
            (lem:erase-buffer input)
@@ -654,22 +715,29 @@ session was started with *claude-allow-bypass-permissions*."
   "End the Claude Code of the project and start it again with the last
 conversation (with the options as they are now)."
   (let* ((session (current-session))
-         (directory (namestring (session-directory session))))
+         (directory (namestring (session-directory session)))
+         (windows (lem:get-buffer-windows (session-chat session))))
     (unless (eq (session-state session) :exited)
       (js:call (session-handle session) "kill"))
     (setf (session-state session) :exited)
-    (dolist (buffer (list (session-chat session) (session-input session)))
-      (dolist (window (lem:get-buffer-windows buffer))
-        (unless (lem:one-window-p)
-          (lem:delete-window window))))
+    ;; the new conversation in the first window of the old one
+    (dolist (window (rest windows))
+      (unless (lem:one-window-p)
+        (lem:delete-window window)))
+    (when windows
+      (lem:switch-to-window (first windows)))
     (show-session (start-session directory :continue t))))
 
 (defun answer-key (allow always character)
   (let ((session (buffer-session (lem:current-buffer))))
     (cond ((and session (session-pending session))
-           (answer-permission session allow :always always
-                                            :message (unless allow
-                                                       (lem:prompt-for-string "Tell Claude what to do instead (or Return): "))))
+           (if (< (- (get-internal-real-time) (session-asked-at session))
+                  (* *claude-answer-delay* internal-time-units-per-second))
+               ;; (typed for the input before the question came)
+               (lem:message "Claude asks: y, a or n")
+               (answer-permission session allow :always always
+                                                :message (unless allow
+                                                           (lem:prompt-for-string "Tell Claude what to do instead (or Return): ")))))
           ((eq (lem:current-buffer) (and session (session-input session)))
            (lem:insert-character (lem:current-point) character))
           (t (lem:editor-error "Claude is not asking anything")))))
@@ -693,23 +761,41 @@ conversation (with the options as they are now)."
                       (start-session (project-directory buffer))))
          (file (lem:buffer-filename buffer))
          (text (lem:points-to-string start end)))
-    (lem:with-point ((p (lem:buffer-end-point (session-input session))))
-      (lem:insert-string p (format nil "~@[In ~A, ~]lines ~D-~D:~%```~%~A~%```~%"
-                                   (and file (relative-path session (namestring file)))
-                                   (lem:line-number-at-point start) (lem:line-number-at-point end)
-                                   (string-right-trim '(#\Newline) text))))
+    (let ((quoted (format nil "~@[In ~A, ~]lines ~D-~D:~%```~%~A~%```~%"
+                          (and file (relative-path session (namestring file)))
+                          (lem:line-number-at-point start) (lem:line-number-at-point end)
+                          (string-right-trim '(#\Newline) text)))
+          (draft (session-draft session)))
+      (if draft
+          ;; (Claude asks in the input: for what is typed, put back after)
+          (setf (session-draft session)
+                (cons (concatenate 'string (car draft) quoted)
+                      (+ 1 (length (car draft)) (length quoted))))
+          (lem:insert-string (lem:buffer-end-point (session-input session)) quoted)))
     (show-session session)
-    (lem:buffer-end (lem:current-point))))
+    (unless (session-draft session)
+      (lem:buffer-end (lem:current-point)))))
 
 (lem:define-command claude-focus-input () ()
   "Go to the input of Claude."
   (show-session (current-session)))
+
+(lem:define-command claude-focus-chat () ()
+  "Go to the conversation with Claude (from its input)."
+  (let ((window (lem:current-window)))
+    (if (lem:attached-window-p window)
+        (lem:switch-to-window (lem-core::attached-window-parent-window window))
+        (let ((chat (first (lem:get-buffer-windows (session-chat (current-session))))))
+          (if chat
+              (lem:switch-to-window chat)
+              (lem:editor-error "The conversation is not shown: M-x claude"))))))
 
 (lem:define-key *claude-input-mode-keymap* "Return" 'claude-send)
 (lem:define-key *claude-input-mode-keymap* "C-j" 'lem-core/commands/edit:newline)
 (lem:define-key *claude-input-mode-keymap* "M-Return" 'lem-core/commands/edit:newline)
 (lem:define-key *claude-input-mode-keymap* "Shift-Tab" 'claude-cycle-mode)
 (lem:define-key *claude-input-mode-keymap* "C-c C-c" 'claude-interrupt)
+(lem:define-key *claude-input-mode-keymap* "C-c C-o" 'claude-focus-chat)
 (lem:define-key *claude-input-mode-keymap* "y" 'claude-yes)
 (lem:define-key *claude-input-mode-keymap* "a" 'claude-always)
 (lem:define-key *claude-input-mode-keymap* "n" 'claude-no)
