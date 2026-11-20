@@ -426,6 +426,27 @@ module.exports = (win, app) => {
         await lisp('(lem:send-event (lambda () (lem-core/commands/window:delete-other-windows)))');
       }
 
+      // M-x terminal (node-pty and @xterm/headless): in the desktop application
+      if (!web) {
+        await lisp('(lem:send-event (lambda () (lem-core/commands/window:delete-other-windows)))');
+        await command('terminal');
+        const terminalText = () => lisp('(lem:buffer-text (lem:current-buffer))');
+        check('terminal: started', await until(async () =>
+          (await lisp('(lem:mode-name (lem:buffer-major-mode (lem:current-buffer)))')) === '"Terminal"' &&
+          (await terminalText()).trim() !== '""', 15000), await terminalText());
+        await type('echo hi-$((40+2))'); await key('Return');
+        check('terminal: a command', await until(async () => (await terminalText()).includes('hi-42'), 10000), await terminalText());
+        await type("printf '\\033[31mred\\033[0m\\n'"); await key('Return');
+        const red = '(let ((p (lem:copy-point (lem:buffer-point (lem:current-buffer)) :temporary))) (lem:buffer-start p) (and (lem:search-forward-regexp p "^red$") (getf (lem/buffer/line:line-plist (lem:point-line p)) :attribute)))';
+        check('terminal: colours', await until(async () => (await lisp(red)).includes('ATTRIBUTE')), await lisp(red));
+        const rows = await lisp('(lem-terminal/terminal::terminal-rows (lem-terminal/terminal-mode::get-current-terminal))');
+        check('terminal: fits its window', rows === await lisp('(1- (lem:window-height (lem:current-window)))'), rows);
+        await type('exit'); await key('Return');
+        check('terminal: exit', await until(async () => (await terminalText()).includes('[Process exited'), 10000), await terminalText());
+        await lisp('(lem:send-event (lambda () (lem:kill-buffer (lem:current-buffer))))');
+        await sleep(300);
+      }
+
       // the editor seen from outside (M-x remote-start, tools/lem-remote): in the desktop application
       if (!web) {
         await lisp('(lem:send-event (lambda () (lem-clysm:remote-start)))');
