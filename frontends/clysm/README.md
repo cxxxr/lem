@@ -66,7 +66,8 @@ domain socket to open files and show its window:
 
 ```
 $ build/clysm/desktop/lem --install   # start Lem hidden when you log in, and
-                                    # add Lem (through lem) to the applications menu
+                                    # add Lem (through lem) to the applications menu,
+                                    # with its icon (also in the dock, Linux)
 $ build/clysm/desktop/lem FILE        # shows Lem: its first frame in about 20 ms
 $ build/clysm/desktop/lem --daemon    # start it now, hidden
 $ build/clysm/desktop/lem --stop      # end it
@@ -76,6 +77,14 @@ $ build/clysm/desktop/lem --stop      # end it
   application starts again at once, hidden, so that the next `lem` is
   instant too. Only a `lem` before Lem is resident (the first after
   `--stop`, or before `--install`) waits for it to start.
+* **After `make clysm`**, the resident Lem still runs the build it started
+  with: `C-x C-c` in it (or `lem --stop`, then `lem`) starts the new one.
+  Not while `make clysm` runs: it removes `lem.image` and makes it again,
+  and a Lem started in between fails. `--install` need not be run again
+  (the menu entry and a link to `lem` point into `build/clysm/desktop/`),
+  except to copy a new icon.
+* `lem` may be a symbolic link, e.g. on the PATH:
+  `ln -s "$PWD/build/clysm/desktop/lem" ~/.local/bin/lem`.
 * Measured on a Linux desktop (Wayland): from `lem` to the window shown 6
   to 8 ms, to its first frame 11 to 22 ms; `make test-lem` measures how long
   a client's file takes to be on the screen (8 to 10 ms).

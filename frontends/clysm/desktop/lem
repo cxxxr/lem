@@ -11,7 +11,14 @@
 #                       applications menu (through this command); Linux
 # Lem shows its window in less than 10 ms when it is running; started, it
 # takes under a second (from its heap image, see frontends/clysm/README.md).
-dir=$(cd "$(dirname "$0")" && pwd)
+# follow symbolic links (e.g. ~/.local/bin/lem -> .../desktop/lem), so that
+# dir is where the application is
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
+done
+dir=$(cd "$(dirname "$self")" && pwd)
 data=${CLYSM_USER_DATA:-${XDG_CONFIG_HOME:-$HOME/.config}/Lem}
 [ "$(uname)" = Darwin ] && data=${CLYSM_USER_DATA:-$HOME/Library/Application Support/Lem}
 socket=$data/resident.sock
@@ -25,12 +32,18 @@ case $1 in
   --install)
     apps=${XDG_DATA_HOME:-$HOME/.local/share}/applications
     autostart=${XDG_CONFIG_HOME:-$HOME/.config}/autostart
-    mkdir -p "$apps" "$autostart"
+    icons=${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps
+    mkdir -p "$apps" "$autostart" "$icons"
+    # the icon; the window finds this entry by its name, lem-clysm (the
+    # desktopName of package.json), so that the dock shows it as Lem
+    [ -f "$dir/lem.svg" ] && cp "$dir/lem.svg" "$icons/lem-clysm.svg"
     entry() {   # entry NAME EXEC [EXTRA]
-      printf '[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nExec=%s\nTerminal=false\nCategories=Utility;TextEditor;\n%b' \
+      printf '[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nExec=%s\nIcon=lem-clysm\nStartupWMClass=lem-clysm\nTerminal=false\nCategories=Development;TextEditor;\n%b' \
         "$1" "Lem, the Common Lisp editor, on Clysm" "$2" "$3"
     }
-    entry Lem "\"$dir/lem\" %F" "" > "$apps/lem-clysm.desktop"
+    entry Lem "\"$dir/lem\" %F" \
+      "MimeType=text/plain;text/x-lisp;text/x-common-lisp;text/x-makefile;text/x-c;text/x-c++;application/x-shellscript;\n" \
+      > "$apps/lem-clysm.desktop"
     entry "Lem (resident)" "\"$dir/lem\" --daemon" "X-GNOME-Autostart-enabled=true\nNoDisplay=true\n" \
       > "$autostart/lem-clysm.desktop"
     echo "installed $apps/lem-clysm.desktop and $autostart/lem-clysm.desktop"
