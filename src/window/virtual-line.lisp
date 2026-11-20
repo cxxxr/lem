@@ -385,6 +385,46 @@ COLUMN."
 (defun window-scroll-up-n (window n)
   (move-to-previous-virtual-line (window-view-point window) n window))
 
+(defun view-detachment (window)
+  "Return what scroll-view recorded about WINDOW's cursor and buffer when it
+last scrolled the view away from the cursor, or NIL."
+  (window-parameter window 'view-detachment))
+
+(defun view-detached-p (window)
+  "True if WINDOW's view was scrolled with scroll-view and its cursor has not
+moved, nor its buffer changed, since: the redisplay then leaves the view
+where it is instead of bringing it back to the cursor.  Once either has, the
+detachment ends."
+  (let ((detachment (view-detachment window))
+        (buffer (window-buffer window)))
+    (when detachment
+      (destructuring-bind (detached-buffer position tick) detachment
+        (or (and (eq detached-buffer buffer)
+                 (= position (position-at-point (window-buffer-point window)))
+                 (= tick (buffer-modified-tick buffer)))
+            (progn
+              (setf (window-parameter window 'view-detachment) nil)
+              nil))))))
+
+(defun scroll-view (window n)
+  "Scroll WINDOW's view by N virtual lines (negative scrolls up), leaving its
+cursor where it is in the text, even off screen, as a mouse wheel or
+trackpad scrolls in most GUI editors.  The view stays there until the cursor
+moves or the buffer changes; then the redisplay brings it back to the
+cursor.  The scroll commands, by contrast, move the cursor to keep it on
+screen.  Return true if the view moved all N lines."
+  (let ((moved (window-scroll window n)))
+    (unless moved
+      (if (plusp n)
+          (progn (buffer-end (window-view-point window))
+                 (backward-line-wrap (window-view-point window) window t))
+          (buffer-start (window-view-point window))))
+    (setf (window-parameter window 'view-detachment)
+          (list (window-buffer window)
+                (position-at-point (window-buffer-point window))
+                (buffer-modified-tick (window-buffer window))))
+    moved))
+
 (defun window-scroll (window n)
   (need-to-redraw window)
   (prog1 (if *use-new-vertical-move-function*

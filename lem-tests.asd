@@ -86,6 +86,7 @@
                (:file "attribute")
                (:file "display-cache")
                (:file "visual-line")
+               (:file "scroll-view")
                (:file "proportional-text")
                (:file "wrapped-lines"))
   :perform (test-op (o c)

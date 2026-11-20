@@ -391,7 +391,9 @@
    :move-to-previous-virtual-line
    :point-virtual-line-column
    :move-to-virtual-line-column
-   :window-scroll)
+   :window-scroll
+   :scroll-view
+   :view-detached-p)
   ;; header-window.lisp
   (:export
    :header-window
