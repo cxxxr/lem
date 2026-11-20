@@ -31,6 +31,14 @@
 (defclass stub-display ()
   ((char-height :initarg :char-height :reader display::display-char-height)))
 
+(defclass stub-grid-display (stub-display)
+  ((char-width :initarg :char-width :reader display::display-char-width))
+  (:documentation "A stub display with a cell width, for drawing whole runs."))
+
+(defclass stub-scaled-display (stub-grid-display)
+  ((scale :initarg :scale :reader display::display-scale))
+  (:documentation "A stub display with a display scale, for underlines."))
+
 (defun make-stub-display (&key (char-height 17))
   (make-instance 'stub-display :char-height char-height))
 
@@ -79,9 +87,6 @@
 ;;; was ~1600 fills and ~0.7 ms of throwaway letter objects per full
 ;;; redraw).  Cursor runs keep the per-cell path, which records the cursor
 ;;; position and draws bar and underline cursors per cell.
-
-(defclass stub-grid-display (stub-display)
-  ((char-width :initarg :char-width :reader display::display-char-width)))
 
 (defun call-recording (names function)
   "Call FUNCTION with the functions NAMES encapsulated so they record their
@@ -132,9 +137,6 @@ order."
 
 ;;; Underlines are one point thick at the display's scale, drawn inside the
 ;;; bottom of the cell and exactly as wide as the run.
-
-(defclass stub-scaled-display (stub-grid-display)
-  ((scale :initarg :scale :reader display::display-scale)))
 
 (defun underline-rects (scale)
   (let ((display (make-instance 'stub-scaled-display
