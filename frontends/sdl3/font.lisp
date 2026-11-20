@@ -58,6 +58,11 @@ fixed paths; ones that do not exist are skipped.")
   "Windows fonts used as fallbacks, in order; ones that do not exist are
 skipped.")
 
+(defparameter *system-emoji-font-files*
+  '("/System/Library/Fonts/Apple Color Emoji.ttc")
+  "The platform's own colour emoji fonts, tried in order before the bundled
+Noto Color Emoji, so emoji look as they do in other applications.")
+
 (defparameter *max-fontconfig-fallback-fonts* 12
   "How many of fontconfig's sorted monospace matches to use as fallbacks.")
 
@@ -124,6 +129,12 @@ skipped.")
   (setf (lem:config :sdl2-font-size)
         (round (/ (font-config-size font-config) ratio))))
 
+(defun default-emoji-font-file ()
+  "Return the colour emoji font to use when none is configured: the first of
+*system-emoji-font-files* that exists, or the bundled Noto Color Emoji."
+  (or (find-if #'probe-file *system-emoji-font-files*)
+      (get-resource-pathname "resources/fonts/NotoColorEmoji.ttf")))
+
 (defun make-font-config (&key (size (lem:config :sdl2-font-size *default-font-size*))
                               latin-normal-file
                               latin-bold-file
@@ -152,9 +163,7 @@ skipped.")
                        :sdl2-cjk-bold-font
                        (get-resource-pathname "resources/fonts/NotoSansCJK-Bold.ttc")))
    :emoji-file (or emoji-file
-                   (lem:config
-                    :sdl2-emoji-font
-                    (get-resource-pathname "resources/fonts/NotoColorEmoji.ttf")))
+                   (lem:config :sdl2-emoji-font (default-emoji-font-file)))
    :braille-file (or brail-file
                      (get-resource-pathname "resources/fonts/FreeMono.ttf"))
    :fallback-files fallback-files

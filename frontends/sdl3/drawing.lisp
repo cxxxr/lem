@@ -117,7 +117,10 @@ per-string SDL_ttf surface-width drift."
   (* 2 (display:display-char-width display)))
 
 (defmethod object-width ((drawing-object emoji-object) display)
-  (* (display:display-char-width display) 2 (length (text-object-string drawing-object))))
+  ;; The cells lem-core counts for the string, so a sequence (a flag's two
+  ;; letters, a joined family) takes the same width here as in its layout.
+  (* (display:display-char-width display)
+     (lem-core:string-width (text-object-string drawing-object))))
 
 (defmethod object-width ((drawing-object eol-cursor-object) display)
   0)
@@ -278,6 +281,18 @@ BACKGROUND."
                               (letter-top-y display drawing character bottom-y)
                               foreground)))
 
+(defun fit-rect (width height box-width box-height)
+  "Return the rectangle, as values X, Y, WIDTH and HEIGHT relative to a
+BOX-WIDTH by BOX-HEIGHT box, that a WIDTH by HEIGHT image takes when scaled
+down, never up, to fit the box with its shape kept, and centred in it."
+  (let* ((scale (min 1 (/ box-width (max width 1)) (/ box-height (max height 1))))
+         (fit-width (round (* width scale)))
+         (fit-height (round (* height scale))))
+    (values (floor (- box-width fit-width) 2)
+            (floor (- box-height fit-height) 2)
+            fit-width
+            fit-height)))
+
 (defun draw-text-glyph-surface (drawing-object x bottom-y display view cell-width
                                 &key clip (phase :both))
   "Draws DRAWING-OBJECT's cached SDL surface in a (CELL-WIDTH × cell-height) slot
@@ -326,9 +341,7 @@ the background phase draws anything."
          (cell-height (object-height drawing-object display))
          (attribute (text-object-attribute drawing-object))
          (background (lem-core:attribute-background-with-reverse attribute))
-         (y (- bottom-y cell-height))
-         (draw-width (if clip surface-width (min surface-width cell-width)))
-         (draw-height (min surface-height cell-height)))
+         (y (- bottom-y cell-height)))
     (when (member phase '(:bg :both))
       (cond ((and attribute (lem-core:cursor-attribute-p attribute))
              (lem-sdl3/view:set-cursor-position view x y)
@@ -389,11 +402,17 @@ the background phase draws anything."
                                                   nil
                                                   dst-rect))))))
           (t
-           (display:with-scratch-rect (dst-rect display x y draw-width draw-height)
-             (lem-sdl3/ffi:render-texture (display:display-renderer display)
-                                          texture
-                                          nil
-                                          dst-rect))))))
+           ;; Scale down to fit the cells, keeping the glyph's shape, and
+           ;; centre it: emoji fonts draw at a fixed size (Apple Color Emoji
+           ;; at 160 by 210 pixels) whatever the point size.
+           (multiple-value-bind (fit-x fit-y fit-width fit-height)
+               (fit-rect surface-width surface-height cell-width cell-height)
+             (display:with-scratch-rect (dst-rect display (+ x fit-x) (+ y fit-y)
+                                                  fit-width fit-height)
+               (lem-sdl3/ffi:render-texture (display:display-renderer display)
+                                            texture
+                                            nil
+                                            dst-rect)))))))
     (when (member phase '(:bg :both))
       (draw-underline display x y cell-width cell-height attribute))))
 
