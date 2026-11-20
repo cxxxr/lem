@@ -30,6 +30,11 @@ window's new size before showing the last frame unscaled instead.")
   "When true, a mouse wheel's notch scrolls a window over a short eased
 animation instead of at once (see *smooth-scroll*).")
 
+(defparameter *trackpad-points-per-unit* 10
+  "Points of finger travel in one unit of a trackpad's wheel delta: SDL
+reports macOS's precise scrolling deltas divided by 10.  The text moves with
+the fingers, as in other macOS applications.")
+
 (defparameter *scroll-animation-frame-ms* 16
   "Milliseconds between frames of a scroll animation.")
 
@@ -58,6 +63,13 @@ by pixels, including fractions of a line, instead of by whole lines.")
 toward the end of the buffer: *scroll-speed* lines a notch, and SDL's
 positive wheel values scroll toward the start."
   (- (round (* notches (display:display-char-height display) lem:*scroll-speed*))))
+
+(defun trackpad-pixels (display delta)
+  "Return how many pixels a trackpad's wheel DELTA scrolls on DISPLAY,
+positive toward the end of the buffer: its finger travel, in the display's
+pixels."
+  (- (round (* delta *trackpad-points-per-unit*
+               (second (display:display-scale display))))))
 
 (defun scroll-window-by-pixels (window display pixels)
   "Scroll WINDOW's body by PIXELS (positive toward the end of the buffer).
@@ -196,10 +208,21 @@ position SDL's coordinates give; other windows keep CHAR-Y."
                                    (scrolled-char-y display char-x char-y pixel-y)
                                    pixel-x pixel-y button))))))
 
-(defun on-mouse-wheel (display wheel-x wheel-y precise-y)
+(defun trackpad-scroll-p (precision delta)
+  "True if a wheel event scrolls precisely, with a trackpad or its momentum,
+rather than by a mouse wheel's notches.  PRECISION is what the platform said
+(:precise or :lines) or NIL if it could not tell; then a whole-number DELTA
+is taken for notches."
+  (case precision
+    (:precise t)
+    (:lines nil)
+    (otherwise (not (notch-delta-p delta)))))
+
+(defun on-mouse-wheel (display wheel-x wheel-y precise-y precision)
   "Scroll by a wheel event.  WHEEL-X and WHEEL-Y are whole notches;
 PRECISE-Y is the vertical scroll with its fraction, used to scroll a window
-by pixels (see *smooth-scroll*)."
+by pixels (see *smooth-scroll*).  PRECISION says whether it came from a
+trackpad (see trackpad-scroll-p)."
   (show-cursor)
   (multiple-value-bind (x y) (mouse-position)
     (let ((char-x (display:scaled-char-width display x))
@@ -213,7 +236,10 @@ by pixels (see *smooth-scroll*)."
                             (/= 0 precise-y)
                             (smooth-scroll-window-p window)))
                   (lem:receive-mouse-wheel char-x char-y pixel-x pixel-y wheel-x wheel-y))
-                 ((and *scroll-animation* (notch-delta-p precise-y))
+                 ((trackpad-scroll-p precision precise-y)
+                  (scroll-window-by-pixels window display
+                                           (trackpad-pixels display precise-y)))
+                 (*scroll-animation*
                   (animate-scroll window display (notch-pixels display precise-y)))
                  (t
                   (scroll-window-by-pixels window display
@@ -316,7 +342,8 @@ single :windowevent; SDL3 gives each its own event type."
        (on-mouse-wheel display
                        (event:wheel-x event)
                        (event:wheel-y event)
-                       (event:wheel-precise-y event))
+                       (event:wheel-precise-y event)
+                       (take-scroll-precision display event))
        nil)
       (event:+drop-file+
        (on-filedrop (event:drop-file-name event))
@@ -409,6 +436,26 @@ last frame is shown unscaled instead."
     (error (condition)
       (log:error "Redraw during live resize failed: ~A" condition))))
 
+(defun record-scroll-precision (display event)
+  "Remember whether the wheel EVENT, which SDL is adding now, scrolls
+precisely, asking the platform while it still handles the scroll."
+  (let ((precision (lem-darwin/scroll:current-scroll-precision))
+        (table (display:display-scroll-precision display)))
+    (when precision
+      ;; Entries are taken as their events are handled; never let lost ones
+      ;; pile up.
+      (when (< 256 (hash-table-count table))
+        (clrhash table))
+      (setf (gethash (event:event-timestamp event) table) precision))))
+
+(defun take-scroll-precision (display event)
+  "Return, and forget, what record-scroll-precision learned about EVENT, or
+NIL."
+  (let* ((table (display:display-scroll-precision display))
+         (timestamp (event:event-timestamp event)))
+    (prog1 (gethash timestamp table)
+      (remhash timestamp table))))
+
 (cffi:defcallback live-resize-watch :bool ((userdata :pointer) (event :pointer))
   ;; While the user drags a window edge, and while macOS animates a zoom or
   ;; maximize, the platform runs its own loop and SDL_WaitEvent does not
@@ -419,6 +466,11 @@ last frame is shown unscaled instead."
   ;; pixel size has changed since the texture was made.  Watches run on the
   ;; thread that adds the event, so only the main thread's events are handled.
   (declare (ignore userdata))
+  ;; A wheel event: note whether the platform says it is precise.
+  (when (and (= (event:event-type event) event:+mouse-wheel+)
+             (sdl3:is-main-thread)
+             (display:current-display))
+    (ignore-errors (record-scroll-precision (display:current-display) event)))
   (when (and (= (event:event-type event) event:+window-exposed+)
              (sdl3:is-main-thread)
              (display:current-display)

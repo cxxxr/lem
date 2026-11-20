@@ -71,6 +71,7 @@
    :wheel-y
    :wheel-precise-y
    :window-event-data1
+   :event-timestamp
    :drop-file-name))
 (in-package :lem-sdl3/event)
 
@@ -246,6 +247,10 @@ Computed on first use.")
   "Return the vertical scroll of a wheel event in notches, with the
 fraction a trackpad or high-resolution wheel reports."
   (cffi:mem-ref event :float +offset-wheel-y+))
+
+(defun event-timestamp (event)
+  "Return EVENT's timestamp, in nanoseconds."
+  (cffi:mem-ref event :uint64 8))
 
 (defun window-event-data1 (event)
   "Return the data1 field of a window event: for SDL_EVENT_WINDOW_EXPOSED,

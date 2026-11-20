@@ -38,6 +38,7 @@
            :texture-size-stale-p
            :display-live-resize-request
            :display-scroll-animation-timer
+           :display-scroll-precision
            :display-scrolling-windows
            :render-border-by-pixels
            :render-line
@@ -118,6 +119,11 @@ Retina to a 1x display).")
              :reader display-renderer)
    (texture :initarg :texture
             :accessor display-texture)
+   (scroll-precision :initform (make-hash-table)
+                     :reader display-scroll-precision
+                     :documentation "Whether each wheel event not yet handled
+scrolls precisely or by lines, by the event's timestamp, as the event watch
+learned it from the platform (see lem-darwin/scroll).")
    (scroll-animation-timer :initform nil
                            :accessor display-scroll-animation-timer
                            :documentation "The timer running scroll animations,
