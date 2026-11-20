@@ -37,3 +37,12 @@ with INITARGS overriding those."
     (setf (view:view-x view) 4
           (view:view-height view) 6)
     (ok (equal (pixel-rect view) '(36 51 90 102)))))
+
+(deftest move-position-sets-pixel-overrides-when-given
+  (let ((view (make-view :pixel-x 5 :pixel-y 7)))
+    (view:move-position view 4 1)
+    (ok (equal (pixel-rect view) '(5 7 90 68))
+        "a cell move keeps the pixel position")
+    (view:move-position view 4 1 11 13)
+    (ok (equal (pixel-rect view) '(11 13 90 68))
+        "a pixel move replaces it")))

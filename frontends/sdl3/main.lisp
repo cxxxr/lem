@@ -403,6 +403,35 @@ nothing. Can be called from any thread."
       (display:with-renderer (display)
         (view:move-position view x y)))))
 
+(defmethod lem-if:make-view-with-pixels ((implementation sdl3) window x y width height
+                                         pixel-x pixel-y pixel-width pixel-height
+                                         use-modeline)
+  (with-debug ("lem-if:make-view-with-pixels" window x y width height
+               pixel-x pixel-y pixel-width pixel-height use-modeline)
+    (display:with-display (display)
+      (display:with-renderer (display)
+        (view:create-view display window x y width height use-modeline
+                          :pixel-x pixel-x
+                          :pixel-y pixel-y
+                          :pixel-width pixel-width
+                          :pixel-height pixel-height)))))
+
+(defmethod lem-if:set-view-pos-pixels ((implementation sdl3) view x y pixel-x pixel-y)
+  (with-debug ("lem-if:set-view-pos-pixels" view x y pixel-x pixel-y)
+    (display:with-display (display)
+      (display:with-renderer (display)
+        (view:move-position view x y pixel-x pixel-y)))))
+
+(defmethod lem-if:set-view-size-pixels ((implementation sdl3) view width height
+                                        pixel-width pixel-height)
+  ;; WIDTH and HEIGHT are the window's cell size, modeline row included, as
+  ;; floating-window-set-pixel-size passes them; the view already has it.
+  (declare (ignore width height))
+  (with-debug ("lem-if:set-view-size-pixels" view pixel-width pixel-height)
+    (display:with-display (display)
+      (display:with-renderer (display)
+        (view:resize-pixels view display pixel-width pixel-height)))))
+
 (defmethod lem-if:redraw-view-before ((implementation sdl3) view)
   (with-debug ("lem-if:redraw-view-before" view)
     (display:with-display (display)

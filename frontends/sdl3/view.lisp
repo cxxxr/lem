@@ -10,6 +10,7 @@
    :delete-view
    :render-clear
    :resize
+   :resize-pixels
    :move-position
    :draw-window-border
    :render-border-using-view
@@ -117,7 +118,11 @@ least one pixel each way."
       (* (lem:last-print-cursor-y (view-window view))
          (display:display-char-height display))))
 
-(defun create-view (display window x y width height use-modeline)
+(defun create-view (display window x y width height use-modeline
+                    &key pixel-x pixel-y pixel-width pixel-height)
+  "Return a view for WINDOW at cell X, Y of WIDTH by HEIGHT cells, plus a
+modeline row if USE-MODELINE.  The PIXEL- arguments, when not NIL, place or
+size it in pixels instead (see view-pixel-rect)."
   (when use-modeline (incf height))
   (let ((view (make-instance 'view
                              :window window
@@ -125,6 +130,10 @@ least one pixel each way."
                              :y y
                              :width width
                              :height height
+                             :pixel-x pixel-x
+                             :pixel-y pixel-y
+                             :pixel-width pixel-width
+                             :pixel-height pixel-height
                              :use-modeline use-modeline)))
     (setf (view-texture view) (create-view-texture view display))
     view))
@@ -146,9 +155,22 @@ least one pixel each way."
   (lem-sdl3/ffi:destroy-texture (view-texture view))
   (setf (view-texture view) (create-view-texture view display)))
 
-(defmethod move-position ((view view) x y)
+(defun resize-pixels (view display pixel-width pixel-height)
+  "Replace VIEW's pixel size overrides with PIXEL-WIDTH and PIXEL-HEIGHT
+(NIL keeps the current one) and recreate its texture.  Its cell size is
+unchanged."
+  (when pixel-width (setf (view-pixel-width view) pixel-width))
+  (when pixel-height (setf (view-pixel-height view) pixel-height))
+  (lem-sdl3/ffi:destroy-texture (view-texture view))
+  (setf (view-texture view) (create-view-texture view display)))
+
+(defmethod move-position ((view view) x y &optional pixel-x pixel-y)
+  "Move VIEW to cell X, Y.  PIXEL-X and PIXEL-Y, when not NIL, replace its
+pixel position overrides."
   (setf (view-x view) x
-        (view-y view) y))
+        (view-y view) y)
+  (when pixel-x (setf (view-pixel-x view) pixel-x))
+  (when pixel-y (setf (view-pixel-y view) pixel-y)))
 
 (defmethod draw-window-border (view display (window lem:floating-window))
   (when (and (lem:window-border window)
