@@ -36,6 +36,7 @@
            :display-foreground-color
            :display-texture
            :texture-size-stale-p
+           :display-live-resize-request
            :render-border-by-pixels
            :render-line
            :clear
@@ -115,6 +116,11 @@ Retina to a 1x display).")
              :reader display-renderer)
    (texture :initarg :texture
             :accessor display-texture)
+   (live-resize-request :initform nil
+                        :accessor display-live-resize-request
+                        :documentation "The semaphore the editor thread signals
+when it has redrawn at the window's new size during a live resize, while it
+has not yet, or NIL.")
    (texture-size :initform nil
                  :accessor display-texture-size
                  :documentation "The (WIDTH . HEIGHT) update-texture last made
@@ -339,9 +345,11 @@ views and pixel-placed floating windows are in."
 
 (defun texture-size-stale-p (display)
   "True if DISPLAY's window no longer has the pixel size update-texture last
-made its texture at."
-  (not (equal (display-texture-size display)
-              (cons (display-width display) (display-height display)))))
+made its texture at.  Before update-texture first runs the size is unknown,
+and not stale: the texture made at startup fits the window."
+  (and (display-texture-size display)
+       (not (equal (display-texture-size display)
+                   (cons (display-width display) (display-height display))))))
 
 (defmethod set-render-color ((display display) color)
   (when color

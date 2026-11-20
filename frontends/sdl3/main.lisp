@@ -22,6 +22,10 @@
 (defconstant +display-width+ 100)
 (defconstant +display-height+ 40)
 
+(defvar *live-resize-redraw-timeout* 0.1
+  "Seconds a live-resize step waits for the editor thread to redraw at the
+window's new size before showing the last frame unscaled instead.")
+
 (defvar *smooth-scroll* t
   "When true, the mouse wheel and trackpad scroll a window with a modeline
 by pixels, including fractions of a line, instead of by whole lines.")
@@ -260,14 +264,83 @@ single :windowevent; SDL3 gives each its own event type."
        (on-window-event display type)
        nil))))
 
+(defun present-texture-unscaled (display)
+  "Show DISPLAY's texture as it is, at 1:1 in the window's top-left corner
+on the background colour, rather than letting the window server stretch the
+last frame to the window's new size."
+  (let* ((renderer (display:display-renderer display))
+         (texture (display:display-texture display))
+         (previous (ffi:get-render-target renderer)))
+    (multiple-value-bind (width height) (ffi:texture-size texture)
+      (ffi:set-render-target renderer nil)
+      (display:set-render-color display (display:display-background-color display))
+      (ffi:render-clear renderer)
+      (ffi:with-frect (rect 0 0 width height)
+        (ffi:render-texture renderer texture rect rect))
+      (display:update-display display)
+      (ffi:set-render-target renderer previous))))
+
+(defun request-editor-redraw (display)
+  "Ask the editor thread to remake DISPLAY's texture at the window's size and
+lay out and redraw the editor there, and return a semaphore it signals when
+it is done.  The texture is remade only when the editor gets to the request,
+so the last frame stays whole until then."
+  (let ((done (bt2:make-semaphore :name "lem-sdl3 live resize")))
+    (lem:send-event
+     (lambda ()
+       (unwind-protect
+            (progn
+              (ffi:in-main-thread () (display:update-texture display))
+              (lem:update-on-display-resized))
+         (bt2:signal-semaphore done))))
+    done))
+
+(defun wait-for-editor-redraw (done timeout)
+  "Run the main-thread tasks the editor thread queues while it redraws, until
+it signals DONE, and return true; or return NIL after TIMEOUT seconds."
+  (loop :with deadline := (+ (get-internal-real-time)
+                             (* timeout internal-time-units-per-second))
+        :do (ffi:run-pending-main-thread-tasks)
+            (when (bt2:wait-on-semaphore done :timeout 0.001)
+              (return t))
+        :while (< (get-internal-real-time) deadline)
+        :finally (return nil)))
+
+(defun redraw-with-editor (display)
+  "Have the editor thread redraw DISPLAY at the window's size, running the
+drawing it asks of this, the main thread, until it is done; or, if that takes
+longer than *live-resize-redraw-timeout*, show the last frame unscaled.  A
+request still running from an earlier step is waited for, and if the window
+has changed size again since, the editor is asked once more."
+  (ffi:call-with-main-thread-tasks-drained
+   (lambda ()
+     (loop :with deadline := (+ (get-internal-real-time)
+                                (* *live-resize-redraw-timeout*
+                                   internal-time-units-per-second))
+           :for request := (or (display:display-live-resize-request display)
+                               (setf (display:display-live-resize-request display)
+                                     (request-editor-redraw display)))
+           :do (unless (wait-for-editor-redraw
+                        request
+                        (max 0 (/ (- deadline (get-internal-real-time))
+                                  internal-time-units-per-second)))
+                 (present-texture-unscaled display)
+                 (return))
+               (setf (display:display-live-resize-request display) nil)
+           :while (display:texture-size-stale-p display)))))
+
 (defun redraw-during-live-resize (display)
-  "Lay the editor out at the window's current size and redraw it, as the
-resize handlers in on-window-event do.  Called from the live-resize event
-watch while the platform's resize loop keeps the event loop from running."
+  "Redraw DISPLAY at the window's new size from inside the platform's resize
+loop or animation, where the event loop cannot run.  The editor thread lays
+out and redraws, as after any resize, while this thread runs the drawing it
+asks for (see redraw-with-editor).  When the editor is waiting for this
+thread, because the resize came from an editor command, it cannot, and the
+last frame is shown unscaled instead."
   (handler-case
       (ffi:with-float-traps-masked
-        (display:update-texture display)
-        (display:notify-required-redisplay display))
+        (if (ffi:running-main-thread-task-p)
+            (present-texture-unscaled display)
+            (redraw-with-editor display)))
     ;; This runs in a C callback: an error must not unwind through it.
     (error (condition)
       (log:error "Redraw during live resize failed: ~A" condition))))
