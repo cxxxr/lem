@@ -22,7 +22,8 @@
 
 ;;;;;;;;;;;;;;;;;;
 
-(defparameter *scroll-speed* 3)
+(defparameter *scroll-speed* 3
+  "How many lines one notch of the mouse wheel scrolls.")
 
 (define-editor-variable mouse-button-down-functions '())
 

@@ -233,6 +233,7 @@
    :focus-window-position)
   ;; mouse.lisp
   (:export
+   :*scroll-speed*
    :mouse-button-down-functions
    :receive-mouse-button-down
    :receive-mouse-button-up
