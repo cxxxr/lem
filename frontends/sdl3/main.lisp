@@ -414,6 +414,8 @@ nothing. Can be called from any thread."
 (defmethod lem-if:make-view-with-pixels ((implementation sdl3) window x y width height
                                          pixel-x pixel-y pixel-width pixel-height
                                          use-modeline)
+  "Create a view at cell X, Y of WIDTH by HEIGHT cells, placed and sized by
+the PIXEL- arguments where they are not NIL."
   (with-debug ("lem-if:make-view-with-pixels" window x y width height
                pixel-x pixel-y pixel-width pixel-height use-modeline)
     (display:with-display (display)
@@ -425,6 +427,7 @@ nothing. Can be called from any thread."
                           :pixel-height pixel-height)))))
 
 (defmethod lem-if:set-view-pos-pixels ((implementation sdl3) view x y pixel-x pixel-y)
+  "Move VIEW to cell X, Y, at PIXEL-X, PIXEL-Y where they are not NIL."
   (with-debug ("lem-if:set-view-pos-pixels" view x y pixel-x pixel-y)
     (display:with-display (display)
       (display:with-renderer (display)
@@ -432,6 +435,8 @@ nothing. Can be called from any thread."
 
 (defmethod lem-if:set-view-size-pixels ((implementation sdl3) view width height
                                         pixel-width pixel-height)
+  "Resize VIEW to PIXEL-WIDTH by PIXEL-HEIGHT where they are not NIL,
+keeping its cell size."
   ;; WIDTH and HEIGHT are the window's cell size, modeline row included, as
   ;; floating-window-set-pixel-size passes them; the view already has it.
   (declare (ignore width height))

@@ -5,6 +5,18 @@
                 :with-fake-interface))
 (in-package :lem-tests/window)
 
+(defclass pixel-fake-interface (fake-interface)
+  ()
+  (:default-initargs :support-pixel-positioning t)
+  (:documentation "A fake interface that places floating windows by pixels,
+with 10 by 20 pixel cells."))
+
+(defmethod lem-if:get-char-width ((implementation pixel-fake-interface))
+  10)
+
+(defmethod lem-if:get-char-height ((implementation pixel-fake-interface))
+  20)
+
 (deftest delete-window-test
   (lem:with-current-buffers ()
     (with-fake-interface ()
@@ -210,18 +222,6 @@
           (ok (= 10 ph)))  ; calculated: 10 * 1
         ;; Cleanup
         (lem:delete-window window)))))
-
-(defclass pixel-fake-interface (fake-interface)
-  ()
-  (:default-initargs :support-pixel-positioning t)
-  (:documentation "A fake interface that places floating windows by pixels,
-with 10 by 20 pixel cells."))
-
-(defmethod lem-if:get-char-width ((implementation pixel-fake-interface))
-  10)
-
-(defmethod lem-if:get-char-height ((implementation pixel-fake-interface))
-  20)
 
 (defun call-with-pixel-floating-window (function)
   "Call FUNCTION with a floating window whose cells say x 5, y 3, 20 by 10,
