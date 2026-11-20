@@ -105,15 +105,12 @@ cells big, and that surface, with text shaping on if SHAPING is true."
 (defun text-objects (string)
   "STRING as text objects split by character type, as lem-core splits a
 line, in white on black."
-  ;; lem-core::char-type is internal: lem-core exports no way to split a
-  ;; line into runs, and the runs must match the ones lem-core draws for
-  ;; the shaped and per-letter paths to be tested as they are used.
   (let ((attribute (lem:make-attribute :foreground "#ffffff" :background "#000000")))
     (loop :with start := 0
           :while (< start (length string))
-          :collect (let* ((type (lem-core::char-type (char string start)))
+          :collect (let* ((type (lem-core/display:char-type (char string start)))
                           (end (or (position-if (lambda (character)
-                                                  (not (eq type (lem-core::char-type character))))
+                                                  (not (eq type (lem-core/display:char-type character))))
                                                 string :start start)
                                    (length string))))
                      (prog1 (make-instance 'lem-core/display:text-object
