@@ -218,12 +218,12 @@ returns POINT on success, or NIL if a buffer boundary is reached."
 (define-command (forward-char (:advice-classes movable-advice))
     (&optional (n 1)) (:universal)
   "Move the cursor to the next character."
-  (or (character-offset (current-point) n)
+  (or (grapheme-offset (current-point) n)
       (error 'end-of-buffer :point (current-point))))
 
 (define-command (backward-char (:advice-classes movable-advice)) (&optional (n 1)) (:universal)
   "Move the cursor to the previous character."
-  (or (character-offset (current-point) (- n))
+  (or (grapheme-offset (current-point) (- n))
       (error 'beginning-of-buffer :point (current-point))))
 
 (define-command (move-to-beginning-of-buffer (:advice-classes jump-cursor-advice)) () ()

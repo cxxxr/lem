@@ -37,28 +37,37 @@ If cursor is on top then move move WINDOW to the bottom."
 
 (defun window-text-measure (window)
   "Return how WINDOW's text is measured for wrapping, as values ADVANCE and
-LIMIT.  ADVANCE is a function of a character and an x position returning the
-x after it; a line wraps before the character that takes x past LIMIT.  In
-columns for monospace text, and in the frontend's units (see
+LIMIT.  ADVANCE is a function of a string, an index into it and an x
+position, returning the x after that character, by grapheme cluster (see
+string-char-width); a line wraps before the character that takes x past
+LIMIT.  In columns for monospace text, and in the frontend's units (see
 lem-if:char-pixel-width) for proportional text, where LIMIT matches the
-display's own wrapping in separate-objects-by-width."
+display's own wrapping in separate-objects-by-width and only the text drawn
+proportionally (see proportional-type) is measured by its glyphs: emoji and
+wide characters keep their cells."
   (let* ((buffer (window-buffer window))
          (tab-size (variable-value 'tab-width :default buffer)))
     (if (proportional-text-p buffer)
         (let* ((implementation (implementation))
+               (cell-width (lem-if:get-char-width implementation))
                (tab-width (* tab-size (lem-if:char-pixel-width implementation #\Space))))
-          (values (lambda (character x)
-                    (if (char= character #\Tab)
-                        (* (1+ (floor x tab-width)) tab-width)
-                        (+ x (lem-if:char-pixel-width implementation character))))
+          (values (lambda (string index x)
+                    (let ((character (char string index)))
+                      (cond ((char= character #\Tab)
+                             (* (1+ (floor x tab-width)) tab-width))
+                            ((and (member (char-type character) '(:latin :other))
+                                  (not (grapheme-continuation-p string index)))
+                             (+ x (lem-if:char-pixel-width implementation character)))
+                            (t
+                             (+ x (* cell-width (string-char-width string index 0)))))))
                   ;; Leave room for the wrap character, as
                   ;; separate-objects-by-width does.
                   (- (window-view-width window)
                      (* (+ (window-left-width window)
                            (char-width (variable-value 'wrap-line-character :default buffer) 0))
                         (lem-if:get-char-width implementation)))))
-        (values (lambda (character x)
-                  (char-width character x :tab-size tab-size))
+        (values (lambda (string index x)
+                  (string-char-width string index x :tab-size tab-size))
                 (1- (window-body-width window))))))
 
 (defun %calc-window-cursor-x (point window)
@@ -71,13 +80,12 @@ next line because it is at the end of width."
            (line    (line-string point))
            (cur-x   0)
            (add-x   (if (< charpos (length line))
-                        (funcall advance (schar line charpos) 0)
+                        (funcall advance line charpos 0)
                         1)))
       (loop :for i :from 0 :below charpos
-            :for c := (schar line i)
-            :do (setf cur-x (funcall advance c cur-x))
+            :do (setf cur-x (funcall advance line i cur-x))
                 (when (< width cur-x)
-                  (setf cur-x (funcall advance c 0))))
+                  (setf cur-x (funcall advance line i 0))))
       (if (< width (+ cur-x add-x))
           (values 0     t)
           (values cur-x nil)))))
@@ -100,7 +108,7 @@ next line because it is at the end of width."
 the width past LIMIT, measured with ADVANCE (see window-text-measure)."
   (loop :with width := 0
         :for index :from start :below (length string)
-        :do (setf width (funcall advance (char string index) width))
+        :do (setf width (funcall advance string index width))
             (when (< limit width)
               (return index))))
 
@@ -339,7 +347,7 @@ vertical space."
           (backward-line-wrap start window t)
           (loop :with x := 0
                 :for index :from (point-charpos start) :below (point-charpos point)
-                :do (setf x (funcall advance (char line index) x))
+                :do (setf x (funcall advance line index x))
                 :finally (return x))))))
   (if (variable-value 'line-wrap :default (point-buffer point))
       (let ((column (point-column point)))
@@ -354,12 +362,55 @@ an x in the frontend's units for proportional text (see
 window-text-measure), where POINT goes to the character boundary nearest
 COLUMN."
   (backward-line-wrap point window t)
+  (prog1 (move-to-virtual-line-column-1 point column window)
+    ;; Never stop inside a grapheme cluster, e.g. between an emoji and its
+    ;; skin tone.
+    (skip-grapheme-continuations point)))
+
+(defun inside-grapheme-cluster-p (point)
+  "True if POINT is between two characters of one grapheme cluster, when
+text is handled by cluster (see *grapheme-clusters*)."
+  (and *grapheme-clusters*
+       (not (end-line-p point))
+       (grapheme-continuation-p (line-string point) (point-charpos point))))
+
+(defun skip-grapheme-continuations (point)
+  "Move POINT forward to the end of the grapheme cluster it is inside, if
+any."
+  (loop :while (inside-grapheme-cluster-p point)
+        :do (character-offset point 1))
+  point)
+
+(defun grapheme-offset (point n)
+  "Move POINT by N characters, as character-offset does, but by grapheme
+cluster when *grapheme-clusters* is on: over a whole emoji sequence at once.
+Return POINT, or NIL if the buffer ends first (POINT then stays at the end
+it reached)."
+  (if (not *grapheme-clusters*)
+      (character-offset point n)
+      (loop :repeat (abs n)
+            :do (unless (character-offset point (if (plusp n) 1 -1))
+                  (return nil))
+                (if (plusp n)
+                    (skip-grapheme-continuations point)
+                    (loop :while (inside-grapheme-cluster-p point)
+                          :do (character-offset point -1)))
+            :finally (return point))))
+
+(defun grapheme-character-count (point n)
+  "Return how many characters the next N grapheme clusters from POINT span
+(see grapheme-offset), stopping at the end of the buffer."
+  (with-point ((end point))
+    (grapheme-offset end n)
+    (count-characters point end)))
+
+(defun move-to-virtual-line-column-1 (point column window)
   (if (proportional-text-p (point-buffer point))
       (let ((advance (window-text-measure window)))
         (loop :with w := 0
               :while (< w column)
               :do (when (end-line-p point) (return nil))
-                  (let ((next (funcall advance (character-at point) w)))
+                  (let ((next (funcall advance (line-string point) (point-charpos point) w)))
                     (when (< (- column w) (- next column))
                       (return t))
                     (setf w next)
@@ -368,8 +419,8 @@ COLUMN."
       (let ((w 0))
         (loop
           :while (< w column)
-          :do (setf w (char-width (character-at point) w))
-              (when (end-line-p point) (return nil))
+          :do (when (end-line-p point) (return nil))
+              (setf w (string-char-width (line-string point) (point-charpos point) w))
               (character-offset point 1)
           :finally (return t)))))
 

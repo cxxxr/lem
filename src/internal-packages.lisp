@@ -393,6 +393,8 @@
    :move-to-virtual-line-column
    :window-scroll
    :scroll-view
+   :grapheme-offset
+   :grapheme-character-count
    :view-detached-p)
   ;; header-window.lisp
   (:export
