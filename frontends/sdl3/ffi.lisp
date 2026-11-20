@@ -28,6 +28,13 @@
    :glyph-metrics
    :render-text-blended
    :render-text-solid
+   ;; text engine
+   :create-text-engine
+   :destroy-text-engine
+   :create-text
+   :destroy-text
+   :set-text-color
+   :draw-text
    ;; textures
    :create-target-texture
    :create-texture-from-surface
@@ -303,6 +310,46 @@ Return a new SURFACE, or NIL if SDL_ttf produced nothing (e.g. an empty string).
 Return a new SURFACE, or NIL."
   (wrap-surface (sdl3-ttf:render-text-solid font string 0
                                             (opaque-color red green blue))))
+
+;;; Text engine
+;;;
+;;; SDL_ttf's renderer text engine rasterizes glyphs into a texture atlas
+;;; and draws a TTF_Text as textured quads.  cl-sdl3 binds these with plain
+;;; DEFCFUNs, which take pointers without allocating, so they are used
+;;; directly.
+
+(defun create-text-engine (renderer)
+  "Create a text engine drawing to RENDERER.  Destroy every text created
+with it before calling DESTROY-TEXT-ENGINE."
+  (let ((engine (sdl3-ttf:create-renderer-text-engine renderer)))
+    (when (cffi:null-pointer-p engine)
+      (sdl-error "TTF_CreateRendererTextEngine failed"))
+    engine))
+
+(defun destroy-text-engine (engine)
+  "Destroy ENGINE, made by CREATE-TEXT-ENGINE."
+  (sdl3-ttf:destroy-renderer-text-engine engine))
+
+(defun create-text (engine font string)
+  "Return a new TTF_Text drawing STRING with FONT through ENGINE, or NIL if
+SDL_ttf fails.  FONT must stay open until the text is destroyed."
+  (let ((text (sdl3-ttf:create-text engine font string 0)))
+    (unless (cffi:null-pointer-p text)
+      text)))
+
+(defun destroy-text (text)
+  "Destroy TEXT, made by CREATE-TEXT."
+  (sdl3-ttf:destroy-text text))
+
+(defun set-text-color (text red green blue)
+  "Draw TEXT in the given opaque color from now on."
+  (sdl3-ttf:set-text-color text red green blue 255))
+
+(defun draw-text (text x y)
+  "Draw TEXT with its top-left corner at (X, Y) on the current render target.
+Each glyph sits on the baseline of the font that provides it, ascent pixels
+below Y, as in a TTF_RenderText_Blended surface."
+  (sdl3-ttf:draw-renderer-text text (f x) (f y)))
 
 ;;; Textures
 
