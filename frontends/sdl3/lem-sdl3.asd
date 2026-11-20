@@ -30,6 +30,7 @@
 (defsystem "lem-sdl3"
   :description "SDL3 frontend for Lem."
   :depends-on ("sdl3"
+               "closer-mop"
                "lem/core"
                "lem/extensions"
                "lem-darwin"

@@ -26,6 +26,13 @@
   "Seconds a live-resize step waits for the editor thread to redraw at the
 window's new size before showing the last frame unscaled instead.")
 
+(defvar *scroll-keeps-cursor* t
+  "When true, the mouse wheel and trackpad scroll a window's view and leave
+its cursor where it is, even off screen, as most GUI editors do; the view
+returns to the cursor when it moves or the buffer changes (see
+lem:scroll-view).  When NIL, the cursor is kept on screen, as the scroll
+commands do.")
+
 (defvar *scroll-animation* t
   "When true, a mouse wheel's notch scrolls a window over a short eased
 animation instead of at once (see *smooth-scroll*).")
@@ -73,12 +80,21 @@ by pixels, including fractions of a line, instead of by whole lines.")
   (let ((point (lem:window-view-point window)))
     (cons (lem:line-number-at-point point) (lem:point-charpos point))))
 
+(defun custom-rendered-buffer-p (window buffer)
+  "True if BUFFER draws its own content in WINDOW, with a render method for
+its class (the tree view, the colour picker), rather than as lines of text."
+  (some (lambda (method)
+          (not (eq (find-class t) (third (c2mop:method-specializers method)))))
+        (compute-applicable-methods #'render (list nil window buffer))))
+
 (defun smooth-scroll-window-p (window)
-  "True if WINDOW is scrolled by pixels (see *smooth-scroll*)."
+  "True if WINDOW is scrolled by pixels (see *smooth-scroll*).  A buffer that
+draws its own content scrolls with its own scroll commands instead."
   (let ((view (lem:window-view window)))
     (and *smooth-scroll*
          (typep view 'view:view)
-         (view:view-use-modeline view))))
+         (view:view-use-modeline view)
+         (not (custom-rendered-buffer-p window (lem:window-buffer window))))))
 
 (defun notch-pixels (display notches)
   "Return how many pixels NOTCHES of the wheel scroll on DISPLAY, positive
@@ -104,8 +120,10 @@ of its buffer, true otherwise."
          (lines (view:add-scroll-delta view pixels char-height))
          (moved t))
     (unless (zerop lines)
-      (lem:with-current-window window
-        (lem:call-command (lem:find-command "scroll-down") lines))
+      (if *scroll-keeps-cursor*
+          (lem:scroll-view window lines)
+          (lem:with-current-window window
+            (lem:call-command (lem:find-command "scroll-down") lines)))
       (when (equal anchor (view-point-anchor window))
         (setf (view:view-scroll-offset view) 0
               moved nil)))
