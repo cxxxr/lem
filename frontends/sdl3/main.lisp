@@ -252,6 +252,33 @@ single :windowevent; SDL3 gives each its own event type."
        (on-window-event display type)
        nil))))
 
+(defun redraw-during-live-resize (display)
+  "Lay the editor out at the window's current size and redraw it, as the
+resize handlers in on-window-event do.  Called from the live-resize event
+watch while the platform's resize loop keeps the event loop from running."
+  (handler-case
+      (ffi:with-float-traps-masked
+        (display:update-texture display)
+        (display:notify-required-redisplay display))
+    ;; This runs in a C callback: an error must not unwind through it.
+    (error (condition)
+      (log:error "Redraw during live resize failed: ~A" condition))))
+
+(cffi:defcallback live-resize-watch :bool ((userdata :pointer) (event :pointer))
+  ;; While the user drags a window edge, macOS (and Windows) run their own
+  ;; resize loop, and SDL_WaitEvent does not return until it ends, so the
+  ;; window server stretches the last frame to the window's changing size.
+  ;; SDL reports each step as SDL_EVENT_WINDOW_EXPOSED with data1 = 1 and
+  ;; lets an event watch redraw then.  Watches run on the thread that adds
+  ;; the event, so only the main thread's events are handled.
+  (declare (ignore userdata))
+  (when (and (= (event:event-type event) event:+window-exposed+)
+             (= 1 (event:window-event-data1 event))
+             (sdl3:is-main-thread)
+             (display:current-display))
+    (redraw-during-live-resize (display:current-display)))
+  t)
+
 (defun event-loop (display)
   (event:with-event (event)
     (loop :while (event:wait-event event)
@@ -306,7 +333,11 @@ single :windowevent; SDL3 gives each its own event type."
                          (display:adapt-high-dpi-font-size display)
                          (ffi:start-text-input window)
                          (funcall function)
-                         (event-loop display)))
+                         (ffi:add-event-watch (cffi:callback live-resize-watch)
+                                              (cffi:null-pointer))
+                         (unwind-protect (event-loop display)
+                           (ffi:remove-event-watch (cffi:callback live-resize-watch)
+                                                   (cffi:null-pointer)))))
                   (when text-shaper
                     (lem-sdl3/text-shaping:destroy-text-shaper text-shaper))
                   (lem-sdl3/text-engine:destroy-text-engine text-engine)

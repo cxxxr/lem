@@ -83,6 +83,8 @@
    :maximize-window
    :minimize-window
    :cocoa-window
+   :add-event-watch
+   :remove-event-watch
    :start-text-input
    :set-text-input-area
    :get-mouse-state
@@ -614,6 +616,17 @@ no rectangle."
       (with-int-rect (rect x y w h)
         (%set-render-viewport renderer rect))
       (%set-render-viewport renderer (cffi:null-pointer))))
+
+(cffi:defcfun ("SDL_AddEventWatch" add-event-watch) :bool
+  "Call the C callback FILTER with USERDATA and each event as it is added to
+the queue, on the thread that adds it.  Return true on success."
+  (filter :pointer)
+  (userdata :pointer))
+
+(cffi:defcfun ("SDL_RemoveEventWatch" remove-event-watch) :void
+  "Stop calling FILTER with USERDATA (see add-event-watch)."
+  (filter :pointer)
+  (userdata :pointer))
 
 (defun cocoa-window (window)
   "Return the NSWindow behind WINDOW, as a foreign pointer, or NIL if
