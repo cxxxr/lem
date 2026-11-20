@@ -193,16 +193,52 @@ lem-if:char-pixel-width of its characters."))
 (defun object-height (drawing-object)
   (lem-if:object-height (implementation) drawing-object))
 
+(defun run-type (string pos)
+  "Return the char-type the character at POS of STRING starts a run with:
+:emoji for an emoji, and for a character the emoji variation selector or a
+keycap mark follows (❤️, 1️⃣), which asks for its emoji form; otherwise its
+char-type."
+  (let ((type (char-type (char string pos))))
+    (if (and (not (member type '(:control :emoji)))
+             (< (1+ pos) (length string))
+             (member (char-code (char string (1+ pos))) '(#xFE0F #x20E3)))
+        :emoji
+        type)))
+
+(defun emoji-run-end (string pos)
+  "Return where the emoji run starting at POS of STRING ends: it takes the
+emoji after it and the characters continuing their sequences (see
+emoji-sequence-code-p), and the character each zero-width joiner joins, so
+a sequence is drawn as one glyph."
+  (loop :with end := (1+ pos)
+        :while (< end (length string))
+        :do (let ((code (char-code (char string end))))
+              (cond ((= code #x200D)
+                     (setf end (min (length string) (+ end 2))))
+                    ((or (emoji-sequence-code-p code)
+                         (eq :emoji (run-type string end)))
+                     (incf end))
+                    (t
+                     (return end))))
+        :finally (return end)))
+
 (defun split-string-by-character-type (string)
+  "Split STRING into runs of one char-type each, as (TYPE . SUBSTRING).
+Control characters are runs of their own, and an emoji run keeps whole
+emoji sequences (see emoji-run-end)."
   (loop :with pos := 0 :and items := '()
         :while (< pos (length string))
-        :for type := (char-type (char string pos))
-        :do (loop :with start := pos
-                  :do (incf pos)
-                  :while (and (< pos (length string))
-                              (eq type (char-type (char string pos)))
-                              (not (eq type :control)))
-                  :finally (push (cons type (subseq string start pos)) items))
+        :do (let* ((type (run-type string pos))
+                   (end (if (eq type :emoji)
+                            (emoji-run-end string pos)
+                            (loop :with end := (1+ pos)
+                                  :while (and (< end (length string))
+                                              (not (eq type :control))
+                                              (eq type (run-type string end)))
+                                  :do (incf end)
+                                  :finally (return end)))))
+              (push (cons type (subseq string pos end)) items)
+              (setf pos end))
         :finally (return (nreverse items))))
 
 (defun make-line-end-object (string attribute type offset)
