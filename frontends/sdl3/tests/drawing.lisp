@@ -31,6 +31,17 @@
 (defclass stub-display ()
   ((char-height :initarg :char-height :reader display::display-char-height)))
 
+(defclass stub-grid-display (stub-display)
+  ((char-width :initarg :char-width :reader display::display-char-width)
+   (text-engine :initform nil :reader display:display-text-engine)
+   (text-shaper :initform nil :reader display:display-text-shaper))
+  (:documentation "A stub display with a cell width and no text engine or
+shaper, for drawing whole runs letter by letter."))
+
+(defclass stub-scaled-display (stub-grid-display)
+  ((scale :initarg :scale :reader display::display-scale))
+  (:documentation "A stub display with a display scale, for underlines."))
+
 (defun make-stub-display (&key (char-height 17))
   (make-instance 'stub-display :char-height char-height))
 
@@ -80,9 +91,6 @@
 ;;; redraw).  Cursor runs keep the per-cell path, which records the cursor
 ;;; position and draws bar and underline cursors per cell.
 
-(defclass stub-grid-display (stub-display)
-  ((char-width :initarg :char-width :reader display::display-char-width)))
-
 (defun call-recording (names function)
   "Call FUNCTION with the functions NAMES encapsulated so they record their
 arguments instead of drawing; return the recorded (name . args) calls in
@@ -129,3 +137,70 @@ order."
     (lem-core:set-cursor-attribute attribute)
     (ok (equal (mapcar #'first (bg-phase-calls "ab" attribute))
                '(drawing::draw-text-glyph-surface drawing::draw-text-glyph-surface)))))
+
+;;; Underlines are one point thick at the display's scale, drawn inside the
+;;; bottom of the cell and exactly as wide as the run.
+
+(defun underline-rects (scale)
+  (let ((display (make-instance 'stub-scaled-display
+                                :char-height 17 :char-width 9 :scale scale)))
+    (mapcar #'rest
+            (call-recording '(drawing::draw-rect)
+                            (lambda ()
+                              (drawing::draw-underline display 10 33 45 17
+                                                       (lem:make-attribute :underline t :foreground "#aabbcc")))))))
+
+(deftest underline-scales-with-the-display
+  (flet ((box (rect) (subseq rect 1 5)))
+    (ok (equal (mapcar #'box (underline-rects '(1 1))) '((10 49 45 1)))
+        "one pixel at 1x")
+    (ok (equal (mapcar #'box (underline-rects '(2 2))) '((10 48 45 2)))
+        "two pixels at 2x")
+    (ok (equal (mapcar #'box (underline-rects '(3/2 3/2))) '((10 48 45 2)))
+        "rounded at fractional scales"))
+  (ok (null (call-recording '(drawing::draw-rect)
+                            (lambda ()
+                              (drawing::draw-underline
+                               (make-instance 'stub-scaled-display
+                                              :char-height 17 :char-width 9 :scale '(2 2))
+                               0 0 9 17 (lem:make-attribute :background "#112233")))))
+      "no underline without the attribute"))
+
+;;; The :glyph phase of a run that isn't shaped draws each letter in its own
+;;; cell.  Letters drawn as rectangles or by the text engine need no letter
+;;; object; the rest (here, with no text engine, the plain letters) are drawn
+;;; from per-letter surfaces.
+
+(defun glyph-phase-calls (string type)
+  (let ((display (make-instance 'stub-grid-display :char-height 17 :char-width 9))
+        (object (make-instance 'lem-core/display:text-object
+                               :string string
+                               :attribute (lem:make-attribute :foreground "#aabbcc"
+                                                              :background "#112233")
+                               :type type)))
+    (call-recording '(drawing::draw-letter
+                      drawing::draw-text-glyph-surface)
+                    (lambda ()
+                      (drawing::draw-text-object-phase object 10 50 display nil :glyph)))))
+
+(deftest run-glyphs-are-drawn-cell-by-cell
+  (let ((calls (glyph-phase-calls "a─b" :latin)))
+    (ok (equal (mapcar #'first calls)
+               '(drawing::draw-text-glyph-surface
+                 drawing::draw-letter
+                 drawing::draw-text-glyph-surface)))
+    (testing "surface letters get their own letter object and cell"
+      (destructuring-bind (letter x bottom-y display view width &rest keys) (rest (first calls))
+        (declare (ignore display view keys))
+        (ok (equal (lem-core/display:text-object-string letter) "a"))
+        (ok (equal (list x bottom-y width) '(10 50 9)))))
+    (testing "box-drawing letters are drawn as rectangles in the next cell"
+      (destructuring-bind (display character drawing x bottom-y width height
+                           foreground background)
+          (rest (second calls))
+        (declare (ignore display foreground background))
+        (ok (equal (list character drawing x bottom-y width height)
+                   '(#\─ :box 19 50 9 17)))))
+    (ok (= 28 (third (third calls))) "the last letter follows"))
+  (testing "wide letters take two cells"
+    (ok (equal (mapcar #'third (glyph-phase-calls "日本" :cjk)) '(10 28)))))
