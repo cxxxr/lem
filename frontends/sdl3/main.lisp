@@ -701,6 +701,9 @@ NIL."
   (ffi:set-hint "SDL_MAC_SCROLL_MOMENTUM" "1"))
 
 (defmethod lem-if:invoke ((implementation sdl3) function)
+  ;; Emoji sequences are drawn as one glyph, so the editor measures and moves
+  ;; over them as one character.
+  (setf lem:*grapheme-clusters* t)
   (flet ((thunk ()
            (let ((editor-thread
                    (funcall function
