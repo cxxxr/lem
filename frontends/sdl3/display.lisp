@@ -261,12 +261,21 @@ box-drawing band, to be stretched to the cell height.  Otherwise NIL."
            (otherwise (display-cjk-normal-font display))))))
 
 (defmethod scaled-char-width ((display display) x)
-  (let ((scale-x (round (first (display-scale display)))))
-    (floor (* scale-x x) (display-char-width display))))
+  "Return the cell column under window coordinate X.  The pixels past the
+last whole column count as the last column, since the views there reach
+the edge."
+  (let ((scale-x (round (first (display-scale display))))
+        (columns (floor (display-width display) (display-char-width display))))
+    (min (floor (* scale-x x) (display-char-width display))
+         (max 0 (1- columns)))))
 
 (defmethod scaled-char-height ((display display) y)
-  (let ((scale-y (round (second (display-scale display)))))
-    (floor (* scale-y y) (display-char-height display))))
+  "Return the cell row under window coordinate Y.  The pixels past the last
+whole row count as the last row."
+  (let ((scale-y (round (second (display-scale display))))
+        (rows (floor (display-height display) (display-char-height display))))
+    (min (floor (* scale-y y) (display-char-height display))
+         (max 0 (1- rows)))))
 
 (defmethod scaled-pixel-x ((display display) x)
   "Return window coordinate X in the display's render pixels, the unit
@@ -426,20 +435,21 @@ BORDER-TYPE is :drop-curtain, :left-border or NIL for all four sides."
       (lem-sdl3/ffi:render-lines renderer x2 y1 x2 y2 x1 y2))))
 
 (defmethod render-margin-line ((display display) x y height)
-  (let ((attribute (lem:ensure-attribute 'lem:modeline-inactive)))
-    (render-fill-rect display
-                      (1- x)
-                      y
-                      1
-                      height
-                      :color (lem-core:attribute-background-color attribute))
+  "Draw the separator in the cell column left of a window whose left edge
+is at pixel X, from pixel Y down HEIGHT pixels."
+  (let ((attribute (lem:ensure-attribute 'lem:modeline-inactive))
+        (column-x (- x (display-char-width display))))
     (render-fill-rect-by-pixels display
-                                (+ (* (1- x) (display-char-width display))
-                                   (floor (display-char-width display) 2)
-                                   -1)
-                                (* y (display-char-height display))
+                                column-x
+                                y
+                                (display-char-width display)
+                                height
+                                :color (lem-core:attribute-background-color attribute))
+    (render-fill-rect-by-pixels display
+                                (+ column-x (floor (display-char-width display) 2) -1)
+                                y
                                 2
-                                (* height (display-char-height display))
+                                height
                                 :color (lem-core:attribute-foreground-color attribute))))
 
 (defmethod change-font ((display display) font-config &optional (save-font-size-p t))

@@ -6,8 +6,11 @@
 
 (defclass stub-cell-display ()
   ((char-width :initarg :char-width :reader display:display-char-width)
-   (char-height :initarg :char-height :reader display:display-char-height))
-  (:documentation "A stub display with only a cell size."))
+   (char-height :initarg :char-height :reader display:display-char-height)
+   (width :initarg :width :initform 900 :reader display:display-width)
+   (height :initarg :height :initform 680 :reader display:display-height))
+  (:documentation "A stub display with a cell size and a pixel size, by
+default a whole number of cells."))
 
 (defun make-view (&rest initargs)
   "Make a view with no window or texture, at cell 2, 3 and 10 by 4 cells,
@@ -16,10 +19,15 @@ with INITARGS overriding those."
          (append initargs (list :window nil :x 2 :y 3 :width 10 :height 4
                                 :use-modeline nil))))
 
-(defun pixel-rect (view)
-  (multiple-value-list
-   (view:view-pixel-rect view (make-instance 'stub-cell-display
-                                             :char-width 9 :char-height 17))))
+(defun stub-display (&key (width 900) (height 680))
+  (make-instance 'stub-cell-display :char-width 9 :char-height 17
+                                    :width width :height height))
+
+(defun pixel-rect (view &rest display-args)
+  (multiple-value-list (view:view-pixel-rect view (apply #'stub-display display-args))))
+
+(defun layout-size (view &rest display-args)
+  (multiple-value-list (view:view-layout-size view (apply #'stub-display display-args))))
 
 (deftest pixel-rect-follows-the-cells
   (ok (equal (pixel-rect (make-view)) '(18 51 90 68))))
@@ -46,3 +54,18 @@ with INITARGS overriding those."
     (view:move-position view 4 1 11 13)
     (ok (equal (pixel-rect view) '(11 13 90 68))
         "a pixel move replaces it")))
+
+(deftest views-at-the-edge-take-the-remainder
+  ;; 905 by 690 pixels is 100 columns and 40 rows, 5 and 10 pixels over.
+  (let ((view (make-view :x 90 :y 36)))
+    (ok (equal (pixel-rect view :width 905 :height 690) '(810 612 95 78))
+        "the last column and row reach the edge")
+    (ok (equal (layout-size view :width 905 :height 690) '(90 68))
+        "lem-core still lays lines out in whole cells"))
+  (ok (equal (pixel-rect (make-view :x 90) :width 905 :height 690) '(810 51 95 68))
+      "only the right edge")
+  (ok (equal (pixel-rect (make-view) :width 905 :height 690) '(18 51 90 68))
+      "away from the edges, nothing changes")
+  (ok (equal (pixel-rect (make-view :x 90 :y 36 :pixel-width 50) :width 905 :height 690)
+             '(810 612 50 68))
+      "a view placed by pixels keeps its size"))

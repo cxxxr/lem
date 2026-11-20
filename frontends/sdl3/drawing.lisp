@@ -578,12 +578,20 @@ width so the rasterizer's right-edge anti-aliasing tail is preserved."
                  (eol-cursor-object-color drawing-object)))
   (object-width drawing-object display))
 
+(defun texture-size (view display)
+  "Return the WIDTH and HEIGHT in pixels of VIEW's texture on DISPLAY, which
+can reach past the area lem-core lays lines out in (see
+view:view-pixel-rect); fills run to its edge."
+  (multiple-value-bind (x y width height) (view:view-pixel-rect view display)
+    (declare (ignore x y))
+    (values width height)))
+
 (defmethod draw-object ((drawing-object extend-to-eol-object) x bottom-y display view)
   (display:set-render-color display (extend-to-eol-object-color drawing-object))
   (display:with-scratch-rect (rect display
                               x
                               (- bottom-y (display:display-char-height display))
-                              (- (lem-if:view-width (lem-core:implementation) view) x)
+                              (- (texture-size view display) x)
                               (display:display-char-height display))
     (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect))
   (object-width drawing-object display))
@@ -674,7 +682,7 @@ rather than the row-wide two-pass)."
             (draw-object object current-x y display view)))
 
 (defun fill-to-end-of-line (display view x y height &optional default-attribute)
-  (display:with-scratch-rect (rect display x y (- (lem-if:view-width (lem-core:implementation) view) x) height)
+  (display:with-scratch-rect (rect display x y (- (texture-size view display) x) height)
     (display:set-render-color display
                               (lem-core:attribute-background-color default-attribute))
     (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect)))
@@ -691,11 +699,16 @@ rather than the row-wide two-pass)."
                                            default-attribute
                                            height)
   (display:with-display (display)
+    ;; The modeline stays on its cell row; its background runs down to the
+    ;; bottom of the texture, past the last cell when the view reaches the
+    ;; display's bottom edge.
     (fill-to-end-of-line display
                          view
                          0
                          (- (lem-if:view-height (lem-core:implementation) view) height)
-                         height
+                         (+ height
+                            (- (nth-value 1 (texture-size view display))
+                               (lem-if:view-height (lem-core:implementation) view)))
                          default-attribute)
     (redraw-physical-line display
                           view
@@ -710,17 +723,27 @@ rather than the row-wide two-pass)."
   (display:with-display (display)
     (display:set-render-color display
                               (display:display-background-color display))
-    (display:with-scratch-rect (rect display
-                                0
-                                y
-                                (lem-if:view-width implementation view)
-                                (- (lem-if:view-height implementation view) y))
-      (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect))))
+    (multiple-value-bind (width height) (texture-size view display)
+      (display:with-scratch-rect (rect display 0 y width (- height y))
+        (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect)))))
+
+(defun clear-below-layout (display view)
+  "Fill the strip of VIEW's texture below the area lem-core lays lines out
+in with the background colour.  Only a view without a modeline has one to
+fill; a modeline's background covers it."
+  (unless (view:view-use-modeline view)
+    (let ((layout-height (nth-value 1 (view:view-layout-size view display))))
+      (multiple-value-bind (width height) (texture-size view display)
+        (when (< layout-height height)
+          (display:set-render-color display (display:display-background-color display))
+          (display:with-scratch-rect (rect display 0 layout-height width (- height layout-height))
+            (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect)))))))
 
 (defmethod lem-core:redraw-buffer :before ((implementation lem-sdl3/sdl3:sdl3) buffer window force)
   (display:with-display (display)
     (lem-sdl3/ffi:set-render-target (display:display-renderer display)
-                                    (view:view-texture (lem:window-view window)))))
+                                    (view:view-texture (lem:window-view window)))
+    (clear-below-layout display (lem:window-view window))))
 
 (defmethod lem-core:redraw-buffer :around ((implementation lem-sdl3/sdl3:sdl3) buffer window force)
   (lem-sdl3/ffi:in-main-thread ()

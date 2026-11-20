@@ -457,8 +457,7 @@ keeping its cell size."
   (with-debug ("lem-if:redraw-view-after" view)
     (display:with-display (display)
       (display:with-renderer (display)
-        (multiple-value-bind (x y width height) (view:view-pixel-rect view display)
-          (declare (ignore x y))
+        (multiple-value-bind (width height) (view:view-layout-size view display)
           (ffi:set-render-viewport (display:display-renderer display)
                                    0
                                    0
@@ -582,11 +581,11 @@ keeping its cell size."
 
 (defmethod lem-if:view-width ((implementation sdl3) view)
   (display:with-display (display)
-    (nth-value 2 (view:view-pixel-rect view display))))
+    (nth-value 0 (view:view-layout-size view display))))
 
 (defmethod lem-if:view-height ((implementation sdl3) view)
   (display:with-display (display)
-    (nth-value 3 (view:view-pixel-rect view display))))
+    (nth-value 1 (view:view-layout-size view display))))
 
 #-windows
 (defmethod lem-if:clipboard-paste ((implementation sdl3))
