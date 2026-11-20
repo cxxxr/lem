@@ -747,4 +747,8 @@ fill; a modeline's background covers it."
 
 (defmethod lem-core:redraw-buffer :around ((implementation lem-sdl3/sdl3:sdl3) buffer window force)
   (lem-sdl3/ffi:in-main-thread ()
-    (call-next-method)))
+    ;; A new texture is blank, so the whole window must be drawn again.
+    (if (display:with-display (display)
+          (view:sync-texture (lem:window-view window) display))
+        (call-next-method implementation buffer window t)
+        (call-next-method))))

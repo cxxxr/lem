@@ -28,7 +28,8 @@
    :view-pixel-rect
    :view-layout-size
    :view-use-modeline
-   :view-texture))
+   :view-texture
+   :sync-texture))
 (in-package :lem-sdl3/view)
 
 (defclass view ()
@@ -75,7 +76,12 @@ its cell height.")
     :reader view-use-modeline)
    (texture
     :initarg :texture
+    :initform nil
     :accessor view-texture)
+   (texture-size
+    :initform nil
+    :accessor view-texture-pixel-size
+    :documentation "The (WIDTH . HEIGHT) TEXTURE was created at.")
    (last-cursor-x
     :initform nil
     :accessor view-last-cursor-x)
@@ -131,12 +137,29 @@ the right or bottom edge (see edge-extra)."
               (+ width extra-x)
               (+ height extra-y)))))
 
-(defun create-view-texture (view display)
-  "Return a new texture the size of VIEW's pixel rectangle on DISPLAY, at
-least one pixel each way."
+(defun replace-texture (view display)
+  "Give VIEW a new texture the size of its pixel rectangle on DISPLAY, at
+least one pixel each way, destroying the old one."
   (multiple-value-bind (x y width height) (view-pixel-rect view display)
     (declare (ignore x y))
-    (display:create-view-texture display (max width 1) (max height 1))))
+    (let ((width (max width 1))
+          (height (max height 1)))
+      (when (view-texture view)
+        (lem-sdl3/ffi:destroy-texture (view-texture view)))
+      (setf (view-texture view) (display:create-view-texture display width height)
+            (view-texture-pixel-size view) (cons width height)))))
+
+(defun sync-texture (view display)
+  "Recreate VIEW's texture if its pixel rectangle on DISPLAY no longer has
+the texture's size, and return true if it did.  The rectangle can change
+without lem-core resizing the view: the remainder past the last cell (see
+edge-extra) changes with the display's size and cell size."
+  (multiple-value-bind (x y width height) (view-pixel-rect view display)
+    (declare (ignore x y))
+    (unless (equal (view-texture-pixel-size view)
+                   (cons (max width 1) (max height 1)))
+      (replace-texture view display)
+      t)))
 
 (defmethod set-cursor-position ((view view) x y)
   (setf (view-last-cursor-x view) x
@@ -171,7 +194,7 @@ size it in pixels instead (see view-pixel-rect)."
                              :pixel-width pixel-width
                              :pixel-height pixel-height
                              :use-modeline use-modeline)))
-    (setf (view-texture view) (create-view-texture view display))
+    (replace-texture view display)
     view))
 
 (defmethod delete-view ((view view))
@@ -188,8 +211,7 @@ size it in pixels instead (see view-pixel-rect)."
   (when (view-use-modeline view) (incf height))
   (setf (view-width view) width
         (view-height view) height)
-  (lem-sdl3/ffi:destroy-texture (view-texture view))
-  (setf (view-texture view) (create-view-texture view display)))
+  (replace-texture view display))
 
 (defun resize-pixels (view display pixel-width pixel-height)
   "Replace VIEW's pixel size overrides with PIXEL-WIDTH and PIXEL-HEIGHT
@@ -197,8 +219,7 @@ size it in pixels instead (see view-pixel-rect)."
 unchanged."
   (when pixel-width (setf (view-pixel-width view) pixel-width))
   (when pixel-height (setf (view-pixel-height view) pixel-height))
-  (lem-sdl3/ffi:destroy-texture (view-texture view))
-  (setf (view-texture view) (create-view-texture view display)))
+  (replace-texture view display))
 
 (defmethod move-position ((view view) x y &optional pixel-x pixel-y)
   "Move VIEW to cell X, Y.  PIXEL-X and PIXEL-Y, when not NIL, replace its
@@ -250,8 +271,6 @@ upper-left quarter of the window)."
                           (lem:frame-floating-windows (lem:current-frame))))
     (let ((view (lem:window-view window)))
       (when (typep view 'view)
-        (when (view-texture view)
-          (lem-sdl3/ffi:destroy-texture (view-texture view)))
-        (setf (view-texture view) (create-view-texture view display))))))
+        (replace-texture view display)))))
 
 (display:add-post-display-change-hook 'refresh-all-view-textures)
