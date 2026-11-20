@@ -29,6 +29,7 @@
    :view-layout-size
    :view-render-height
    :view-texture-size
+   :view-body-height
    :view-scroll-offset
    :view-scroll-anchor
    :add-scroll-delta
@@ -154,10 +155,12 @@ the right or bottom edge (see edge-extra)."
               (+ height extra-y)))))
 
 (defun overscan-rows (view)
-  "How many rows past its last one VIEW's texture holds: one for a view with
-a modeline, so that the line the modeline covers is drawn and can be shown
-while the body is scrolled by part of a line."
-  (if (view-use-modeline view) 1 0))
+  "How many rows past its last one VIEW's texture holds.  A view with a
+modeline draws the modeline at its bottom edge and its body above it, so the
+body can show lines below its last whole row: in the pixels past its last
+cell (see edge-extra) and while it is scrolled by part of a line.  Each of
+those is less than a row, so two rows cover both."
+  (if (view-use-modeline view) 2 0))
 
 (defun view-render-height (view display)
   "Return the height in pixels lem-core draws VIEW in: its layout height plus
@@ -167,12 +170,16 @@ below the overscan row."
      (* (overscan-rows view) (display:display-char-height display))))
 
 (defun view-texture-size (view display)
-  "Return the WIDTH and HEIGHT in pixels of VIEW's texture on DISPLAY: its
-pixel rectangle plus the overscan row, at least one pixel each way."
+  "Return the WIDTH and HEIGHT in pixels of VIEW's texture on DISPLAY, at
+least one pixel each way: its pixel rectangle's width, and the height
+lem-core draws it in for a view with overscan rows (see view-render-height),
+or its rectangle's height."
   (multiple-value-bind (x y width height) (view-pixel-rect view display)
     (declare (ignore x y))
     (values (max width 1)
-            (max (+ height (* (overscan-rows view) (display:display-char-height display)))
+            (max (if (zerop (overscan-rows view))
+                     height
+                     (view-render-height view display))
                  1))))
 
 (defun replace-texture (view display)
@@ -299,23 +306,30 @@ on DISPLAY's current render target."
                                    source-rect
                                    dest-rect))))
 
+(defun view-body-height (view display)
+  "Return the height in pixels VIEW's body takes on DISPLAY: everything above
+its modeline, which sits at the bottom edge of its rectangle."
+  (- (nth-value 3 (view-pixel-rect view display))
+     (display:display-char-height display)))
+
 (defun render-view-texture-to-display (view display)
-  "Composite VIEW's texture onto DISPLAY's texture.  A view with an overscan
-row is copied in two parts: the body, shifted up by the scroll offset, and
-the modeline below it, unshifted."
+  "Composite VIEW's texture onto DISPLAY's texture.  A view with overscan
+rows is copied in two parts: the body, shifted up by the scroll offset, and
+the modeline at the bottom edge, so it follows the edge pixel by pixel while
+the body's rows fill the space above it."
   (lem-sdl3/ffi:set-render-target (display:display-renderer display) (display:display-texture display))
   (multiple-value-bind (x y width height) (view-pixel-rect view display)
     (if (zerop (overscan-rows view))
         (copy-texture-rect display (view-texture view) 0 x y width height)
         (let* ((char-height (display:display-char-height display))
-               (body-height (- (nth-value 1 (view-layout-size view display)) char-height))
+               (body-height (view-body-height view display))
                (offset (if (< (view-scroll-offset view) char-height)
                            (view-scroll-offset view)
                            0)))
           (copy-texture-rect display (view-texture view) offset x y width body-height)
           (copy-texture-rect display (view-texture view)
                              (- (view-render-height view display) char-height)
-                             x (+ y body-height) width (- height body-height))))))
+                             x (+ y body-height) width char-height)))))
 
 (defun refresh-all-view-textures (display)
   "Recreate the SDL texture backing every live view at the current

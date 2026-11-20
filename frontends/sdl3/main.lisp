@@ -57,22 +57,30 @@ are scrolled by lem-core; the rest is the view's scroll offset."
     (setf (view:view-scroll-anchor view) (view-point-anchor window))))
 
 (defun scrolled-char-y (display char-x char-y pixel-y)
-  "Return CHAR-Y, the cell row under the pointer at PIXEL-Y, corrected for
-the scroll offset of the window there: its body is drawn that many pixels
-higher than its cells."
+  "Return the cell row under the pointer at PIXEL-Y, for a window with a
+modeline drawn as view:render-view-texture-to-display draws it: its body
+shifted up by the scroll offset, and its modeline at the bottom edge of the
+view, which can be past its last cell.  CHAR-X and CHAR-Y are the cell
+position SDL's coordinates give; other windows keep CHAR-Y."
   (let ((window (lem:focus-window-position (lem:current-frame) char-x char-y)))
     (if (null window)
         char-y
-        (let ((view (lem:window-view window))
-              (last-body-row (+ (lem:window-y window) (lem:window-height window) -2)))
-          (if (and (typep view 'view:view)
-                   (view:view-use-modeline view)
-                   (plusp (view:view-scroll-offset view))
-                   (<= char-y last-body-row))
-              (min (floor (+ pixel-y (view:view-scroll-offset view))
-                          (display:display-char-height display))
-                   last-body-row)
-              char-y)))))
+        (let ((view (lem:window-view window)))
+          (if (not (and (typep view 'view:view) (view:view-use-modeline view)))
+              char-y
+              (destructuring-bind (view-y body-height)
+                  (ffi:in-main-thread ()
+                    (list (nth-value 1 (view:view-pixel-rect view display))
+                          (view:view-body-height view display)))
+                (let ((char-height (display:display-char-height display))
+                      (window-y (lem:window-y window))
+                      (body-rows (1- (lem:window-height window))))
+                  (if (< pixel-y (+ view-y body-height))
+                      (+ window-y
+                         (min (floor (+ (- pixel-y view-y) (view:view-scroll-offset view))
+                                     char-height)
+                              (1- body-rows)))
+                      (+ window-y body-rows)))))))))
 
 (defun on-mouse-button-down (display button x y clicks)
   (show-cursor)

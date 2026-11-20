@@ -697,16 +697,13 @@ rather than the row-wide two-pass)."
                                            default-attribute
                                            height)
   (display:with-display (display)
-    ;; The modeline stays on its cell row; its background runs down to the
-    ;; bottom of the texture, past the last cell when the view reaches the
-    ;; display's bottom edge.
+    ;; The modeline is the last row lem-core draws the view in;
+    ;; view:render-view-texture-to-display puts it at the view's bottom edge.
     (fill-to-end-of-line display
                          view
                          0
                          (- (lem-if:view-height (lem-core:implementation) view) height)
-                         (+ height
-                            (- (nth-value 1 (texture-size view display))
-                               (lem-if:view-height (lem-core:implementation) view)))
+                         height
                          default-attribute)
     (redraw-physical-line display
                           view
