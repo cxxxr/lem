@@ -16,7 +16,7 @@
 (defparameter *font-size* 28
   "Point size of the test fonts: about a 2x display at the default size.")
 
-(defparameter *columns* 44
+(defparameter *columns* 48
   "Width of the test surface in cells.")
 
 (defparameter *rows* 2
@@ -228,10 +228,11 @@ horizontal or vertical line, is ink."
           "the vertical line runs unbroken down two rows"))))
 
 (deftest glyphs-stay-in-their-cells
-  ;; Wide latin letters, descenders and symbols the latin font has must not
-  ;; put ink in the cells beside them or the row below.
+  ;; Wide latin letters, descenders, symbols the latin font has, and
+  ;; symbols only the CJK font has (drawn with it at the narrow size) must
+  ;; not put ink in the cells beside them or the row below.
   (with-each-mode (display surface)
-    (let ((line " W M m @ g Ж ‰ ∞ ¶ ƒ ẞ ﬁ 日 "))
+    (let ((line " W M m @ g Ж ‰ ∞ ¶ ƒ ẞ ﬁ 日 ★ ⌘ ♥ ⚠ ⏎ ☆ "))
       (draw-line display 0 line)
       (loop :for (character (left top right bottom)) :in (character-boxes display surface 0 line)
             :for cells := (lem-core:char-width character 0)
@@ -242,3 +243,5 @@ horizontal or vertical line, is ink."
       (ok (notany (lambda (column) (ink-box display surface 1 column))
                   (loop :for column :below *columns* :collect column))
           "nothing reaches the row below"))))
+
+

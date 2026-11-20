@@ -8,6 +8,8 @@
            :font-latin-bold-font
            :font-cjk-normal-font
            :font-cjk-bold-font
+           :font-cjk-narrow-normal-font
+           :font-cjk-narrow-bold-font
            :font-emoji-font
            :font-braille-font
            :font-fallback-fonts
@@ -81,6 +83,11 @@ skipped.")
   cjk-bold-font
   emoji-font
   braille-font
+  ;; The CJK fonts at CJK-NARROW-SIZE, where a full-width glyph is one cell
+  ;; wide: the latin fonts' fallbacks for symbols only the CJK font has.
+  cjk-narrow-normal-font
+  cjk-narrow-bold-font
+  cjk-narrow-size
   ;; Fonts opened only to be fallbacks of the fonts above (see
   ;; add-fallback-fonts); closed after them.
   fallback-fonts
@@ -183,6 +190,14 @@ skipped.")
                           (lem-sdl3/ffi:surface-height surface))
       (lem-sdl3/ffi:destroy-surface surface))))
 
+(defun cjk-narrow-size (cjk-font size char-width)
+  "Return the point size at which CJK-FONT, open at SIZE, draws a
+full-width glyph CHAR-WIDTH pixels wide, or SIZE if it can't tell."
+  (let ((advance (nth-value 4 (lem-sdl3/ffi:glyph-metrics cjk-font #\一))))
+    (if (and advance (< char-width advance))
+        (* size (/ char-width advance))
+        size)))
+
 (defun box-drawing-band (ttf-font)
   "Return (TOP . BOTTOM), the rows of a rendered glyph surface that U+2502
 (BOX DRAWINGS LIGHT VERTICAL) covers in TTF-FONT, or NIL if the font lacks
@@ -241,9 +256,8 @@ each text font's chain.  If FreeType or HarfBuzz is missing, or any file
 fails to open, FONT gets no chains and text is drawn as before."
   (when (and (lem-sdl3/ffi-freetype:available-p) (lem-sdl3/ffi-harfbuzz:available-p))
     (let ((opened '()))
-      (flet ((open-file (file)
-               (let ((shaping-font (lem-sdl3/shaper:open-shaping-font
-                                    file (font-config-size font-config))))
+      (flet ((open-file (file &optional (size (font-config-size font-config)))
+               (let ((shaping-font (lem-sdl3/shaper:open-shaping-font file size)))
                  (push shaping-font opened)
                  shaping-font)))
         (handler-case
@@ -251,13 +265,17 @@ fails to open, FONT gets no chains and text is drawn as before."
                    (latin-bold (open-file (font-config-latin-bold-file font-config)))
                    (cjk-normal (open-file (font-config-cjk-normal-file font-config)))
                    (cjk-bold (open-file (font-config-cjk-bold-file font-config)))
+                   (cjk-narrow-normal (open-file (font-config-cjk-normal-file font-config)
+                                                 (font-cjk-narrow-size font)))
+                   (cjk-narrow-bold (open-file (font-config-cjk-bold-file font-config)
+                                               (font-cjk-narrow-size font)))
                    (braille (open-file (font-config-braille-file font-config)))
                    (fallbacks (mapcar #'open-file fallback-files)))
               (loop :for (ttf-font . chain)
                       :in (list (list* (font-latin-normal-font font)
-                                       latin-normal (append fallbacks (list cjk-normal)))
+                                       latin-normal (append fallbacks (list cjk-narrow-normal)))
                                 (list* (font-latin-bold-font font)
-                                       latin-bold (append fallbacks (list cjk-bold)))
+                                       latin-bold (append fallbacks (list cjk-narrow-bold)))
                                 (list* (font-cjk-normal-font font) cjk-normal fallbacks)
                                 (list* (font-cjk-bold-font font) cjk-bold fallbacks)
                                 (list* (font-braille-font font) braille fallbacks))
@@ -347,6 +365,13 @@ system's) at its size, skipping files that fail to open."
                                          (font-config-size font-config)))
          (braille-font (lem-sdl3/ffi:open-font (font-config-braille-file font-config)
                                            (font-config-size font-config)))
+         (char-width (first (get-character-size latin-normal-font)))
+         (cjk-narrow-size (cjk-narrow-size cjk-normal-font (font-config-size font-config)
+                                           char-width))
+         (cjk-narrow-normal-font (lem-sdl3/ffi:open-font (font-config-cjk-normal-file font-config)
+                                                         cjk-narrow-size))
+         (cjk-narrow-bold-font (lem-sdl3/ffi:open-font (font-config-cjk-bold-file font-config)
+                                                       cjk-narrow-size))
          (fallback-fonts (open-fallback-fonts font-config))
          ;; Measured before fallbacks are added: TTF_FontHasGlyph counts
          ;; fallbacks, and the band must come from the latin font itself.
@@ -362,9 +387,9 @@ system's) at its size, skipping files that fail to open."
                      (lem-sdl3/ffi:font-ascent ttf-font))))
         (let ((fallbacks
                 (list (cons latin-normal-font
-                            (append fallback-fonts (list cjk-normal-font emoji-font)))
+                            (append fallback-fonts (list cjk-narrow-normal-font emoji-font)))
                       (cons latin-bold-font
-                            (append fallback-fonts (list cjk-bold-font emoji-font)))
+                            (append fallback-fonts (list cjk-narrow-bold-font emoji-font)))
                       (cons cjk-normal-font (append fallback-fonts (list emoji-font)))
                       (cons cjk-bold-font (append fallback-fonts (list emoji-font))))))
           ;; Lem picks one font per character type, so a glyph missing from it
@@ -374,9 +399,10 @@ system's) at its size, skipping files that fail to open."
           ;; then emoji.  The latin fonts only draw one-cell characters (wide
           ;; ones use the CJK font), so they try the configured and system
           ;; fonts, monospace first, before the CJK font, whose symbols such
-          ;; as ★ and ⌘ are drawn full-width and spill out of one cell.  The
-          ;; CJK, emoji and braille fonts are only borrowed here; they are
-          ;; closed as primaries.
+          ;; as ★ and ⌘ are drawn full-width.  For the symbols only the CJK
+          ;; font has, they use it at the narrow size, where those fit one
+          ;; cell.  The CJK, emoji and braille fonts are only borrowed here;
+          ;; they are closed as primaries.
           (loop :for (ttf-font . list) :in fallbacks
                 :do (add-fallback-fonts ttf-font list))
           (destructuring-bind (char-width char-height)
@@ -387,6 +413,9 @@ system's) at its size, skipping files that fail to open."
                                    :cjk-bold-font cjk-bold-font
                                    :emoji-font emoji-font
                                    :braille-font braille-font
+                                   :cjk-narrow-normal-font cjk-narrow-normal-font
+                                   :cjk-narrow-bold-font cjk-narrow-bold-font
+                                   :cjk-narrow-size cjk-narrow-size
                                    :fallback-fonts fallback-fonts
                                    :char-width char-width
                                    :char-height char-height
@@ -409,6 +438,8 @@ system's) at its size, skipping files that fail to open."
   (lem-sdl3/ffi:close-font (font-cjk-bold-font font))
   (lem-sdl3/ffi:close-font (font-emoji-font font))
   (lem-sdl3/ffi:close-font (font-braille-font font))
+  (lem-sdl3/ffi:close-font (font-cjk-narrow-normal-font font))
+  (lem-sdl3/ffi:close-font (font-cjk-narrow-bold-font font))
   (mapc #'lem-sdl3/ffi:close-font (font-coverage-fonts font))
   ;; Last: the fonts above use these as fallbacks.
   (mapc #'lem-sdl3/ffi:close-font (font-fallback-fonts font))
