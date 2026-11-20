@@ -1,6 +1,7 @@
 {
   "name": "lem-clysm",
   "productName": "Lem",
+  "desktopName": "lem-clysm.desktop",
   "version": "0.1.0",
   "description": "Lem, the Common Lisp editor, running on Clysm (Common Lisp on WebAssembly GC)",
   "main": "main.js",
