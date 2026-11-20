@@ -3,6 +3,8 @@
   (:local-nicknames (:font :lem-sdl3/font)
                     (:icon-font :lem-sdl3/icon-font)
                     (:text-surface-cache :lem-sdl3/text-surface-cache)
+                    (:text-engine :lem-sdl3/text-engine)
+                    (:text-shaping :lem-sdl3/text-shaping)
                     (:utils :lem-sdl3/utils))
   (:export :with-display
            :display
@@ -19,11 +21,14 @@
            :display-font-ascent
            :display-font-descent
            :display-glyph-ascent
+           :display-shaping-chain
            :box-drawing-char-p
            :display-box-drawing-band
            :display-focus-p
            :create-view-texture
            :display-renderer
+           :display-text-engine
+           :display-text-shaper
            :set-render-color
            :display-background-color
            :display-foreground-color
@@ -108,6 +113,16 @@ Retina to a 1x display).")
           :accessor display-focus-p)
    (redraw-at-least-once :initform nil
                          :accessor display-redraw-at-least-once-p)
+   (text-engine :initarg :text-engine
+                :initform nil
+                :reader display-text-engine
+                :documentation "The renderer's text engine (see
+lem-sdl3/text-engine), or NIL to draw every glyph from a surface.")
+   (text-shaper :initarg :text-shaper
+                :initform nil
+                :reader display-text-shaper
+                :documentation "The renderer's text shaper (see
+lem-sdl3/text-shaping), or NIL when text runs are not shaped.")
    (scale :initform '(1 1)
           :initarg :scale
           :accessor display-scale)
@@ -200,6 +215,11 @@ with TTF-FONT: TTF-FONT's own, or that of the fallback font providing the
 glyph.  A rendered glyph's baseline lies this many pixels below the top of
 its surface.  The second value is true if TTF-FONT itself has the glyph."
   (font:glyph-source (display-font display) ttf-font character))
+
+(defun display-shaping-chain (display ttf-font)
+  "Return the shaping fonts for text drawn with TTF-FONT, one of DISPLAY's
+text fonts, in fallback order, or NIL; see font:font-shaping-chain."
+  (font:font-shaping-chain (display-font display) ttf-font))
 
 (defun display-box-drawing-band (display character bold)
   "When CHARACTER is a box-drawing character drawn with the latin font itself
@@ -410,6 +430,12 @@ event handler pattern in `on-windowevent')."
 
 (defmethod change-font ((display display) font-config &optional (save-font-size-p t))
   (let ((font-config (font:merge-font-config font-config (display-font-config display))))
+    ;; Cached texts, shaped runs and atlas glyphs refer to the fonts being
+    ;; closed.
+    (when (display-text-engine display)
+      (text-engine:clear-text-cache (display-text-engine display)))
+    (when (display-text-shaper display)
+      (text-shaping:clear-shaping (display-text-shaper display)))
     (font:close-font (display-font display))
     (let ((font (font:open-font font-config)))
       (setf (display-char-width display) (font:font-char-width font)

@@ -28,9 +28,19 @@
    :glyph-metrics
    :render-text-blended
    :render-text-solid
+   ;; text engine
+   :create-text-engine
+   :destroy-text-engine
+   :create-text
+   :destroy-text
+   :set-text-color
+   :draw-text
    ;; textures
    :create-target-texture
    :create-texture-from-surface
+   :create-glyph-texture
+   :update-texture
+   :render-geometry
    :destroy-texture
    :get-render-target
    :set-render-target
@@ -304,6 +314,46 @@ Return a new SURFACE, or NIL."
   (wrap-surface (sdl3-ttf:render-text-solid font string 0
                                             (opaque-color red green blue))))
 
+;;; Text engine
+;;;
+;;; SDL_ttf's renderer text engine rasterizes glyphs into a texture atlas
+;;; and draws a TTF_Text as textured quads.  cl-sdl3 binds these with plain
+;;; DEFCFUNs, which take pointers without allocating, so they are used
+;;; directly.
+
+(defun create-text-engine (renderer)
+  "Create a text engine drawing to RENDERER.  Destroy every text created
+with it before calling DESTROY-TEXT-ENGINE."
+  (let ((engine (sdl3-ttf:create-renderer-text-engine renderer)))
+    (when (cffi:null-pointer-p engine)
+      (sdl-error "TTF_CreateRendererTextEngine failed"))
+    engine))
+
+(defun destroy-text-engine (engine)
+  "Destroy ENGINE, made by CREATE-TEXT-ENGINE."
+  (sdl3-ttf:destroy-renderer-text-engine engine))
+
+(defun create-text (engine font string)
+  "Return a new TTF_Text drawing STRING with FONT through ENGINE, or NIL if
+SDL_ttf fails.  FONT must stay open until the text is destroyed."
+  (let ((text (sdl3-ttf:create-text engine font string 0)))
+    (unless (cffi:null-pointer-p text)
+      text)))
+
+(defun destroy-text (text)
+  "Destroy TEXT, made by CREATE-TEXT."
+  (sdl3-ttf:destroy-text text))
+
+(defun set-text-color (text red green blue)
+  "Draw TEXT in the given opaque color from now on."
+  (sdl3-ttf:set-text-color text red green blue 255))
+
+(defun draw-text (text x y)
+  "Draw TEXT with its top-left corner at (X, Y) on the current render target.
+Each glyph sits on the baseline of the font that provides it, ascent pixels
+below Y, as in a TTF_RenderText_Blended surface."
+  (sdl3-ttf:draw-renderer-text text (f x) (f y)))
+
 ;;; Textures
 
 (defun create-target-texture (renderer width height)
@@ -327,6 +377,40 @@ sampling.  The texture keeps SDL's default blend mode, so alpha is honoured."
       (sdl-error "SDL_CreateTextureFromSurface failed"))
     (sdl3:set-texture-scale-mode texture :nearest)
     texture))
+
+(cffi:defcfun ("SDL_UpdateTexture" %update-texture) :bool
+  (texture :pointer) (rect :pointer) (pixels :pointer) (pitch :int))
+
+(cffi:defcfun ("SDL_RenderGeometry" %render-geometry) :bool
+  (renderer :pointer) (texture :pointer)
+  (vertices :pointer) (num-vertices :int)
+  (indices :pointer) (num-indices :int))
+
+(defun create-glyph-texture (renderer width height)
+  "Create a streaming ARGB8888 texture of WIDTH x HEIGHT pixels for glyph
+coverage: alpha-blended and sampled nearest-neighbour, since glyphs are
+drawn at whole pixels and their natural size."
+  (let ((texture (sdl3:create-texture renderer :argb8888 :streaming width height)))
+    (when (cffi:null-pointer-p texture)
+      (sdl-error "SDL_CreateTexture failed"))
+    (sdl3:set-texture-scale-mode texture :nearest)
+    (sdl3:set-texture-blend-mode texture '(:sdl-blendmode-blend))
+    texture))
+
+(defun update-texture (texture x y width height pixels pitch)
+  "Copy PIXELS, WIDTH x HEIGHT pixels PITCH bytes apart, into TEXTURE at
+\(X, Y)."
+  (cffi:with-foreign-object (rect :int 4)
+    (setf (cffi:mem-aref rect :int 0) x
+          (cffi:mem-aref rect :int 1) y
+          (cffi:mem-aref rect :int 2) width
+          (cffi:mem-aref rect :int 3) height)
+    (%update-texture texture rect pixels pitch)))
+
+(defun render-geometry (renderer texture vertices vertex-count indices index-count)
+  "Draw triangles textured with TEXTURE: VERTICES is an array of
+VERTEX-COUNT SDL_Vertex, INDICES of INDEX-COUNT ints, three per triangle."
+  (%render-geometry renderer texture vertices vertex-count indices index-count))
 
 (defun destroy-texture (texture)
   "Destroy TEXTURE."
