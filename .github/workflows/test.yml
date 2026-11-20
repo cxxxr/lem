@@ -59,9 +59,12 @@ jobs:
         run: qlot install
 
       - name: Run SDL3 frontend tests
+        # Through SBCL rather than .qlot/bin/rove, which needs Roswell.
         run: |
           CL_SOURCE_REGISTRY="(:source-registry (:tree \"$PWD/\") :ignore-inherited-configuration)" \
-            .qlot/bin/rove frontends/sdl3/lem-sdl3.asd
+            sbcl --noinform --non-interactive --load .qlot/setup.lisp \
+                 --eval '(ql:quickload :rove :silent t)' \
+                 --eval '(unless (rove:run :lem-sdl3/tests) (uiop:quit 1))'
 
   push_image:
     name: Push Image to GHCR
