@@ -19,14 +19,21 @@
         (setf (text-object-surface drawing-object)
               (call-next-method)))))
 
-(defun text-font (display string attribute type)
-  "Return the font STRING, with ATTRIBUTE and char-type TYPE, is drawn with."
+(defun letter-font (display character attribute type)
+  "Return the font CHARACTER (or NIL), with ATTRIBUTE and char-type TYPE, is
+drawn with."
   (or (lem-core:attribute-font attribute)
       (display:get-display-font display
                                 :type type
                                 :bold (and attribute (lem:attribute-bold attribute))
-                                :character (and (plusp (length string))
-                                                (char string 0)))))
+                                :character character)))
+
+(defun text-font (display string attribute type)
+  "Return the font STRING, with ATTRIBUTE and char-type TYPE, is drawn with."
+  (letter-font display
+               (and (plusp (length string)) (char string 0))
+               attribute
+               type))
 
 (defun make-text-surface (display string attribute type)
   "Render STRING to a new surface, or return NIL if SDL_ttf produces nothing
@@ -206,16 +213,6 @@ display:display-box-drawing-band."
                                            (char string 0)
                                            (and attribute (lem:attribute-bold attribute))))))
 
-(defun drawn-box-character (drawing-object)
-  "Return DRAWING-OBJECT's character if it is a box-drawing or block
-character drawn as rectangles (see box-drawing:glyph-rects), else NIL.
-Characters with an attribute's own font keep that font."
-  (let ((string (text-object-string drawing-object)))
-    (and (= 1 (length string))
-         (null (lem-core:attribute-font (text-object-attribute drawing-object)))
-         (box-drawing:glyph-rects (char string 0) 1 1)
-         (char string 0))))
-
 (defun blend-color (foreground background amount)
   "The colour AMOUNT (0 to 1) of the way from BACKGROUND to FOREGROUND."
   (flet ((mix (f b) (round (+ b (* amount (- f b))))))
@@ -234,31 +231,52 @@ into BACKGROUND."
       (loop :for (rect-x rect-y rect-width rect-height) :in rects
             :do (draw-rect display (+ x rect-x) (+ y rect-y) rect-width rect-height color)))))
 
-(defun text-engine-font (drawing-object display)
-  "Return the font to draw DRAWING-OBJECT's glyph with through the text
-engine, or NIL if it is drawn from a surface instead.  Fonts an attribute
-brings are left to surfaces, since texts must not outlive their font."
-  (let ((string (text-object-string drawing-object))
-        (attribute (text-object-attribute drawing-object))
-        (type (text-object-type drawing-object)))
-    (and (text-engine:text-engine-active-p (display:display-text-engine display))
-         (plain-text-object-p drawing-object)
-         (plusp (length string))
-         (not (member type '(:emoji :icon)))
-         (null (lem-core:attribute-font attribute))
-         (null (box-drawing-band drawing-object display))
-         (text-font display string attribute type))))
+(defun letter-drawing (display character attribute type)
+  "Return how CHARACTER, with ATTRIBUTE and char-type TYPE, is drawn without
+a surface: :BOX for rectangles (see box-drawing:glyph-rects), or the font
+to draw it with through the text engine.  Return NIL to draw it from a
+surface: emoji and icons, characters in a font an attribute brings (texts
+must not outlive their font), and the box-drawing characters the font
+draws, whose surface is stretched to the cell (see box-drawing-band)."
+  (cond ((lem-core:attribute-font attribute) nil)
+        ((box-drawing:drawn-character-p character) :box)
+        ((and (text-engine:text-engine-active-p (display:display-text-engine display))
+              (not (member type '(:emoji :icon)))
+              (null (display:display-box-drawing-band
+                     display character (and attribute (lem:attribute-bold attribute)))))
+         (letter-font display character attribute type))))
+
+(defun letter-top-y (display font character bottom-y)
+  "Return the y at which to draw the top of CHARACTER's glyph, rendered with
+FONT, so that its baseline lies on the row's baseline above BOTTOM-Y.  A
+glyph sits ascent pixels below its top, with the ascent of the font that
+provides it, which for CJK and fallback glyphs is not the latin font's."
+  (- bottom-y
+     (display:display-glyph-ascent display font character)
+     (abs (display:display-font-descent display))))
 
 (defun glyph-top-y (drawing-object display font bottom-y)
-  "Return the y at which to draw the top of DRAWING-OBJECT's glyph, rendered
-with FONT, so that its baseline lies on the row's baseline above BOTTOM-Y.
-A glyph sits ascent pixels below its top, with the ascent of the font that
-provides it, which for CJK and fallback glyphs is not the latin font's."
-  (let* ((string (text-object-string drawing-object))
-         (ascent (if (= 1 (length string))
-                     (display:display-glyph-ascent display font (char string 0))
-                     (display:display-font-ascent display))))
-    (- bottom-y ascent (abs (display:display-font-descent display)))))
+  "Return the y at which to draw the top of DRAWING-OBJECT's glyph surface,
+rendered with FONT; see letter-top-y."
+  (let ((string (text-object-string drawing-object)))
+    (if (= 1 (length string))
+        (letter-top-y display font (char string 0) bottom-y)
+        (- bottom-y
+           (display:display-font-ascent display)
+           (abs (display:display-font-descent display))))))
+
+(defun draw-letter (display character drawing x bottom-y width height
+                    foreground background)
+  "Draw CHARACTER's glyph in the WIDTH × HEIGHT cell at X above BOTTOM-Y,
+the way DRAWING (from letter-drawing, not NIL) says, in FOREGROUND over
+BACKGROUND."
+  (if (eq drawing :box)
+      (draw-box-character display character x (- bottom-y height) width height
+                          foreground background)
+      (text-engine:draw-glyph (display:display-text-engine display)
+                              drawing character x
+                              (letter-top-y display drawing character bottom-y)
+                              foreground)))
 
 (defun draw-text-glyph-surface (drawing-object x bottom-y display view cell-width
                                 &key clip (phase :both))
@@ -289,14 +307,20 @@ The two-phase split lets a multi-character text run paint all backgrounds
 first and then all glyphs, so a 1-pixel right-edge AA overhang from one glyph
 is not erased by the next glyph's background fill.
 
-Plain text glyphs (CLIP T) are drawn with the text engine instead of a
-surface when `text-engine-font' allows it; they land on the same pixels.
+Text glyphs (CLIP T) are drawn with the text engine or as rectangles
+instead of a surface when `letter-drawing' allows it; engine glyphs land on
+the same pixels as the surface would.
 
 When there is no surface (SDL_ttf renders nothing for an empty string) only
 the background phase draws anything."
-  (let* ((box-character (and clip (drawn-box-character drawing-object)))
-         (engine-font (and clip (not box-character) (text-engine-font drawing-object display)))
-         (surface (unless (or box-character engine-font) (get-surface drawing-object display)))
+  (let* ((string (text-object-string drawing-object))
+         (letter-drawing (and clip
+                              (= 1 (length string))
+                              (letter-drawing display
+                                              (char string 0)
+                                              (text-object-attribute drawing-object)
+                                              (text-object-type drawing-object))))
+         (surface (unless letter-drawing (get-surface drawing-object display)))
          (surface-width (if surface (lem-sdl3/ffi:surface-width surface) 0))
          (surface-height (if surface (lem-sdl3/ffi:surface-height surface) 0))
          (cell-height (object-height drawing-object display))
@@ -311,19 +335,12 @@ the background phase draws anything."
              (draw-cursor display x y cell-width cell-height background))
             (t
              (draw-rect display x y cell-width cell-height background))))
-    (when (and box-character (member phase '(:glyph :both)))
-      (draw-box-character display box-character x y cell-width cell-height
-                          (lem-core:attribute-foreground-with-reverse
-                           (glyph-attribute drawing-object display))
-                          background))
-    (when (and engine-font (member phase '(:glyph :both)))
-      (text-engine:draw-glyph (display:display-text-engine display)
-                              engine-font
-                              (text-object-string drawing-object)
-                              x
-                              (glyph-top-y drawing-object display engine-font bottom-y)
-                              (lem-core:attribute-foreground-with-reverse
-                               (glyph-attribute drawing-object display))))
+    (when (and letter-drawing (member phase '(:glyph :both)))
+      (draw-letter display (char string 0) letter-drawing x bottom-y
+                   cell-width cell-height
+                   (lem-core:attribute-foreground-with-reverse
+                    (glyph-attribute drawing-object display))
+                   background))
     (when (and surface (member phase '(:glyph :both)))
       (let ((texture (lem-sdl3/text-surface-cache:get-or-create-texture
                       (display:display-renderer display)
@@ -420,6 +437,30 @@ widths, for the multi-character text run DRAWING-OBJECT."
           :collect (object-width letter display) :into widths
           :finally (return (values letters widths)))))
 
+(defun draw-run-glyphs (drawing-object x bottom-y display view)
+  "Draw the glyphs of the plain text run DRAWING-OBJECT one per cell from X,
+on the row above BOTTOM-Y.  Glyphs that letter-drawing can draw need no
+letter object; the others are drawn from per-letter surfaces.  lem-core
+splits runs by character type, so every letter has the run's type."
+  (let* ((attribute (text-object-attribute drawing-object))
+         (type (text-object-type drawing-object))
+         (char-width (display:display-char-width display))
+         (height (object-height drawing-object display))
+         (foreground (lem-core:attribute-foreground-with-reverse
+                      (glyph-attribute drawing-object display)))
+         (background (lem-core:attribute-background-with-reverse attribute)))
+    (loop :with current-x := x
+          :for character :across (text-object-string drawing-object)
+          :for width := (* (lem-core:char-width character 0) char-width)
+          :for drawing := (letter-drawing display character attribute type)
+          :do (if drawing
+                  (draw-letter display character drawing current-x bottom-y
+                               width height foreground background)
+                  (draw-text-glyph-surface (make-letter-object character attribute)
+                                           current-x bottom-y display view width
+                                           :clip t :phase :glyph))
+              (incf current-x width))))
+
 (defun shaped-run-p (drawing-object display)
   "Return true if DRAWING-OBJECT's glyphs are drawn as one shaped run:
 shaping is on and has fonts, and the object is plain text in the display's
@@ -471,6 +512,8 @@ width so the rasterizer's right-edge anti-aliasing tail is preserved."
            (draw-text-glyph-surface drawing-object x bottom-y display view
                                     (object-width drawing-object display)
                                     :clip t :phase phase))
+          ((and (eq phase :glyph) (plain-text-object-p drawing-object))
+           (draw-run-glyphs drawing-object x bottom-y display view))
           (t
            (multiple-value-bind (letter-objects letter-widths)
                (text-object-letter-objects-and-widths drawing-object display)

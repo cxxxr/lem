@@ -124,3 +124,12 @@
 (deftest diagonals-and-other-characters-use-the-font
   (dolist (character '(#\╱ #\╲ #\╳ #\a #\日))
     (ok (null (box:glyph-rects character 16 34)) (string character))))
+
+(deftest drawn-character-p-matches-glyph-rects
+  (let ((mismatches
+          (loop :for code :from #x2400 :to #x26ff
+                :for character := (code-char code)
+                :unless (eq (box:drawn-character-p character)
+                            (and (box:glyph-rects character 16 34) t))
+                  :collect character)))
+    (ok (null mismatches) (format nil "mismatches: ~S" mismatches))))

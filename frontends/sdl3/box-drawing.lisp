@@ -1,6 +1,7 @@
 (defpackage :lem-sdl3/box-drawing
   (:use :cl)
-  (:export :glyph-rects
+  (:export :drawn-character-p
+           :glyph-rects
            :light-thickness)
   (:documentation "Box-drawing and block-element characters (U+2500..U+259F)
 as rectangles sized to the cell, as terminals draw them, so lines meet
@@ -199,6 +200,17 @@ second value the shade (1/4, 1/2 or 3/4) for the shade characters."
                       (#x259d '(:upper-right))
                       (#x259e '(:upper-right :lower-left))
                       (#x259f '(:upper-right :lower-left :lower-right)))))))))
+
+(defun drawn-character-p (character)
+  "Return true if CHARACTER is drawn as rectangles, that is if glyph-rects
+returns any for it, without working them out."
+  (let ((code (char-code character)))
+    (and (<= #x2500 code #x259f)
+         (or (<= #x2580 code)
+             (char/= #\? (char *line-arms* (* 4 (- code #x2500))))
+             (assoc character *arcs*)
+             (assoc character *dashes*))
+         t)))
 
 (defun glyph-rects (character width height)
   "Return the rectangles (X Y W H), relative to the cell, that draw

@@ -245,14 +245,32 @@
            (multiple-value-bind (ascent own) (font:glyph-source font latin #\α)
              (ok (= ascent latin-ascent))
              (ok own)))
-         (testing "a glyph from the CJK fallback uses the CJK ascent"
+         (testing "a glyph from the narrow CJK fallback uses its ascent"
            (multiple-value-bind (ascent own) (font:glyph-source font latin #\日)
-             (ok (= ascent cjk-ascent))
+             (ok (= ascent (lem-sdl3/ffi:font-ascent
+                            (font:font-cjk-narrow-normal-font font))))
              (ng own)))
          (testing "the CJK font's own glyph uses its ascent"
            (multiple-value-bind (ascent own) (font:glyph-source font cjk #\日)
              (ok (= ascent cjk-ascent))
              (ok own))))))))
+
+(deftest glyph-source-lookups-do-not-allocate
+  ;; glyph-source runs for every glyph drawn on every frame, so once a
+  ;; glyph's source is known, looking it up again must not cons.
+  (with-ttf ()
+    (call-with-font
+     (font:make-font-config :size 28 :system-fallback nil)
+     (lambda (font)
+       (let ((latin (font:font-latin-normal-font font))
+             (characters "aα日─"))
+         (loop :for character :across characters
+               :do (font:glyph-source font latin character))
+         (let ((before (sb-ext:get-bytes-consed)))
+           (loop :repeat 10000
+                 :do (loop :for character :across characters
+                           :do (font:glyph-source font latin character)))
+           (ok (< (- (sb-ext:get-bytes-consed) before) 1024))))))))
 
 (deftest text-fonts-have-shaping-chains
   ;; Each text font is shaped with the same file first, then the fonts
@@ -265,7 +283,8 @@
            (let ((latin (font:font-shaping-chain font (font:font-latin-normal-font font)))
                  (cjk (font:font-shaping-chain font (font:font-cjk-normal-font font))))
              (ok (= 2 (length latin)))
-             (ok (eq (second latin) (first cjk)))
+             (ng (eq (second latin) (first cjk)) "the latin chain has the narrow CJK font")
+             (ok (lem-sdl3/shaper:shaping-font-covers-p (second latin) #\日))
              (ok (= 1 (length cjk)))
              (ok (lem-sdl3/shaper:shaping-font-covers-p (first latin) #\a))
              (ok (lem-sdl3/shaper:shaping-font-covers-p (first cjk) #\日))
@@ -292,12 +311,32 @@
            (testing "SDL_ttf draws ★ from the fallback, not the CJK font"
              (ok (has-glyph-p cjk #\★))
              (ok (= free-mono-ascent (font:glyph-source font latin #\★))))
-           (testing "a glyph only the CJK font has still comes from it"
-             (ok (= (lem-sdl3/ffi:font-ascent cjk) (font:glyph-source font latin #\日))))
+           (testing "a glyph only the CJK font has still comes from it, narrowed"
+             (ok (= (lem-sdl3/ffi:font-ascent (font:font-cjk-narrow-normal-font font))
+                    (font:glyph-source font latin #\日))))
            (when (and (lem-sdl3/ffi-freetype:available-p) (lem-sdl3/ffi-harfbuzz:available-p))
              (testing "the shaping chain has the same order"
                (let ((chain (font:font-shaping-chain font latin))
                      (cjk-chain (font:font-shaping-chain font cjk)))
                  (ok (= 3 (length chain)))
-                 (ok (eq (third chain) (first cjk-chain)))
+                 (ng (eq (third chain) (first cjk-chain)))
+                 (ok (lem-sdl3/shaper:shaping-font-covers-p (third chain) #\日))
                  (ok (lem-sdl3/shaper:shaping-font-covers-p (second chain) #\★)))))))))))
+
+(deftest latin-fonts-fall-back-to-a-narrow-cjk-font
+  ;; NotoSansCJK draws symbols such as ★ full-width.  The latin fonts only
+  ;; draw one-cell characters, so they fall back to the CJK font at a size
+  ;; where a full-width glyph is one cell wide.
+  (with-ttf ()
+    (call-with-font
+     (font:make-font-config :size 28 :system-fallback nil :fallback-files '())
+     (lambda (font)
+       (flet ((advance (ttf-font)
+                (nth-value 4 (lem-sdl3/ffi:glyph-metrics ttf-font #\★))))
+         (let ((cell (font:font-char-width font)))
+           (ok (< cell (advance (font:font-cjk-normal-font font)))
+               "full size, ★ is wider than a cell")
+           (ok (<= (abs (- cell (advance (font:font-cjk-narrow-normal-font font)))) 1)
+               "narrow, ★ is a cell wide")
+           (ok (<= (abs (- cell (advance (font:font-cjk-narrow-bold-font font)))) 1)
+               "and in bold")))))))
