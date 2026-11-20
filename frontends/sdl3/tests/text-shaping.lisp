@@ -18,18 +18,19 @@ lem:config, which reads the settings file on every call."
     reads))
 
 (deftest font-features-read-once
+  ;; A shaper with no atlas: the features don't need one.
   (if (hb:available-p)
-      (unwind-protect
-           (progn
-             (text-shaping:clear-shaping)
-             (ok (= 1 (count-config-reads
-                       (lambda () (dotimes (i 3) (text-shaping::features)))))
-                 "read once across runs")
-             (ok (= 1 (count-config-reads
-                       (lambda ()
-                         (text-shaping:clear-shaping)
-                         (text-shaping::features)
-                         (text-shaping::features))))
-                 "read again after a font change"))
-        (text-shaping:clear-shaping))
+      (let ((shaper (text-shaping::%make-text-shaper nil)))
+        (unwind-protect
+             (progn
+               (ok (= 1 (count-config-reads
+                         (lambda () (dotimes (i 3) (text-shaping::features shaper)))))
+                   "read once across runs")
+               (ok (= 1 (count-config-reads
+                         (lambda ()
+                           (text-shaping:clear-shaping shaper)
+                           (text-shaping::features shaper)
+                           (text-shaping::features shaper))))
+                   "read again after a font change"))
+          (text-shaping:clear-shaping shaper)))
       (skip "HarfBuzz is not installed")))

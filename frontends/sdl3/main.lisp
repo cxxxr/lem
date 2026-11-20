@@ -204,8 +204,8 @@ single :windowevent; SDL3 gives each its own event type."
        (unwind-protect
             (let ((renderer (ffi:create-renderer window)))
               (init-application-icon window)
-              (let ((text-engine (lem-sdl3/text-engine:make-text-engine renderer)))
-                (lem-sdl3/text-shaping:start-shaping renderer)
+              (let ((text-engine (lem-sdl3/text-engine:make-text-engine renderer))
+                    (text-shaper (lem-sdl3/text-shaping:make-text-shaper renderer)))
                 (unwind-protect
                      (multiple-value-bind (renderer-width renderer-height)
                          (ffi:get-render-output-size renderer)
@@ -223,13 +223,15 @@ single :windowevent; SDL3 gives each its own event type."
                                                       :char-width (font-char-width font)
                                                       :char-height (font-char-height font)
                                                       :text-engine text-engine
+                                                      :text-shaper text-shaper
                                                       :scale (list scale-x scale-y))))
                          (setf (display:current-display) display)
                          (display:adapt-high-dpi-font-size display)
                          (ffi:start-text-input window)
                          (funcall function)
                          (event-loop display)))
-                  (lem-sdl3/text-shaping:stop-shaping)
+                  (when text-shaper
+                    (lem-sdl3/text-shaping:destroy-text-shaper text-shaper))
                   (lem-sdl3/text-engine:destroy-text-engine text-engine)
                   (ffi:destroy-renderer renderer))))
          (ffi:destroy-window window))))))

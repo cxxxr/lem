@@ -4,8 +4,9 @@
                     (:shaper :lem-sdl3/shaper)
                     (:hb :lem-sdl3/ffi-harfbuzz))
   (:export :*use-shaping*
-           :start-shaping
-           :stop-shaping
+           :text-shaper
+           :make-text-shaper
+           :destroy-text-shaper
            :shaping-active-p
            :clear-shaping
            :draw-shaped-text))
@@ -26,77 +27,83 @@
 glyph atlas, if FreeType and HarfBuzz are installed.  Set it to NIL to draw
 each character with SDL_ttf instead.")
 
-(defvar *atlas* nil
-  "The glyph atlas of the display's renderer, or NIL when shaping is not
-available.")
+(defstruct (text-shaper (:constructor %make-text-shaper (atlas)))
+  "Shaped text for one renderer: its glyph atlas, the runs shaped so far,
+and the font features they were shaped with."
+  ;; The renderer's glyph atlas, or NIL to shape without drawing.
+  atlas
+  (cache (shaper:make-shaping-cache))
+  ;; The parsed :sdl3-font-features config as a list (ARRAY COUNT), or NIL
+  ;; until it is next read.
+  (font-features nil))
 
-(defvar *shaping-cache* (shaper:make-shaping-cache)
-  "The shaped runs drawn so far.")
-
-(defvar *font-features* nil
-  "The parsed :sdl3-font-features config as a list (ARRAY COUNT), or NIL
-until it is next read.")
-
-(defun start-shaping (renderer)
-  "Create the glyph atlas for RENDERER if FreeType and HarfBuzz are there."
+(defun make-text-shaper (renderer)
+  "Return a text shaper drawing with RENDERER, or NIL if FreeType or
+HarfBuzz is not installed."
   (when (and (lem-sdl3/ffi-freetype:available-p) (hb:available-p))
-    (setf *atlas* (atlas:make-glyph-atlas renderer))))
+    (%make-text-shaper (atlas:make-glyph-atlas renderer))))
 
-(defun free-features ()
-  (when *font-features*
-    (hb:free-features (first *font-features*))
-    (setf *font-features* nil)))
+(defun free-features (shaper)
+  (when (text-shaper-font-features shaper)
+    (hb:free-features (first (text-shaper-font-features shaper)))
+    (setf (text-shaper-font-features shaper) nil)))
 
-(defun clear-shaping ()
-  "Forget all shaped runs and atlas glyphs, and read the font features
-config again on the next draw.  Call this before closing a font they use."
-  (when *atlas*
-    (atlas:flush-glyphs *atlas*)
-    (atlas:clear-glyph-atlas *atlas*))
-  (shaper:clear-shaping-cache *shaping-cache*)
-  (free-features))
+(defun clear-shaping (shaper)
+  "Forget all the runs and atlas glyphs SHAPER holds, and read the font
+features config again on the next draw.  Call this before closing a font
+they use."
+  (let ((atlas (text-shaper-atlas shaper)))
+    (when atlas
+      (atlas:flush-glyphs atlas)
+      (atlas:clear-glyph-atlas atlas)))
+  (shaper:clear-shaping-cache (text-shaper-cache shaper))
+  (free-features shaper))
 
-(defun stop-shaping ()
-  "Free the glyph atlas and everything shaped, before the renderer goes."
-  (clear-shaping)
-  (when *atlas*
-    (atlas:destroy-glyph-atlas *atlas*)
-    (setf *atlas* nil)))
+(defun destroy-text-shaper (shaper)
+  "Free SHAPER's glyph atlas and everything it shaped, before the renderer
+goes."
+  (clear-shaping shaper)
+  (when (text-shaper-atlas shaper)
+    (atlas:destroy-glyph-atlas (text-shaper-atlas shaper))
+    (setf (text-shaper-atlas shaper) nil)))
 
-(defun shaping-active-p ()
-  "Return true if text runs should be shaped: it is enabled and the glyph
-atlas exists."
-  (and *use-shaping* *atlas* t))
+(defun shaping-active-p (shaper)
+  "Return true if text runs should be shaped with SHAPER: it exists and
+shaping is enabled."
+  (and *use-shaping* shaper t))
 
-(defun features ()
+(defun features (shaper)
   "Return the parsed :sdl3-font-features as values ARRAY and COUNT, reading
-the config if it has not been read since shaping started or the font last
-changed.  A feature HarfBuzz cannot parse is reported and the config
-ignored."
-  (unless *font-features*
+the config if SHAPER has not read it since it was made or last cleared.  A
+feature HarfBuzz cannot parse is reported with lem:message, not signalled:
+this runs in the middle of a redraw, which an editor-error would abort, and
+the default features are used instead."
+  (unless (text-shaper-font-features shaper)
     (multiple-value-bind (array count)
         (handler-case (hb:parse-features (lem:config :sdl3-font-features '()))
           (error (condition)
             (lem:message "~A" condition)
             (hb:parse-features '())))
-      (setf *font-features* (list array count))))
-  (values (first *font-features*) (second *font-features*)))
+      (setf (text-shaper-font-features shaper) (list array count))))
+  (values (first (text-shaper-font-features shaper))
+          (second (text-shaper-font-features shaper))))
 
-(defun draw-shaped-text (string chain-function cache-key x baseline cell-width color)
-  "Draw STRING with its first cell at X, on the row whose baseline is at
-y = BASELINE, in COLOR.  CHAIN-FUNCTION gives each character's shaping
+(defun draw-shaped-text (shaper string chain-function cache-key x baseline cell-width color)
+  "Draw STRING with SHAPER, its first cell at X, on the row whose baseline
+is at y = BASELINE, in COLOR.  CHAIN-FUNCTION gives each character's shaping
 fonts in fallback order, and CACHE-KEY identifies its choices (see
 shaper:shape-text)."
-  (multiple-value-bind (features feature-count) (features)
-    (dolist (glyph (shaper:shape-text string chain-function cell-width
-                                      :cache *shaping-cache*
-                                      :cache-key cache-key
-                                      :features features
-                                      :feature-count feature-count))
-      (atlas:queue-glyph *atlas*
-                         (shaper:placed-glyph-font glyph)
-                         (shaper:placed-glyph-id glyph)
-                         (+ x (shaper:placed-glyph-x glyph))
-                         (- baseline (shaper:placed-glyph-y-offset glyph))
-                         color)))
-  (atlas:flush-glyphs *atlas*))
+  (let ((atlas (text-shaper-atlas shaper)))
+    (multiple-value-bind (features feature-count) (features shaper)
+      (dolist (glyph (shaper:shape-text string chain-function cell-width
+                                        :cache (text-shaper-cache shaper)
+                                        :cache-key cache-key
+                                        :features features
+                                        :feature-count feature-count))
+        (atlas:queue-glyph atlas
+                           (shaper:placed-glyph-font glyph)
+                           (shaper:placed-glyph-id glyph)
+                           (+ x (shaper:placed-glyph-x glyph))
+                           (- baseline (shaper:placed-glyph-y-offset glyph))
+                           color)))
+    (atlas:flush-glyphs atlas)))

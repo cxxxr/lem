@@ -28,6 +28,7 @@
            :create-view-texture
            :display-renderer
            :display-text-engine
+           :display-text-shaper
            :set-render-color
            :display-background-color
            :display-foreground-color
@@ -117,6 +118,11 @@ Retina to a 1x display).")
                 :reader display-text-engine
                 :documentation "The renderer's text engine (see
 lem-sdl3/text-engine), or NIL to draw every glyph from a surface.")
+   (text-shaper :initarg :text-shaper
+                :initform nil
+                :reader display-text-shaper
+                :documentation "The renderer's text shaper (see
+lem-sdl3/text-shaping), or NIL when text runs are not shaped.")
    (scale :initform '(1 1)
           :initarg :scale
           :accessor display-scale)
@@ -428,7 +434,8 @@ event handler pattern in `on-windowevent')."
     ;; closed.
     (when (display-text-engine display)
       (text-engine:clear-text-cache (display-text-engine display)))
-    (text-shaping:clear-shaping)
+    (when (display-text-shaper display)
+      (text-shaping:clear-shaping (display-text-shaper display)))
     (font:close-font (display-font display))
     (let ((font (font:open-font font-config)))
       (setf (display-char-width display) (font:font-char-width font)

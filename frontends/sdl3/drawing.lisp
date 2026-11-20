@@ -371,7 +371,7 @@ widths, for the multi-character text run DRAWING-OBJECT."
 shaping is on and has fonts, and the object is plain text in the display's
 own fonts with no box-drawing character (those keep the band stretch)."
   (let ((string (text-object-string drawing-object)))
-    (and (text-shaping:shaping-active-p)
+    (and (text-shaping:shaping-active-p (display:display-text-shaper display))
          (plain-text-object-p drawing-object)
          (plusp (length string))
          (not (member (text-object-type drawing-object) '(:emoji :icon)))
@@ -388,6 +388,7 @@ for it, falling back like SDL_ttf would."
          (bold (and attribute (lem:attribute-bold attribute) t))
          (latin-chain (display:display-shaping-chain display (display:display-latin-font display))))
     (text-shaping:draw-shaped-text
+     (display:display-text-shaper display)
      (text-object-string drawing-object)
      (lambda (character)
        (or (display:display-shaping-chain
