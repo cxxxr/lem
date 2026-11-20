@@ -113,3 +113,10 @@ with INITARGS overriding those."
   (ok (= -30 (view:next-scroll-step -100 3/10)) "upward too")
   (ok (= 1 (view:next-scroll-step 2 3/10)) "at least a pixel a frame")
   (ok (= 0 (view:next-scroll-step 0 3/10)) "nothing once settled"))
+
+(deftest glide-velocity-and-friction
+  (ok (= 1 (view:scroll-velocity '((100 . 10) (90 . 10) (80 . 10) (10 . 999)) 100 50))
+      "pixels over the span of the recent samples; old ones are left out")
+  (ok (= 0 (view:scroll-velocity '((100 . 10)) 100 50)) "one sample has no velocity")
+  (ok (= 19/20 (view:next-momentum-velocity 1 19/20 1/50)) "friction slows it")
+  (ok (= 0 (view:next-momentum-velocity 1/50 19/20 1/50)) "and stops it when slow"))

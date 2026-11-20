@@ -35,6 +35,28 @@ animation instead of at once (see *smooth-scroll*).")
 reports macOS's precise scrolling deltas divided by 10.  The text moves with
 the fingers, as in other macOS applications.")
 
+(defparameter *scroll-stream-gap-ms* 50
+  "A wheel event within this many milliseconds of a trackpad's is taken for
+a trackpad's too, when the platform cannot say (see trackpad-scroll-p).")
+
+(defvar *momentum* t
+  "When true, a trackpad flick glides on after the fingers lift, where the
+platform does not supply the momentum itself.")
+
+(defparameter *momentum-start-ms* 40
+  "Milliseconds without trackpad scrolling after which the fingers are taken
+to have lifted and the glide starts.")
+
+(defparameter *momentum-sample-ms* 100
+  "The span of trackpad scrolling, in milliseconds before the fingers lift,
+whose velocity the glide starts with.")
+
+(defparameter *momentum-friction* 95/100
+  "The share of its velocity a glide keeps each frame.")
+
+(defparameter *momentum-minimum* 1/50
+  "Pixels per millisecond below which a glide stops.")
+
 (defparameter *scroll-animation-frame-ms* 16
   "Milliseconds between frames of a scroll animation.")
 
@@ -95,16 +117,60 @@ of its buffer, true otherwise."
 reports; a trackpad, and macOS's momentum after it, report fractions."
   (= delta (fround delta)))
 
-(defun scroll-animation-step (window display)
-  "Move WINDOW's body one frame of its scroll animation: *scroll-animation-
+(defun now-ms ()
+  "Return the current time in milliseconds."
+  (floor (* 1000 (get-internal-real-time)) internal-time-units-per-second))
+
+(defun stop-scroll-motion (view)
+  "End VIEW's scroll animation and glide."
+  (setf (view:view-scroll-remaining view) 0
+        (view:view-momentum-velocity view) 0
+        (view:view-scroll-samples view) '()))
+
+(defun notch-animation-step (window display)
+  "Move WINDOW's body one frame of its notch animation: *scroll-animation-
 easing* of what remains, at least a pixel.  Return true while some remains."
   (let* ((view (lem:window-view window))
          (step (view:next-scroll-step (view:view-scroll-remaining view)
                                       *scroll-animation-easing*)))
-    (decf (view:view-scroll-remaining view) step)
-    (unless (scroll-window-by-pixels window display step)
-      (setf (view:view-scroll-remaining view) 0))
+    (unless (zerop step)
+      (decf (view:view-scroll-remaining view) step)
+      (unless (scroll-window-by-pixels window display step)
+        (setf (view:view-scroll-remaining view) 0)))
     (/= 0 (view:view-scroll-remaining view))))
+
+(defun momentum-step (window display now)
+  "Move WINDOW's body one frame of its glide.  While trackpad scrolls keep
+arriving there is none; once they have stopped for *momentum-start-ms* the
+glide starts at their velocity and slows by *momentum-friction* a frame.
+Return true while the fingers are moving or the glide goes on."
+  (let* ((view (lem:window-view window))
+         (samples (view:view-scroll-samples view)))
+    (cond ((and samples (< (- now (car (first samples))) *momentum-start-ms*))
+           t)
+          (t
+           (when samples
+             (let ((velocity (view:scroll-velocity samples (car (first samples))
+                                                   *momentum-sample-ms*)))
+               (setf (view:view-scroll-samples view) '()
+                     (view:view-momentum-velocity view)
+                     (if (< (abs velocity) *momentum-minimum*) 0 velocity))))
+           (let ((velocity (view:view-momentum-velocity view)))
+             (unless (zerop velocity)
+               (setf (view:view-momentum-velocity view)
+                     (if (scroll-window-by-pixels
+                          window display (round (* velocity *scroll-animation-frame-ms*)))
+                         (view:next-momentum-velocity velocity *momentum-friction*
+                                                      *momentum-minimum*)
+                         0))))
+           (/= 0 (view:view-momentum-velocity view))))))
+
+(defun scroll-animation-step (window display)
+  "Run one frame of WINDOW's notch animation and glide; return true while
+either goes on."
+  (let ((notch (notch-animation-step window display))
+        (momentum (momentum-step window display (now-ms))))
+    (or notch momentum)))
 
 (defun scroll-animation-frame (display)
   "Run one frame of every scroll animation on DISPLAY, and stop the
@@ -120,10 +186,9 @@ after each frame."
     (lem:stop-timer (display:display-scroll-animation-timer display))
     (setf (display:display-scroll-animation-timer display) nil)))
 
-(defun animate-scroll (window display pixels)
-  "Scroll WINDOW's body by PIXELS over a short eased animation, as an editor
-scrolls a mouse wheel's notch, adding to any animation still running."
-  (incf (view:view-scroll-remaining (lem:window-view window)) pixels)
+(defun start-scroll-animation (window display)
+  "Run WINDOW's scroll animation and glide on DISPLAY's animation timer,
+starting it if needed."
   (pushnew window (display:display-scrolling-windows display))
   (unless (display:display-scroll-animation-timer display)
     (setf (display:display-scroll-animation-timer display)
@@ -131,6 +196,30 @@ scrolls a mouse wheel's notch, adding to any animation still running."
                                            :name "lem-sdl3 scroll animation")
                            *scroll-animation-frame-ms*
                            :repeat t))))
+
+(defun animate-scroll (window display pixels)
+  "Scroll WINDOW's body by PIXELS over a short eased animation, as an editor
+scrolls a mouse wheel's notch, adding to any animation still running.  A
+glide stops."
+  (let ((view (lem:window-view window)))
+    (setf (view:view-momentum-velocity view) 0
+          (view:view-scroll-samples view) '())
+    (incf (view:view-scroll-remaining view) pixels))
+  (start-scroll-animation window display))
+
+(defun record-trackpad-scroll (window display pixels)
+  "Note a trackpad scroll of PIXELS in WINDOW, for the glide after the
+fingers lift (see momentum-step).  A glide in progress stops: the fingers
+are on the trackpad again."
+  (let ((view (lem:window-view window))
+        (now (now-ms)))
+    (setf (view:view-momentum-velocity view) 0
+          (view:view-scroll-samples view)
+          (cons (cons now pixels)
+                (remove-if (lambda (sample)
+                             (< (car sample) (- now (* 2 *momentum-sample-ms*))))
+                           (view:view-scroll-samples view)))))
+  (start-scroll-animation window display))
 
 (defun scrolled-char-y (display char-x char-y pixel-y)
   "Return the cell row under the pointer at PIXEL-Y, for a window with a
@@ -208,27 +297,48 @@ position SDL's coordinates give; other windows keep CHAR-Y."
                                    (scrolled-char-y display char-x char-y pixel-y)
                                    pixel-x pixel-y button))))))
 
-(defun trackpad-scroll-p (precision delta)
+(defun trackpad-scroll-p (precision delta gap previous-trackpad-p)
   "True if a wheel event scrolls precisely, with a trackpad or its momentum,
 rather than by a mouse wheel's notches.  PRECISION is what the platform said
-(:precise or :lines) or NIL if it could not tell; then a whole-number DELTA
-is taken for notches."
+(:precise or :lines), or NIL if it could not tell.  Then a fraction is a
+trackpad's, and so is a whole number arriving within *scroll-stream-gap-ms*
+(GAP, or NIL for none before) of a trackpad's (PREVIOUS-TRACKPAD-P): a fast
+flick reports whole numbers in the middle of its stream, while a wheel's
+notches come apart."
   (case precision
     (:precise t)
     (:lines nil)
-    (otherwise (not (notch-delta-p delta)))))
+    (otherwise (or (not (notch-delta-p delta))
+                   (and previous-trackpad-p
+                        gap
+                        (< gap *scroll-stream-gap-ms*))))))
 
-(defun on-mouse-wheel (display wheel-x wheel-y precise-y precision)
+(defun classify-wheel-event (display precision delta timestamp-ms)
+  "Return true if the wheel event with DELTA at TIMESTAMP-MS is a
+trackpad's (see trackpad-scroll-p), and remember it for the next one."
+  (let* ((last (display:display-last-wheel-time display))
+         (trackpad (trackpad-scroll-p precision delta
+                                      (and last (- timestamp-ms last))
+                                      (display:display-last-wheel-trackpad-p display))))
+    (setf (display:display-last-wheel-time display) timestamp-ms
+          (display:display-last-wheel-trackpad-p display) trackpad)
+    trackpad))
+
+(defun on-mouse-wheel (display wheel-x wheel-y precise-y precision timestamp-ms)
   "Scroll by a wheel event.  WHEEL-X and WHEEL-Y are whole notches;
 PRECISE-Y is the vertical scroll with its fraction, used to scroll a window
-by pixels (see *smooth-scroll*).  PRECISION says whether it came from a
-trackpad (see trackpad-scroll-p)."
+by pixels (see *smooth-scroll*).  PRECISION is what the platform said about
+its source, and TIMESTAMP-MS when it happened (see trackpad-scroll-p).  A
+trackpad scrolls with the fingers, gliding on afterwards where the platform
+gives no momentum; a wheel's notch animates."
   (show-cursor)
   (multiple-value-bind (x y) (mouse-position)
     (let ((char-x (display:scaled-char-width display x))
           (char-y (display:scaled-char-height display y))
           (pixel-x (display:scaled-pixel-x display x))
-          (pixel-y (display:scaled-pixel-y display y)))
+          (pixel-y (display:scaled-pixel-y display y))
+          (trackpad (and (/= 0 precise-y)
+                         (classify-wheel-event display precision precise-y timestamp-ms))))
       (lem:send-event
        (lambda ()
          (let ((window (lem:focus-window-position (lem:current-frame) char-x char-y)))
@@ -236,9 +346,13 @@ trackpad (see trackpad-scroll-p)."
                             (/= 0 precise-y)
                             (smooth-scroll-window-p window)))
                   (lem:receive-mouse-wheel char-x char-y pixel-x pixel-y wheel-x wheel-y))
-                 ((trackpad-scroll-p precision precise-y)
-                  (scroll-window-by-pixels window display
-                                           (trackpad-pixels display precise-y)))
+                 (trackpad
+                  (let ((pixels (trackpad-pixels display precise-y)))
+                    (scroll-window-by-pixels window display pixels)
+                    ;; Where the platform says nothing, it gives no momentum
+                    ;; either (macOS on Apple silicon does both).
+                    (when (and *momentum* (null precision))
+                      (record-trackpad-scroll window display pixels))))
                  (*scroll-animation*
                   (animate-scroll window display (notch-pixels display precise-y)))
                  (t
@@ -343,7 +457,8 @@ single :windowevent; SDL3 gives each its own event type."
                        (event:wheel-x event)
                        (event:wheel-y event)
                        (event:wheel-precise-y event)
-                       (take-scroll-precision display event))
+                       (take-scroll-precision display event)
+                       (floor (event:event-timestamp event) 1000000))
        nil)
       (event:+drop-file+
        (on-filedrop (event:drop-file-name event))
@@ -762,8 +877,8 @@ keeping its cell size."
     (let ((anchor (view-point-anchor (view:view-window view))))
       (unless (equal anchor (view:view-scroll-anchor view))
         (setf (view:view-scroll-offset view) 0
-              (view:view-scroll-remaining view) 0
-              (view:view-scroll-anchor view) anchor)))
+              (view:view-scroll-anchor view) anchor)
+        (stop-scroll-motion view)))
     (display:with-display (display)
       (display:with-renderer (display)
         (multiple-value-bind (width height) (view:view-layout-size view display)

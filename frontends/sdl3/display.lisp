@@ -39,6 +39,8 @@
            :display-live-resize-request
            :display-scroll-animation-timer
            :display-scroll-precision
+           :display-last-wheel-time
+           :display-last-wheel-trackpad-p
            :display-scrolling-windows
            :render-border-by-pixels
            :render-line
@@ -124,6 +126,14 @@ Retina to a 1x display).")
                      :documentation "Whether each wheel event not yet handled
 scrolls precisely or by lines, by the event's timestamp, as the event watch
 learned it from the platform (see lem-darwin/scroll).")
+   (last-wheel-time :initform nil
+                    :accessor display-last-wheel-time
+                    :documentation "When the last wheel event was handled, in
+milliseconds, or NIL.")
+   (last-wheel-trackpad-p :initform nil
+                          :accessor display-last-wheel-trackpad-p
+                          :documentation "True if the last wheel event was
+taken for a trackpad's.")
    (scroll-animation-timer :initform nil
                            :accessor display-scroll-animation-timer
                            :documentation "The timer running scroll animations,
