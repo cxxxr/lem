@@ -8,6 +8,8 @@
            :font-latin-bold-font
            :font-cjk-normal-font
            :font-cjk-bold-font
+           :font-cjk-narrow-normal-font
+           :font-cjk-narrow-bold-font
            :font-emoji-font
            :font-braille-font
            :font-fallback-fonts
@@ -17,6 +19,7 @@
            :font-descent
            :font-box-drawing-band
            :glyph-source
+           :font-shaping-chain
            :save-font-size
            :make-font-config
            :font-config-size
@@ -80,6 +83,11 @@ skipped.")
   cjk-bold-font
   emoji-font
   braille-font
+  ;; The CJK fonts at CJK-NARROW-SIZE, where a full-width glyph is one cell
+  ;; wide: the latin fonts' fallbacks for symbols only the CJK font has.
+  cjk-narrow-normal-font
+  cjk-narrow-bold-font
+  cjk-narrow-size
   ;; Fonts opened only to be fallbacks of the fonts above (see
   ;; add-fallback-fonts); closed after them.
   fallback-fonts
@@ -102,8 +110,15 @@ skipped.")
   ;; the font itself followed by its fallbacks, in the order SDL_ttf tries
   ;; them; see glyph-source.
   (fallback-chains (make-hash-table))
-  ;; (address . char-code) -> (ASCENT . OWN-P); memoizes glyph-source.
-  (glyph-sources (make-hash-table :test 'equal)))
+  ;; Pointer address of each text font -> (char-code -> (ASCENT . OWN-P));
+  ;; memoizes glyph-source.  Two levels so that lookups don't cons a key.
+  (glyph-sources (make-hash-table))
+  ;; The same font files opened for shaping (lem-sdl3/shaper), or NIL when
+  ;; FreeType or HarfBuzz is missing.
+  (shaping-fonts '())
+  ;; Pointer address of each text font -> the shaping fonts to draw its
+  ;; text with, in fallback order; see font-shaping-chain.
+  (shaping-chains (make-hash-table)))
 
 (defun save-font-size (font-config &optional (ratio 1))
   (setf (lem:config :sdl2-font-size)
@@ -175,6 +190,14 @@ skipped.")
                           (lem-sdl3/ffi:surface-height surface))
       (lem-sdl3/ffi:destroy-surface surface))))
 
+(defun cjk-narrow-size (cjk-font size char-width)
+  "Return the point size at which CJK-FONT, open at SIZE, draws a
+full-width glyph CHAR-WIDTH pixels wide, or SIZE if it can't tell."
+  (let ((advance (nth-value 4 (lem-sdl3/ffi:glyph-metrics cjk-font #\一))))
+    (if (and advance (< char-width advance))
+        (* size (/ char-width advance))
+        size)))
+
 (defun box-drawing-band (ttf-font)
   "Return (TOP . BOTTOM), the rows of a rendered glyph surface that U+2502
 (BOX DRAWINGS LIGHT VERTICAL) covers in TTF-FONT, or NIL if the font lacks
@@ -206,9 +229,12 @@ open (e.g. an attribute's own font) return TTF-FONT's ascent and T."
          (chain (gethash address (font-fallback-chains font))))
     (if (null chain)
         (values (lem-sdl3/ffi:font-ascent ttf-font) t)
-        (let* ((key (cons address (char-code character)))
-               (source (or (gethash key (font-glyph-sources font))
-                           (setf (gethash key (font-glyph-sources font))
+        (let* ((sources (or (gethash address (font-glyph-sources font))
+                            (setf (gethash address (font-glyph-sources font))
+                                  (make-hash-table))))
+               (code (char-code character))
+               (source (or (gethash code sources)
+                           (setf (gethash code sources)
                                  (let ((link (or (find-if (lambda (link)
                                                             (lem-sdl3/ffi:font-has-glyph-p
                                                              (car link) character))
@@ -216,6 +242,49 @@ open (e.g. an attribute's own font) return TTF-FONT's ascent and T."
                                                  (first chain))))
                                    (cons (cdr link) (eq link (first chain))))))))
           (values (car source) (cdr source))))))
+
+(defun font-shaping-chain (font ttf-font)
+  "Return the shaping fonts for text drawn with TTF-FONT, one of FONT's text
+fonts: the same file first, then the fonts SDL_ttf falls back to for it,
+in the same order (colour emoji excepted).  Return NIL for other fonts, or
+when shaping is not available."
+  (gethash (cffi:pointer-address ttf-font) (font-shaping-chains font)))
+
+(defun open-shaping-fonts (font font-config fallback-files)
+  "Open FONT's text font files and FALLBACK-FILES for shaping and record
+each text font's chain.  If FreeType or HarfBuzz is missing, or any file
+fails to open, FONT gets no chains and text is drawn as before."
+  (when (and (lem-sdl3/ffi-freetype:available-p) (lem-sdl3/ffi-harfbuzz:available-p))
+    (let ((opened '()))
+      (flet ((open-file (file &optional (size (font-config-size font-config)))
+               (let ((shaping-font (lem-sdl3/shaper:open-shaping-font file size)))
+                 (push shaping-font opened)
+                 shaping-font)))
+        (handler-case
+            (let* ((latin-normal (open-file (font-config-latin-normal-file font-config)))
+                   (latin-bold (open-file (font-config-latin-bold-file font-config)))
+                   (cjk-normal (open-file (font-config-cjk-normal-file font-config)))
+                   (cjk-bold (open-file (font-config-cjk-bold-file font-config)))
+                   (cjk-narrow-normal (open-file (font-config-cjk-normal-file font-config)
+                                                 (font-cjk-narrow-size font)))
+                   (cjk-narrow-bold (open-file (font-config-cjk-bold-file font-config)
+                                               (font-cjk-narrow-size font)))
+                   (braille (open-file (font-config-braille-file font-config)))
+                   (fallbacks (mapcar #'open-file fallback-files)))
+              (loop :for (ttf-font . chain)
+                      :in (list (list* (font-latin-normal-font font)
+                                       latin-normal (append fallbacks (list cjk-narrow-normal)))
+                                (list* (font-latin-bold-font font)
+                                       latin-bold (append fallbacks (list cjk-narrow-bold)))
+                                (list* (font-cjk-normal-font font) cjk-normal fallbacks)
+                                (list* (font-cjk-bold-font font) cjk-bold fallbacks)
+                                (list* (font-braille-font font) braille fallbacks))
+                    :do (setf (gethash (cffi:pointer-address ttf-font) (font-shaping-chains font))
+                              chain))
+              (setf (font-shaping-fonts font) opened))
+          (error ()
+            (mapc #'lem-sdl3/shaper:close-shaping-font opened)
+            (clrhash (font-shaping-chains font))))))))
 
 (defun register-fallback-chain (font ttf-font chain)
   "Record CHAIN, TTF-FONT's (COVERAGE-FONT . ASCENT) list, in FONT."
@@ -260,15 +329,20 @@ first.  The result is cached for the session."
            :from-end t)))
   *system-fallback-font-files*)
 
+(defun fallback-font-files (font-config)
+  "Return the existing fallback font files FONT-CONFIG names: configured
+ones, then the system's."
+  (remove-if-not #'probe-file
+                 (append (font-config-fallback-files font-config)
+                         (and (font-config-system-fallback font-config)
+                              (system-fallback-font-files)))))
+
 (defun open-fallback-fonts (font-config)
   "Open the fallback font files FONT-CONFIG names (configured ones, then the
-system's) at its size, skipping files that do not exist or fail to open."
-  (loop :for file :in (append (font-config-fallback-files font-config)
-                              (and (font-config-system-fallback font-config)
-                                   (system-fallback-font-files)))
-        :for font := (and (probe-file file)
-                          (handler-case (lem-sdl3/ffi:open-font file (font-config-size font-config))
-                            (error () nil)))
+system's) at its size, skipping files that fail to open."
+  (loop :for file :in (fallback-font-files font-config)
+        :for font := (handler-case (lem-sdl3/ffi:open-font file (font-config-size font-config))
+                       (error () nil))
         :when font
           :collect font))
 
@@ -291,17 +365,18 @@ system's) at its size, skipping files that do not exist or fail to open."
                                          (font-config-size font-config)))
          (braille-font (lem-sdl3/ffi:open-font (font-config-braille-file font-config)
                                            (font-config-size font-config)))
+         (char-width (first (get-character-size latin-normal-font)))
+         (cjk-narrow-size (cjk-narrow-size cjk-normal-font (font-config-size font-config)
+                                           char-width))
+         (cjk-narrow-normal-font (lem-sdl3/ffi:open-font (font-config-cjk-normal-file font-config)
+                                                         cjk-narrow-size))
+         (cjk-narrow-bold-font (lem-sdl3/ffi:open-font (font-config-cjk-bold-file font-config)
+                                                       cjk-narrow-size))
          (fallback-fonts (open-fallback-fonts font-config))
          ;; Measured before fallbacks are added: TTF_FontHasGlyph counts
          ;; fallbacks, and the band must come from the latin font itself.
          (latin-normal-box-band (box-drawing-band latin-normal-font))
          (latin-bold-box-band (box-drawing-band latin-bold-font)))
-    ;; Lem picks one font per character type, so a glyph missing from it
-    ;; used to draw as an empty box.  SDL_ttf only consults a font's own
-    ;; fallbacks, not theirs, so each text font gets a flat list: the CJK
-    ;; font (for the latin fonts), the configured and system fonts, then
-    ;; emoji.  The CJK, emoji and braille fonts are only borrowed here; they
-    ;; are closed as primaries.
     (let* ((text-fonts (list latin-normal-font latin-bold-font
                              cjk-normal-font cjk-bold-font))
            ;; Made before the fallbacks are added, so they have none.
@@ -312,16 +387,21 @@ system's) at its size, skipping files that do not exist or fail to open."
                      (lem-sdl3/ffi:font-ascent ttf-font))))
         (let ((fallbacks
                 (list (cons latin-normal-font
-                            (append (list cjk-normal-font) fallback-fonts (list emoji-font)))
+                            (append fallback-fonts (list cjk-narrow-normal-font emoji-font)))
                       (cons latin-bold-font
-                            (append (list cjk-bold-font) fallback-fonts (list emoji-font)))
+                            (append fallback-fonts (list cjk-narrow-bold-font emoji-font)))
                       (cons cjk-normal-font (append fallback-fonts (list emoji-font)))
                       (cons cjk-bold-font (append fallback-fonts (list emoji-font))))))
           ;; Lem picks one font per character type, so a glyph missing from it
           ;; used to draw as an empty box.  SDL_ttf only consults a font's own
-          ;; fallbacks, not theirs, so each text font gets a flat list: the CJK
-          ;; font (for the latin fonts), the configured and system fonts, then
-          ;; emoji.  The CJK, emoji and braille fonts are only borrowed here;
+          ;; fallbacks, not theirs, so each text font gets a flat list: the
+          ;; configured and system fonts, the CJK font (for the latin fonts),
+          ;; then emoji.  The latin fonts only draw one-cell characters (wide
+          ;; ones use the CJK font), so they try the configured and system
+          ;; fonts, monospace first, before the CJK font, whose symbols such
+          ;; as ★ and ⌘ are drawn full-width.  For the symbols only the CJK
+          ;; font has, they use it at the narrow size, where those fit one
+          ;; cell.  The CJK, emoji and braille fonts are only borrowed here;
           ;; they are closed as primaries.
           (loop :for (ttf-font . list) :in fallbacks
                 :do (add-fallback-fonts ttf-font list))
@@ -333,6 +413,9 @@ system's) at its size, skipping files that do not exist or fail to open."
                                    :cjk-bold-font cjk-bold-font
                                    :emoji-font emoji-font
                                    :braille-font braille-font
+                                   :cjk-narrow-normal-font cjk-narrow-normal-font
+                                   :cjk-narrow-bold-font cjk-narrow-bold-font
+                                   :cjk-narrow-size cjk-narrow-size
                                    :fallback-fonts fallback-fonts
                                    :char-width char-width
                                    :char-height char-height
@@ -344,15 +427,19 @@ system's) at its size, skipping files that do not exist or fail to open."
               (loop :for (ttf-font . list) :in fallbacks
                     :do (register-fallback-chain font ttf-font
                                                  (mapcar #'link (cons ttf-font list))))
+              (open-shaping-fonts font font-config (fallback-font-files font-config))
               font)))))))
 
 (defun close-font (font)
+  (mapc #'lem-sdl3/shaper:close-shaping-font (font-shaping-fonts font))
   (lem-sdl3/ffi:close-font (font-latin-normal-font font))
   (lem-sdl3/ffi:close-font (font-latin-bold-font font))
   (lem-sdl3/ffi:close-font (font-cjk-normal-font font))
   (lem-sdl3/ffi:close-font (font-cjk-bold-font font))
   (lem-sdl3/ffi:close-font (font-emoji-font font))
   (lem-sdl3/ffi:close-font (font-braille-font font))
+  (lem-sdl3/ffi:close-font (font-cjk-narrow-normal-font font))
+  (lem-sdl3/ffi:close-font (font-cjk-narrow-bold-font font))
   (mapc #'lem-sdl3/ffi:close-font (font-coverage-fonts font))
   ;; Last: the fonts above use these as fallbacks.
   (mapc #'lem-sdl3/ffi:close-font (font-fallback-fonts font))
