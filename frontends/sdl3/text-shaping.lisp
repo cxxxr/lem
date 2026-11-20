@@ -74,15 +74,16 @@ shaping is enabled."
 
 (defun features (shaper)
   "Return the parsed :sdl3-font-features as values ARRAY and COUNT, reading
-the config if SHAPER has not read it since it was made or last cleared.  A
-feature HarfBuzz cannot parse is reported with lem:message, not signalled:
-this runs in the middle of a redraw, which an editor-error would abort, and
-the default features are used instead."
+the config if SHAPER has not read it since it was made or last cleared.  If
+HarfBuzz cannot parse a feature, the default features are used and the
+editor-error is sent to the event loop, since signalling it here would abort
+the redraw this runs in."
   (unless (text-shaper-font-features shaper)
     (multiple-value-bind (array count)
         (handler-case (hb:parse-features (lem:config :sdl3-font-features '()))
           (error (condition)
-            (lem:message "~A" condition)
+            (let ((message (princ-to-string condition)))
+              (lem:send-event (lambda () (lem:editor-error "~A" message))))
             (hb:parse-features '())))
       (setf (text-shaper-font-features shaper) (list array count))))
   (values (first (text-shaper-font-features shaper))
