@@ -27,6 +27,7 @@
   (:documentation "A display drawing onto a surface instead of a window."))
 
 (defmethod display:display-window-width ((display headless-display))
+  "The width of DISPLAY's surface, which stands in for the window."
   (headless-display-width display))
 
 (cffi:defcfun ("SDL_ReadSurfacePixel" %read-surface-pixel) :bool
@@ -66,16 +67,14 @@ cells big, and that surface, with text shaping on if SHAPING is true."
          (height (* *rows* (font:font-char-height font)))
          (surface (sdl3:create-surface width height :rgba8888))
          (renderer (sdl3:create-software-renderer surface))
-         (text-engine::*engine* nil)
-         (text-shaping::*atlas* nil)
+         (text-engine (text-engine:make-text-engine renderer))
+         (text-shaper (and shaping (text-shaping:make-text-shaper renderer)))
          (text-shaping:*use-shaping* shaping))
     (unwind-protect
          (progn
-           (text-engine:start-text-engine renderer)
-           (when shaping
-             (text-shaping:start-shaping renderer)
+           (when text-shaper
              ;; Default OpenType features, whatever the user's config says.
-             (setf text-shaping::*font-features*
+             (setf (text-shaping::text-shaper-font-features text-shaper)
                    (multiple-value-list (lem-sdl3/ffi-harfbuzz:parse-features '()))))
            (ffi:set-render-draw-color renderer 0 0 0)
            (ffi:render-clear renderer)
@@ -88,10 +87,13 @@ cells big, and that surface, with text shaping on if SHAPING is true."
                                    :texture nil
                                    :char-width (font:font-char-width font)
                                    :char-height (font:font-char-height font)
+                                   :text-engine text-engine
+                                   :text-shaper text-shaper
                                    :width width)
                     surface))
-      (text-shaping:stop-shaping)
-      (text-engine:stop-text-engine)
+      (when text-shaper
+        (text-shaping:destroy-text-shaper text-shaper))
+      (text-engine:destroy-text-engine text-engine)
       (sdl3:destroy-renderer renderer)
       (sdl3:destroy-surface surface)
       (font:close-font font)
@@ -103,6 +105,9 @@ cells big, and that surface, with text shaping on if SHAPING is true."
 (defun text-objects (string)
   "STRING as text objects split by character type, as lem-core splits a
 line, in white on black."
+  ;; lem-core::char-type is internal: lem-core exports no way to split a
+  ;; line into runs, and the runs must match the ones lem-core draws for
+  ;; the shaped and per-letter paths to be tested as they are used.
   (let ((attribute (lem:make-attribute :foreground "#ffffff" :background "#000000")))
     (loop :with start := 0
           :while (< start (length string))
