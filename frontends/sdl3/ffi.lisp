@@ -38,6 +38,9 @@
    ;; textures
    :create-target-texture
    :create-texture-from-surface
+   :create-glyph-texture
+   :update-texture
+   :render-geometry
    :destroy-texture
    :get-render-target
    :set-render-target
@@ -374,6 +377,40 @@ sampling.  The texture keeps SDL's default blend mode, so alpha is honoured."
       (sdl-error "SDL_CreateTextureFromSurface failed"))
     (sdl3:set-texture-scale-mode texture :nearest)
     texture))
+
+(cffi:defcfun ("SDL_UpdateTexture" %update-texture) :bool
+  (texture :pointer) (rect :pointer) (pixels :pointer) (pitch :int))
+
+(cffi:defcfun ("SDL_RenderGeometry" %render-geometry) :bool
+  (renderer :pointer) (texture :pointer)
+  (vertices :pointer) (num-vertices :int)
+  (indices :pointer) (num-indices :int))
+
+(defun create-glyph-texture (renderer width height)
+  "Create a streaming ARGB8888 texture of WIDTH x HEIGHT pixels for glyph
+coverage: alpha-blended and sampled nearest-neighbour, since glyphs are
+drawn at whole pixels and their natural size."
+  (let ((texture (sdl3:create-texture renderer :argb8888 :streaming width height)))
+    (when (cffi:null-pointer-p texture)
+      (sdl-error "SDL_CreateTexture failed"))
+    (sdl3:set-texture-scale-mode texture :nearest)
+    (sdl3:set-texture-blend-mode texture '(:sdl-blendmode-blend))
+    texture))
+
+(defun update-texture (texture x y width height pixels pitch)
+  "Copy PIXELS, WIDTH x HEIGHT pixels PITCH bytes apart, into TEXTURE at
+\(X, Y)."
+  (cffi:with-foreign-object (rect :int 4)
+    (setf (cffi:mem-aref rect :int 0) x
+          (cffi:mem-aref rect :int 1) y
+          (cffi:mem-aref rect :int 2) width
+          (cffi:mem-aref rect :int 3) height)
+    (%update-texture texture rect pixels pitch)))
+
+(defun render-geometry (renderer texture vertices vertex-count indices index-count)
+  "Draw triangles textured with TEXTURE: VERTICES is an array of
+VERTEX-COUNT SDL_Vertex, INDICES of INDEX-COUNT ints, three per triangle."
+  (%render-geometry renderer texture vertices vertex-count indices index-count))
 
 (defun destroy-texture (texture)
   "Destroy TEXTURE."
