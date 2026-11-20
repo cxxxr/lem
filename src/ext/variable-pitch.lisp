@@ -1,7 +1,7 @@
-(defpackage :lem/variable-pitch
+(defpackage :lem-ext/variable-pitch
   (:use :cl :lem)
   (:export :variable-pitch-mode))
-(in-package :lem/variable-pitch)
+(in-package :lem-ext/variable-pitch)
 
 (define-minor-mode variable-pitch-mode
     (:name "Variable-Pitch"

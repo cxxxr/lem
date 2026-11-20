@@ -30,21 +30,27 @@ other character 10."))
     (otherwise 10)))
 
 (defmethod lem-if:get-char-width ((implementation proportional-fake-interface))
+  "Cells are 10 pixels wide."
   10)
 
 (defmethod lem-if:get-char-height ((implementation proportional-fake-interface))
+  "Cells are 10 pixels high."
   10)
 
 (defmethod lem-if:char-pixel-width ((implementation proportional-fake-interface) character)
+  "Proportional text advances by ADVANCE."
   (advance character))
 
 (defmethod lem-if:view-width ((implementation proportional-fake-interface) view)
+  "The view's width in pixels."
   (* 10 (call-next-method)))
 
 (defmethod lem-if:view-height ((implementation proportional-fake-interface) view)
+  "The view's height in pixels."
   (* 10 (call-next-method)))
 
 (defmethod lem-if:object-width ((implementation proportional-fake-interface) object)
+  "Proportional text is as wide as its advances; everything else takes cells."
   (typecase object
     (lem-core/display:variable-text-object
      (reduce #'+ (lem-core/display:text-object-string object) :key #'advance))
@@ -53,9 +59,11 @@ other character 10."))
     (otherwise 10)))
 
 (defmethod lem-if:object-height ((implementation proportional-fake-interface) object)
+  "Every object is one cell high."
   10)
 
 (defmethod lem-if:render-line ((implementation proportional-fake-interface) view x y objects height)
+  "Record the row's text at Y."
   (push (cons y (format nil "~{~A~}"
                         (loop :for object :in objects
                               :when (typep object 'lem-core/display:text-object)
