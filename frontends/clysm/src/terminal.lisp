@@ -228,6 +228,25 @@ the variables of Electron and Clysm."
         (+ 128 signal)
         (js:get event "exitCode"))))
 
+(defun spawn-pty (xterm directory program args rows cols)
+  "Start PROGRAM with ARGS, or the user's shell, in DIRECTORY in a new
+pseudo-terminal of ROWS and COLS.  When it cannot be started, XTERM (the
+screen made for it) is disposed of before the error goes on."
+  (let ((pty nil))
+    (unwind-protect
+         (let ((env (child-environment)))
+           (setf pty (js:call (node-module "node-pty") "spawn"
+                              (or program (js:get env "SHELL") "/bin/sh")
+                              (coerce args 'vector)
+                              ;; the output as Buffers, given to xterm.js as they are
+                              ;; (not made Lisp strings), which decodes UTF-8 itself
+                              (js:object "name" "xterm-256color" "rows" rows "cols" cols
+                                         "env" env "cwd" (existing-directory directory)
+                                         "encoding" :null))))
+      (unless pty
+        (ignore-errors (js:call xterm "dispose"))))
+    pty))
+
 (defun start-process (terminal directory program args)
   "Start PROGRAM with ARGS, or the user's shell, in DIRECTORY, in a
 pseudo-terminal whose output goes to a new xterm.js screen; the editor is
@@ -238,15 +257,7 @@ told of the changes of the screen, the exit, the title and the bell."
                         (js:object "rows" rows "cols" cols
                                    "scrollback" *scrollback-limit*
                                    "allowProposedApi" t)))
-         (env (child-environment))
-         (pty (js:call (node-module "node-pty") "spawn"
-                       (or program (js:get env "SHELL") "/bin/sh")
-                       (coerce args 'vector)
-                       ;; the output as Buffers, given to xterm.js as they are
-                       ;; (not made Lisp strings), which decodes UTF-8 itself
-                       (js:object "name" "xterm-256color" "rows" rows "cols" cols
-                                  "env" env "cwd" (existing-directory directory)
-                                  "encoding" :null)))
+         (pty (spawn-pty xterm directory program args rows cols))
          (parsed (lambda ()
                    ;; the editor is told once that the screen changed, until it reads it
                    (unless (or (terminal-render-notified terminal)
@@ -315,16 +326,25 @@ told of the changes of the screen, the exit, the title and the bell."
                     (argv nil))
   "Start PROGRAM with ARGV (its first element is the program's name), or the
 user's shell in DIRECTORY, in a pseudo-terminal of ROWS and COLS whose screen
-is rendered into BUFFER."
-  (let ((terminal (make-instance 'terminal :buffer buffer :rows rows :cols cols)))
-    (handler-case
-        (start-process terminal
-                       (and (plusp (length directory))
-                            (uiop:native-namestring (uiop:ensure-directory-pathname directory)))
-                       program
-                       (rest argv))
-      (js:js-error (e)
-        (editor-error "Cannot start the terminal: ~A" (js:js-error-message e))))
+is rendered into BUFFER.  When it cannot be started, BUFFER is deleted
+unless a terminal ran in it before (M-x terminal-restart keeps its buffer)."
+  (let ((terminal (make-instance 'terminal :buffer buffer :rows rows :cols cols))
+        (started nil))
+    (unwind-protect
+         (progn
+           (handler-case
+               (start-process terminal
+                              ;; the native name as it is (made a pathname, a
+                              ;; name with * ? [ would be a wild one)
+                              (and (plusp (length directory)) directory)
+                              program
+                              (rest argv))
+             (js:js-error (e)
+               (editor-error "Cannot start the terminal: ~A" (js:js-error-message e))))
+           (setf started t))
+      (unless (or started (buffer-value buffer 'terminal-started))
+        (delete-buffer buffer)))
+    (setf (buffer-value buffer 'terminal-started) t)
     (push terminal *terminals*)
     terminal))
 
@@ -381,11 +401,12 @@ TERMINAL-RENDER-THROTTLE-MS ago, otherwise when that time has passed."
 
 (defun finish-process (terminal status)
   "The child process has exited: render the final screen, freeze the
-terminal and append an exit notice."
+terminal and append an exit notice.  The screen is rendered in copy mode
+too (as Lem's terminal does): RENDER removes the lines above the screen
+first, which COPY-MODE-OFF could not do right once the notice is appended."
   (when (and (live-p terminal)
              (not (deleted-buffer-p (terminal-buffer terminal))))
-    (unless (terminal-copy-mode terminal)
-      (render terminal))
+    (render terminal)
     (setf (terminal-exit-status terminal) status)
     (append-exit-notice terminal status)
     (redraw-display)))
@@ -401,11 +422,12 @@ terminal and append an exit notice."
     (alexandria:deletef *terminals* terminal)
     (kill-process terminal)))
 
-(defgeneric copy-mode-on (terminal))
-(defgeneric copy-mode-off (terminal))
+(defgeneric copy-mode-on (terminal)
+  (:documentation "Freeze rendering and show the scrollback above the screen."))
+(defgeneric copy-mode-off (terminal)
+  (:documentation "Remove the scrollback and render the screen again."))
 
 (defmethod copy-mode-on ((terminal terminal))
-  "Freeze rendering and show the scrollback above the screen."
   (setf (terminal-copy-mode terminal) t)
   (activate-scrollback terminal))
 
@@ -599,7 +621,9 @@ cursor is past the end of its text."
              (buffer-end point)
              (delete-between-points start point))))))
 
-(defgeneric render (terminal))
+(defgeneric render (terminal)
+  (:documentation "Put the rows of TERMINAL's screen that changed in its buffer, and
+the point at the cursor."))
 
 (defmethod render ((terminal terminal))
   (let* ((buffer (terminal-buffer terminal))
@@ -630,7 +654,8 @@ cursor is past the end of its text."
                       (set-row buffer-line "" nil)))
       (move-to-cursor point (js:get screen "cursorY") (js:get screen "cursorX")))))
 
-(defgeneric adjust-point (terminal))
+(defgeneric adjust-point (terminal)
+  (:documentation "Move the point of TERMINAL's buffer to the cursor."))
 
 (defmethod adjust-point ((terminal terminal))
   (unless (terminal-dead terminal)
@@ -712,10 +737,14 @@ the windows on what they showed."
 
 ;;; ---- input
 
-(defgeneric input-character (terminal character &key mod))
-(defgeneric input-key (terminal key &key mod))
-(defgeneric paste-string (terminal string))
-(defgeneric resize (terminal &key rows cols))
+(defgeneric input-character (terminal character &key mod)
+  (:documentation "Send CHARACTER with MOD (VTERM_MOD_...) to TERMINAL's process."))
+(defgeneric input-key (terminal key &key mod)
+  (:documentation "Send KEY (VTERM_KEY_...) with MOD (VTERM_MOD_...) to TERMINAL's process."))
+(defgeneric paste-string (terminal string)
+  (:documentation "Send STRING to TERMINAL's process as pasted text."))
+(defgeneric resize (terminal &key rows cols)
+  (:documentation "Make TERMINAL's screen and pseudo-terminal ROWS by COLS."))
 
 (defun escape-sequence (&rest parts)
   "ESC followed by PARTS (strings, characters and numbers) as by PRINC."
@@ -795,8 +824,8 @@ the windows on what they showed."
               (setf previous char))))
 
 (defmethod paste-string ((terminal terminal) string)
-  "Send STRING as pasted text (between ESC[200~ and ESC[201~ when the program
-has turned on bracketed paste)."
+  "Bracketed by ESC[200~ and ESC[201~ when the program has turned on
+bracketed paste."
   (when (live-p terminal)
     (let ((text (paste-text string)))
       (write-to-process terminal
@@ -834,8 +863,19 @@ has turned on bracketed paste)."
                (variable-value 'terminal-title-as-buffer-name :global)
                (not (deleted-buffer-p buffer)))
       (let ((name (title-buffer-name title)))
-        (unless (string= name (buffer-name buffer))
+        (unless (unique-name-of-p (buffer-name buffer) name)
           (buffer-rename buffer (unique-buffer-name name)))))))
+
+(defun unique-name-of-p (buffer-name name)
+  "Whether BUFFER-NAME is NAME or one that UNIQUE-BUFFER-NAME makes of it,
+NAME<n> (then the buffer keeps it, instead of going from <1> to <2> and back)."
+  (or (string= buffer-name name)
+      (let ((end (length name)))
+        (and (> (length buffer-name) (+ end 2))
+             (string= name buffer-name :end2 end)
+             (char= (char buffer-name end) #\<)
+             (char= (char buffer-name (1- (length buffer-name))) #\>)
+             (every #'digit-char-p (subseq buffer-name (1+ end) (1- (length buffer-name))))))))
 
 (defun notify-bell (terminal)
   "Tell the user of a bell when the terminal is not on the screen (a bell in
