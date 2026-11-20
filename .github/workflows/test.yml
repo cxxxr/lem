@@ -4,7 +4,9 @@ on:
   push:
     branches: ["*"]
   pull_request:
-    branches: ["*"]
+    # "**" so pull requests into branches with a slash (stacked PRs such as
+    # sdl3/foo) are tested too; "*" does not match "/".
+    branches: ["**"]
   workflow_dispatch:
 
 env:
@@ -34,6 +36,50 @@ jobs:
 
       - name: Run tests
         run: docker run --rm lem-tests
+
+  # The SDL3 frontend tests draw with SDL's software renderer and open no
+  # window.  The test image (Debian 12) and Ubuntu 24.04 have no SDL3, so
+  # they run on Debian 13.  sdl3-macos.yml runs them on macOS weekly.
+  sdl3-test-linux:
+    name: SDL3 frontend tests (Linux)
+    runs-on: ubuntu-latest
+    container: debian:trixie
+
+    steps:
+      - name: Install SBCL, qlot, SDL3 and the text shaping libraries
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            sbcl git curl ca-certificates build-essential libffi-dev libssl-dev \
+            libenchant-2-dev \
+            libsdl3-dev libsdl3-ttf-dev libsdl3-image-dev libfreetype-dev libharfbuzz-dev
+          curl -L https://qlot.tech/installer | sh
+          echo "$HOME/.qlot/bin" >> $GITHUB_PATH
+
+      # Every native library lem-sdl3/tests loads (cffi:list-foreign-libraries
+      # after a test run), so a missing one is reported by name.  Unversioned
+      # names are what CFFI asks for (e.g. cl-enchant's "libenchant-2").
+      - name: Check native libraries
+        run: |
+          missing=0
+          for lib in libSDL3.so.0 libSDL3_ttf.so.0 libSDL3_image.so.0 \
+                     libfreetype.so.6 libharfbuzz.so.0 libenchant-2.so \
+                     libssl.so.3 libcrypto.so.3 libffi.so; do
+            ldconfig -p | grep -q "^[[:space:]]*$lib " || { echo "missing: $lib"; missing=1; }
+          done
+          exit $missing
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: qlot install
+
+      - name: Run SDL3 frontend tests
+        run: |
+          CL_SOURCE_REGISTRY="(:source-registry (:tree \"$PWD/\") :ignore-inherited-configuration)" \
+            sbcl --noinform --non-interactive --load .qlot/setup.lisp \
+                 --eval '(ql:quickload :rove :silent t)' \
+                 --eval '(unless (rove:run :lem-sdl3/tests) (uiop:quit 1))'
 
   push_image:
     name: Push Image to GHCR
