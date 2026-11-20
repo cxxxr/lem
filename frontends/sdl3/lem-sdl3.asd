@@ -82,5 +82,6 @@
                              (:file "shaper")
                              (:file "glyph-atlas")
                              (:file "text-shaping")
+                             (:file "view")
                              (:file "rendering"))))
   :perform (test-op (op c) (symbol-call :rove '#:run c)))

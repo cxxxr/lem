@@ -33,7 +33,7 @@
            :display-background-color
            :display-foreground-color
            :display-texture
-           :render-border
+           :render-border-by-pixels
            :render-line
            :clear
            :get-display-font
@@ -387,11 +387,14 @@ event handler pattern in `on-windowevent')."
     (set-render-color display color)
     (lem-sdl3/ffi:render-fill-rect (display-renderer display) rect)))
 
-(defmethod render-border ((display display) x y w h &key border-type)
-  (let* ((x1 (- (* x (display-char-width display)) (floor (display-char-width display) 2)))
-         (y1 (- (* y (display-char-height display)) (floor (display-char-height display) 2)))
-         (x2 (1- (+ x1 (* (+ w 1) (display-char-width display)))))
-         (y2 (+ y1 (* (+ h 1) (display-char-height display)))))
+(defmethod render-border-by-pixels ((display display) x y width height &key border-type)
+  "Draw a border half a cell outside the rectangle at X, Y of WIDTH by HEIGHT
+pixels, clearing the area inside it to the background colour first.
+BORDER-TYPE is :drop-curtain, :left-border or NIL for all four sides."
+  (let* ((x1 (- x (floor (display-char-width display) 2)))
+         (y1 (- y (floor (display-char-height display) 2)))
+         (x2 (1- (+ x1 width (display-char-width display))))
+         (y2 (+ y1 height (display-char-height display))))
     (with-scratch-rect (rect display x1 y1 (- x2 x1) (- y2 y1))
       (set-render-color display (display-background-color display))
       (lem-sdl3/ffi:render-fill-rect (display-renderer display) rect))
@@ -449,9 +452,8 @@ event handler pattern in `on-windowevent')."
     (lem:send-event :resize)))
 
 (defmethod create-view-texture ((display display) width height)
-  (utils:create-texture (display-renderer display)
-                        (* width (display-char-width display))
-                        (* height (display-char-height display))))
+  "Return a new render-target texture of WIDTH by HEIGHT pixels."
+  (utils:create-texture (display-renderer display) width height))
 
 (defmethod lem-if:set-font-name ((implementation lem-sdl3/sdl3:sdl3) font-name)
   (lem-sdl3/display:change-font

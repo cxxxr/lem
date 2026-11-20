@@ -2,6 +2,7 @@
   (:use :cl)
   (:local-nicknames (:display :lem-sdl3/display))
   (:export
+   :view
    :set-cursor-position
    :last-cursor-x
    :last-cursor-y
@@ -19,6 +20,11 @@
    :view-y
    :view-width
    :view-height
+   :view-pixel-x
+   :view-pixel-y
+   :view-pixel-width
+   :view-pixel-height
+   :view-pixel-rect
    :view-use-modeline
    :view-texture))
 (in-package :lem-sdl3/view)
@@ -39,6 +45,29 @@
    (height
     :initarg :height
     :accessor view-height)
+   (pixel-x
+    :initarg :pixel-x
+    :initform nil
+    :accessor view-pixel-x
+    :documentation "The view's left edge in pixels, or NIL to place it at its
+cell column.")
+   (pixel-y
+    :initarg :pixel-y
+    :initform nil
+    :accessor view-pixel-y
+    :documentation "The view's top edge in pixels, or NIL to place it at its
+cell row.")
+   (pixel-width
+    :initarg :pixel-width
+    :initform nil
+    :accessor view-pixel-width
+    :documentation "The view's width in pixels, or NIL for its cell width.")
+   (pixel-height
+    :initarg :pixel-height
+    :initform nil
+    :accessor view-pixel-height
+    :documentation "The view's height in pixels, modeline included, or NIL for
+its cell height.")
    (use-modeline
     :initarg :use-modeline
     :reader view-use-modeline)
@@ -50,7 +79,27 @@
     :accessor view-last-cursor-x)
    (last-cursor-y
     :initform nil
-    :accessor view-last-cursor-y)))
+    :accessor view-last-cursor-y))
+  (:documentation "The SDL texture a Lem window draws into, and where it sits
+on the display: in cells, and optionally in pixels (see view-pixel-rect)."))
+
+(defun view-pixel-rect (view display)
+  "Return VIEW's rectangle on DISPLAY as values X, Y, WIDTH and HEIGHT in
+pixels, modeline included.  Each value is VIEW's pixel override if it has
+one, and otherwise its cell position or size times DISPLAY's cell size."
+  (let ((char-width (display:display-char-width display))
+        (char-height (display:display-char-height display)))
+    (values (or (view-pixel-x view) (* (view-x view) char-width))
+            (or (view-pixel-y view) (* (view-y view) char-height))
+            (or (view-pixel-width view) (* (view-width view) char-width))
+            (or (view-pixel-height view) (* (view-height view) char-height)))))
+
+(defun create-view-texture (view display)
+  "Return a new texture the size of VIEW's pixel rectangle on DISPLAY, at
+least one pixel each way."
+  (multiple-value-bind (x y width height) (view-pixel-rect view display)
+    (declare (ignore x y))
+    (display:create-view-texture display (max width 1) (max height 1))))
 
 (defmethod set-cursor-position ((view view) x y)
   (setf (view-last-cursor-x view) x
@@ -70,14 +119,15 @@
 
 (defun create-view (display window x y width height use-modeline)
   (when use-modeline (incf height))
-  (make-instance 'view
-                 :window window
-                 :x x
-                 :y y
-                 :width width
-                 :height height
-                 :use-modeline use-modeline
-                 :texture (display:create-view-texture display (max width 1) (max height 1))))
+  (let ((view (make-instance 'view
+                             :window window
+                             :x x
+                             :y y
+                             :width width
+                             :height height
+                             :use-modeline use-modeline)))
+    (setf (view-texture view) (create-view-texture view display))
+    view))
 
 (defmethod delete-view ((view view))
   (when (view-texture view)
@@ -94,8 +144,7 @@
   (setf (view-width view) width
         (view-height view) height)
   (lem-sdl3/ffi:destroy-texture (view-texture view))
-  (setf (view-texture view)
-        (display:create-view-texture display (max width 1) (max height 1))))
+  (setf (view-texture view) (create-view-texture view display)))
 
 (defmethod move-position ((view view) x y)
   (setf (view-x view) x
@@ -105,12 +154,9 @@
   (when (and (lem:window-border window)
              (< 0 (lem:window-border window)))
     (lem-sdl3/ffi:set-render-target (display:display-renderer display) (display:display-texture display))
-    (display:render-border display
-                           (lem:window-x window)
-                           (lem:window-y window)
-                           (lem:window-width window)
-                           (lem:window-height window)
-                           :border-type (lem:floating-window-border-shape window))))
+    (multiple-value-bind (x y width height) (view-pixel-rect view display)
+      (display:render-border-by-pixels display x y width height
+                                       :border-type (lem:floating-window-border-shape window)))))
 
 (defmethod draw-window-border (view display (window lem:window))
   (when (< 0 (lem:window-x window))
@@ -125,14 +171,12 @@
 
 (defun render-view-texture-to-display (view display)
   (lem-sdl3/ffi:set-render-target (display:display-renderer display) (display:display-texture display))
-  (lem-sdl3/ffi:with-frect (dest-rect (* (view-x view) (display:display-char-width display))
-                                     (* (view-y view) (display:display-char-height display))
-                                     (* (view-width view) (display:display-char-width display))
-                                     (* (view-height view) (display:display-char-height display)))
-    (lem-sdl3/ffi:render-texture (display:display-renderer display)
-                                 (view-texture view)
-                                 nil
-                                 dest-rect)))
+  (multiple-value-bind (x y width height) (view-pixel-rect view display)
+    (lem-sdl3/ffi:with-frect (dest-rect x y width height)
+      (lem-sdl3/ffi:render-texture (display:display-renderer display)
+                                   (view-texture view)
+                                   nil
+                                   dest-rect))))
 
 (defun refresh-all-view-textures (display)
   "Recreate the SDL texture backing every live view at the current
@@ -151,9 +195,6 @@ upper-left quarter of the window)."
       (when (typep view 'view)
         (when (view-texture view)
           (lem-sdl3/ffi:destroy-texture (view-texture view)))
-        (setf (view-texture view)
-              (display:create-view-texture display
-                                           (max (view-width view) 1)
-                                           (max (view-height view) 1)))))))
+        (setf (view-texture view) (create-view-texture view display))))))
 
 (display:add-post-display-change-hook 'refresh-all-view-textures)

@@ -415,11 +415,13 @@ nothing. Can be called from any thread."
   (with-debug ("lem-if:redraw-view-after" view)
     (display:with-display (display)
       (display:with-renderer (display)
-        (ffi:set-render-viewport (display:display-renderer display)
-                                 0
-                                 0
-                                 (* (view:view-width view) (display:display-char-width display))
-                                 (* (1- (view:view-height view)) (display:display-char-height display)))
+        (multiple-value-bind (x y width height) (view:view-pixel-rect view display)
+          (declare (ignore x y))
+          (ffi:set-render-viewport (display:display-renderer display)
+                                   0
+                                   0
+                                   width
+                                   (- height (display:display-char-height display))))
         (render (view:view-texture view)
                 (view:view-window view)
                 (lem:window-buffer (view:view-window view)))
@@ -442,10 +444,8 @@ nothing. Can be called from any thread."
          (cursor-x (view:last-cursor-x view display))
          (cursor-y (view:last-cursor-y view display))
          (text lem-sdl3/keyboard::*textediting-text*)
-         (x (+ (* (view:view-x view) (display:display-char-width display))
-               cursor-x))
-         (y (+ (* (view:view-y view) (display:display-char-height display))
-               cursor-y)))
+         (x (+ (nth-value 0 (view:view-pixel-rect view display)) cursor-x))
+         (y (+ (nth-value 1 (view:view-pixel-rect view display)) cursor-y)))
     ;; x/y are in pixels; SDL_SetTextInputArea wants window coordinates.
     (destructuring-bind (scale-x scale-y) (display:display-scale display)
       (ffi:set-text-input-area (display:display-window display)
@@ -540,13 +540,11 @@ nothing. Can be called from any thread."
 
 (defmethod lem-if:view-width ((implementation sdl3) view)
   (display:with-display (display)
-    (* (display:display-char-width display)
-       (lem-sdl3/view:view-width view))))
+    (nth-value 2 (view:view-pixel-rect view display))))
 
 (defmethod lem-if:view-height ((implementation sdl3) view)
   (display:with-display (display)
-    (* (display:display-char-height display)
-       (lem-sdl3/view:view-height view))))
+    (nth-value 3 (view:view-pixel-rect view display))))
 
 #-windows
 (defmethod lem-if:clipboard-paste ((implementation sdl3))
