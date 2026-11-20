@@ -51,9 +51,23 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             sbcl git curl ca-certificates build-essential libffi-dev libssl-dev \
+            libenchant-2-dev \
             libsdl3-dev libsdl3-ttf-dev libsdl3-image-dev libfreetype-dev libharfbuzz-dev
           curl -L https://qlot.tech/installer | sh
           echo "$HOME/.qlot/bin" >> $GITHUB_PATH
+
+      # Every native library lem-sdl3/tests loads (cffi:list-foreign-libraries
+      # after a test run), so a missing one is reported by name.  Unversioned
+      # names are what CFFI asks for (e.g. cl-enchant's "libenchant-2").
+      - name: Check native libraries
+        run: |
+          missing=0
+          for lib in libSDL3.so.0 libSDL3_ttf.so.0 libSDL3_image.so.0 \
+                     libfreetype.so.6 libharfbuzz.so.0 libenchant-2.so \
+                     libssl.so.3 libcrypto.so.3 libffi.so; do
+            ldconfig -p | grep -q "^[[:space:]]*$lib " || { echo "missing: $lib"; missing=1; }
+          done
+          exit $missing
 
       - uses: actions/checkout@v4
 
@@ -76,11 +90,25 @@ jobs:
 
       - name: Install SBCL, qlot, SDL3 and the text shaping libraries
         run: |
-          brew install sbcl sdl3 sdl3_ttf sdl3_image freetype harfbuzz openssl@3
+          brew install sbcl sdl3 sdl3_ttf sdl3_image freetype harfbuzz enchant openssl@3
           # cl+ssl (used by qlot) needs OpenSSL 3; see nightly-builds.yml.
           ln -sfn "$(brew --prefix openssl@3)" "$(brew --prefix)/opt/openssl"
           curl -L https://qlot.tech/installer | sh
           echo "$HOME/.qlot/bin" >> $GITHUB_PATH
+
+      # Every native library lem-sdl3/tests loads (cffi:list-foreign-libraries
+      # after a test run), so a missing one is reported by name.  libffi and
+      # the frameworks come with macOS.
+      - name: Check native libraries
+        run: |
+          missing=0
+          lib="$(brew --prefix)/lib"
+          for file in "$lib/libSDL3.dylib" "$lib/libSDL3_ttf.dylib" "$lib/libSDL3_image.dylib" \
+                      "$lib/libfreetype.6.dylib" "$lib/libharfbuzz.0.dylib" "$lib/libenchant-2.dylib" \
+                      "$(brew --prefix)/opt/openssl/lib/libssl.dylib"; do
+            test -e "$file" || { echo "missing: $file"; missing=1; }
+          done
+          exit $missing
 
       - name: Install dependencies
         run: qlot install
