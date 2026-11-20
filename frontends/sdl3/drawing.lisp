@@ -211,7 +211,7 @@ brings are left to surfaces, since texts must not outlive their font."
   (let ((string (text-object-string drawing-object))
         (attribute (text-object-attribute drawing-object))
         (type (text-object-type drawing-object)))
-    (and (text-engine:text-engine-active-p)
+    (and (text-engine:text-engine-active-p (display:display-text-engine display))
          (plain-text-object-p drawing-object)
          (plusp (length string))
          (not (member type '(:emoji :icon)))
@@ -281,7 +281,8 @@ the background phase draws anything."
             (t
              (draw-rect display x y cell-width cell-height background))))
     (when (and engine-font (member phase '(:glyph :both)))
-      (text-engine:draw-glyph engine-font
+      (text-engine:draw-glyph (display:display-text-engine display)
+                              engine-font
                               (text-object-string drawing-object)
                               x
                               (glyph-top-y drawing-object display engine-font bottom-y)

@@ -204,31 +204,32 @@ single :windowevent; SDL3 gives each its own event type."
        (unwind-protect
             (let ((renderer (ffi:create-renderer window)))
               (init-application-icon window)
-              (lem-sdl3/text-engine:start-text-engine renderer)
-              (unwind-protect
-                   (multiple-value-bind (renderer-width renderer-height)
-                       (ffi:get-render-output-size renderer)
-                     (let* ((scale-x (/ renderer-width window-width))
-                            (scale-y (/ renderer-height window-height))
-                            (texture (lem-sdl3/utils:create-texture renderer
-                                                                    (* scale-x window-width)
-                                                                    (* scale-y window-height)))
-                            (display (make-instance 'display:display
-                                                    :font-config font-config
-                                                    :font font
-                                                    :renderer renderer
-                                                    :window window
-                                                    :texture texture
-                                                    :char-width (font-char-width font)
-                                                    :char-height (font-char-height font)
-                                                    :scale (list scale-x scale-y))))
-                       (setf (display:current-display) display)
-                       (display:adapt-high-dpi-font-size display)
-                       (ffi:start-text-input window)
-                       (funcall function)
-                       (event-loop display)))
-                (lem-sdl3/text-engine:stop-text-engine)
-                (ffi:destroy-renderer renderer)))
+              (let ((text-engine (lem-sdl3/text-engine:make-text-engine renderer)))
+                (unwind-protect
+                     (multiple-value-bind (renderer-width renderer-height)
+                         (ffi:get-render-output-size renderer)
+                       (let* ((scale-x (/ renderer-width window-width))
+                              (scale-y (/ renderer-height window-height))
+                              (texture (lem-sdl3/utils:create-texture renderer
+                                                                      (* scale-x window-width)
+                                                                      (* scale-y window-height)))
+                              (display (make-instance 'display:display
+                                                      :font-config font-config
+                                                      :font font
+                                                      :renderer renderer
+                                                      :window window
+                                                      :texture texture
+                                                      :char-width (font-char-width font)
+                                                      :char-height (font-char-height font)
+                                                      :text-engine text-engine
+                                                      :scale (list scale-x scale-y))))
+                         (setf (display:current-display) display)
+                         (display:adapt-high-dpi-font-size display)
+                         (ffi:start-text-input window)
+                         (funcall function)
+                         (event-loop display)))
+                  (lem-sdl3/text-engine:destroy-text-engine text-engine)
+                  (ffi:destroy-renderer renderer))))
          (ffi:destroy-window window))))))
 
 (defun sbcl-on-darwin-p ()

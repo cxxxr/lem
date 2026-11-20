@@ -25,6 +25,7 @@
            :display-focus-p
            :create-view-texture
            :display-renderer
+           :display-text-engine
            :set-render-color
            :display-background-color
            :display-foreground-color
@@ -109,6 +110,11 @@ Retina to a 1x display).")
           :accessor display-focus-p)
    (redraw-at-least-once :initform nil
                          :accessor display-redraw-at-least-once-p)
+   (text-engine :initarg :text-engine
+                :initform nil
+                :reader display-text-engine
+                :documentation "The renderer's text engine (see
+lem-sdl3/text-engine), or NIL to draw every glyph from a surface.")
    (scale :initform '(1 1)
           :initarg :scale
           :accessor display-scale)
@@ -412,7 +418,8 @@ event handler pattern in `on-windowevent')."
 (defmethod change-font ((display display) font-config &optional (save-font-size-p t))
   (let ((font-config (font:merge-font-config font-config (display-font-config display))))
     ;; Cached texts refer to the fonts being closed.
-    (text-engine:clear-text-cache)
+    (when (display-text-engine display)
+      (text-engine:clear-text-cache (display-text-engine display)))
     (font:close-font (display-font display))
     (let ((font (font:open-font font-config)))
       (setf (display-char-width display) (font:font-char-width font)
