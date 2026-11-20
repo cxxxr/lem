@@ -1,6 +1,6 @@
 ;;;; claude.lisp — Claude Code in Lem, in the desktop application
 ;;;;
-;;;; M-x claude-code starts Claude Code (the claude command) for the project
+;;;; M-x claude starts Claude Code (the claude command) for the project
 ;;;; of the buffer, in the background, and talks with it in two buffers: the
 ;;;; conversation (*claude: PROJECT*), shown as Markdown as it reads
 ;;;; (markdown.lisp), and the input under it, where Return sends.
@@ -142,7 +142,7 @@ claude's default.")
   "The session of the current buffer, or the latest one."
   (or (buffer-session (lem:current-buffer))
       (first *claude-sessions*)
-      (lem:editor-error "No Claude Code session: M-x claude-code")))
+      (lem:editor-error "No Claude Code session: M-x claude")))
 
 ;;; ---- writing the conversation
 
@@ -591,7 +591,7 @@ mode, or why it refused one."
 
 ;;; ---- commands
 
-(lem:define-command claude-code () ()
+(lem:define-command claude () ()
   "Talk with Claude Code about the project of the buffer (started if it is not)."
   (let* ((directory (project-directory (lem:current-buffer)))
          (session (or (buffer-session (lem:current-buffer))
@@ -599,17 +599,17 @@ mode, or why it refused one."
                       (start-session directory))))
     (show-session session)))
 
-(lem:define-command claude-code-continue () ()
+(lem:define-command claude-continue () ()
   "Start Claude Code again with the last conversation of the project."
   (show-session (start-session (project-directory (lem:current-buffer)) :continue t)))
 
-(lem:define-command claude-code-send () ()
+(lem:define-command claude-send () ()
   "Send the input to Claude."
   (let* ((session (current-session))
          (input (session-input session))
          (text (string-trim '(#\Space #\Newline #\Tab) (lem:buffer-text input))))
     (cond ((eq (session-state session) :exited)
-           (lem:editor-error "Claude Code has ended: M-x claude-code starts it again"))
+           (lem:editor-error "Claude Code has ended: M-x claude starts it again"))
           ((zerop (length text)))
           (t
            (lem:erase-buffer input)
@@ -617,7 +617,7 @@ mode, or why it refused one."
            (setf (session-state session) :responding)
            (js:funcall *claude-send-user* (session-handle session) text)))))
 
-(lem:define-command claude-code-interrupt () ()
+(lem:define-command claude-interrupt () ()
   "Stop what Claude is doing."
   (let ((session (current-session)))
     (js:call (session-handle session) "control" "interrupt" :false :false)
@@ -631,7 +631,7 @@ mode, or why it refused one."
   (append *claude-permission-modes*
           (and (session-bypass-allowed session) '("bypassPermissions"))))
 
-(lem:define-command claude-code-cycle-mode () ()
+(lem:define-command claude-cycle-mode () ()
   "Change the permission mode: default (ask), acceptEdits, plan, and
 bypassPermissions if the session allows it (*claude-allow-bypass-permissions*).
 The mode shown changes when Claude has taken it."
@@ -642,15 +642,15 @@ The mode shown changes when Claude has taken it."
     (js:call (session-handle session) "control" "set_permission_mode" "mode" next)
     (lem:message "Permission mode: ~A..." next)))
 
-(lem:define-command claude-code-bypass-permissions () ()
+(lem:define-command claude-bypass-permissions () ()
   "Let Claude run every tool without asking (bypassPermissions), if the
 session was started with *claude-allow-bypass-permissions*."
   (let ((session (current-session)))
     (unless (session-bypass-allowed session)
-      (lem:editor-error "Set lem-clysm:*claude-allow-bypass-permissions* to T, then start Claude Code again (M-x claude-code-restart)"))
+      (lem:editor-error "Set lem-clysm:*claude-allow-bypass-permissions* to T, then start Claude Code again (M-x claude-restart)"))
     (js:call (session-handle session) "control" "set_permission_mode" "mode" "bypassPermissions")))
 
-(lem:define-command claude-code-restart () ()
+(lem:define-command claude-restart () ()
   "End the Claude Code of the project and start it again with the last
 conversation (with the options as they are now)."
   (let* ((session (current-session))
@@ -674,19 +674,19 @@ conversation (with the options as they are now)."
            (lem:insert-character (lem:current-point) character))
           (t (lem:editor-error "Claude is not asking anything")))))
 
-(lem:define-command claude-code-yes () ()
+(lem:define-command claude-yes () ()
   "Allow what Claude asks for."
   (answer-key t nil #\y))
 
-(lem:define-command claude-code-always () ()
+(lem:define-command claude-always () ()
   "Allow what Claude asks for, and the same from now on."
   (answer-key t t #\a))
 
-(lem:define-command claude-code-no () ()
+(lem:define-command claude-no () ()
   "Do not allow what Claude asks for (and tell it why)."
   (answer-key nil nil #\n))
 
-(lem:define-command claude-code-send-region (start end) (:region)
+(lem:define-command claude-send-region (start end) (:region)
   "Put the region, with where it is, into the input of Claude."
   (let* ((buffer (lem:current-buffer))
          (session (or (live-session (project-directory buffer))
@@ -701,21 +701,21 @@ conversation (with the options as they are now)."
     (show-session session)
     (lem:buffer-end (lem:current-point))))
 
-(lem:define-command claude-code-focus-input () ()
+(lem:define-command claude-focus-input () ()
   "Go to the input of Claude."
   (show-session (current-session)))
 
-(lem:define-key *claude-input-mode-keymap* "Return" 'claude-code-send)
+(lem:define-key *claude-input-mode-keymap* "Return" 'claude-send)
 (lem:define-key *claude-input-mode-keymap* "C-j" 'lem-core/commands/edit:newline)
 (lem:define-key *claude-input-mode-keymap* "M-Return" 'lem-core/commands/edit:newline)
-(lem:define-key *claude-input-mode-keymap* "Shift-Tab" 'claude-code-cycle-mode)
-(lem:define-key *claude-input-mode-keymap* "C-c C-c" 'claude-code-interrupt)
-(lem:define-key *claude-input-mode-keymap* "y" 'claude-code-yes)
-(lem:define-key *claude-input-mode-keymap* "a" 'claude-code-always)
-(lem:define-key *claude-input-mode-keymap* "n" 'claude-code-no)
-(lem:define-key *claude-chat-mode-keymap* "y" 'claude-code-yes)
-(lem:define-key *claude-chat-mode-keymap* "a" 'claude-code-always)
-(lem:define-key *claude-chat-mode-keymap* "n" 'claude-code-no)
-(lem:define-key *claude-chat-mode-keymap* "C-c C-c" 'claude-code-interrupt)
-(lem:define-key *claude-chat-mode-keymap* "Return" 'claude-code-focus-input)
-(lem:define-key *claude-chat-mode-keymap* "i" 'claude-code-focus-input)
+(lem:define-key *claude-input-mode-keymap* "Shift-Tab" 'claude-cycle-mode)
+(lem:define-key *claude-input-mode-keymap* "C-c C-c" 'claude-interrupt)
+(lem:define-key *claude-input-mode-keymap* "y" 'claude-yes)
+(lem:define-key *claude-input-mode-keymap* "a" 'claude-always)
+(lem:define-key *claude-input-mode-keymap* "n" 'claude-no)
+(lem:define-key *claude-chat-mode-keymap* "y" 'claude-yes)
+(lem:define-key *claude-chat-mode-keymap* "a" 'claude-always)
+(lem:define-key *claude-chat-mode-keymap* "n" 'claude-no)
+(lem:define-key *claude-chat-mode-keymap* "C-c C-c" 'claude-interrupt)
+(lem:define-key *claude-chat-mode-keymap* "Return" 'claude-focus-input)
+(lem:define-key *claude-chat-mode-keymap* "i" 'claude-focus-input)

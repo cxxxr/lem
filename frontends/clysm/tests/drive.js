@@ -341,7 +341,7 @@ module.exports = (win, app) => {
         const project = path.join(work, 'project');
         fs.mkdirSync(path.join(project, '.git'), { recursive: true });   // (the root of a project)
         fs.writeFileSync(path.join(project, 'notes.txt'), 'notes\n');
-        await lisp(`(lem:send-event (lambda () (lem:find-file ${lispString(path.join(project, 'notes.txt'))}) (lem-clysm:claude-code)))`);
+        await lisp(`(lem:send-event (lambda () (lem:find-file ${lispString(path.join(project, 'notes.txt'))}) (lem-clysm:claude)))`);
         await sleep(1000);
         await type('hello claude'); await key('Return');
         const chat = () => lisp('(lem:buffer-text (lem-clysm::session-chat (first lem-clysm::*claude-sessions*)))');
@@ -354,14 +354,14 @@ module.exports = (win, app) => {
               (await lisp('(lem:with-point ((p (lem:buffer-end-point (lem-clysm::session-chat (first lem-clysm::*claude-sessions*))))) (lem:line-offset p -1) (lem-clysm::in-code-block-p p))')) === 'NIL');
         // permission modes: Shift-Tab, and bypassPermissions once claude is started allowing it
         const mode = () => lisp('(lem-clysm::session-mode (first lem-clysm::*claude-sessions*))');
-        await lisp('(lem:send-event (lambda () (lem-clysm:claude-code-cycle-mode)))');
+        await lisp('(lem:send-event (lambda () (lem-clysm:claude-cycle-mode)))');
         check('claude mode: acceptEdits', await until(async () => (await mode()) === '"acceptEdits"'), await mode());
-        await lisp('(lem:send-event (lambda () (lem-clysm:claude-code-bypass-permissions)))');
+        await lisp('(lem:send-event (lambda () (lem-clysm:claude-bypass-permissions)))');
         await sleep(300);
         check('claude mode: bypass not allowed', (await mode()) === '"acceptEdits"', await mode());
-        await lisp('(progn (setf lem-clysm:*claude-allow-bypass-permissions* t) (lem:send-event (lambda () (lem-clysm:claude-code-restart))))');
+        await lisp('(progn (setf lem-clysm:*claude-allow-bypass-permissions* t) (lem:send-event (lambda () (lem-clysm:claude-restart))))');
         await sleep(1000);
-        await lisp('(lem:send-event (lambda () (lem-clysm:claude-code-bypass-permissions)))');
+        await lisp('(lem:send-event (lambda () (lem-clysm:claude-bypass-permissions)))');
         check('claude mode: bypassPermissions', await until(async () => (await mode()) === '"bypassPermissions"'), await mode());
         check('claude mode: the warning', (await chat()).includes('⚠ bypassPermissions'));
         // a narrow window: what is on the left of its modeline gives way to what is on the right

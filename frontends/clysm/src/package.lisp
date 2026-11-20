@@ -11,10 +11,10 @@
            #:markdown-live-mode #:*markdown-live-by-default* #:markdown-toggle-task
            #:markdown-fold-region #:markdown-fold-or-indent #:markdown-cycle-folds
            ;; Claude Code (claude.lisp)
-           #:*claude-command* #:*claude-arguments* #:claude-code #:claude-code-continue
-           #:claude-code-send #:claude-code-send-region #:claude-code-interrupt
-           #:claude-code-cycle-mode #:claude-code-yes #:claude-code-always #:claude-code-no
+           #:*claude-command* #:*claude-arguments* #:claude #:claude-continue
+           #:claude-send #:claude-send-region #:claude-interrupt
+           #:claude-cycle-mode #:claude-yes #:claude-always #:claude-no
            #:*claude-allow-bypass-permissions* #:*claude-permission-mode*
-           #:claude-code-bypass-permissions #:claude-code-restart
+           #:claude-bypass-permissions #:claude-restart
            ;; looking at the editor from outside (remote.lisp)
            #:remote-start #:remote-stop))

@@ -175,7 +175,7 @@ the lines indented under it) and `C-c Shift-Tab` folds every outer region
 or unfolds all: Lem's `fold-region-default`.
 
 **Claude Code** (`src/claude.lisp`, in the desktop application). `M-x
-claude-code` talks with Claude Code about the project of the buffer: the
+claude` talks with Claude Code about the project of the buffer: the
 conversation, shown as Markdown as it reads, and an input under it (Return
 sends, `C-j` a new line). The answer is written as it comes; before a tool
 that needs it, Claude asks, and the conversation shows what it would do (the
@@ -184,8 +184,8 @@ the same from now on, `n` does not (and says what to do instead). What each
 tool did is folded under its line (Tab). Files that Claude changed are read
 again in the buffers that have them, unless they were changed there.
 `Shift-Tab` in the input cycles the permission mode (default, acceptEdits,
-plan), `C-c C-c` interrupts, `M-x claude-code-send-region` puts the region,
-with its file and lines, into the input, and `M-x claude-code-continue`
+plan), `C-c C-c` interrupts, `M-x claude-send-region` puts the region,
+with its file and lines, into the input, and `M-x claude-continue`
 starts with the last conversation of the project. It runs the `claude`
 command as the Agent SDK does (`claude -p` with JSON lines in and out,
 `--permission-prompt-tool stdio`), with Node.js's `child_process`;
@@ -193,10 +193,10 @@ command as the Agent SDK does (`claude -p` with JSON lines in and out,
 `lem-clysm:*claude-arguments*` (`'("--model" "opus")`...) choose how. With
 `(setf lem-clysm:*claude-allow-bypass-permissions* t)` claude is started
 with `--allow-dangerously-skip-permissions`, and `Shift-Tab` goes to
-bypassPermissions after plan (or `M-x claude-code-bypass-permissions`):
+bypassPermissions after plan (or `M-x claude-bypass-permissions`):
 Claude then runs every tool without asking, which the conversation and the
 modeline (⚠ BYPASS) say. `lem-clysm:*claude-permission-mode*` is the mode a
-session starts in; `M-x claude-code-restart` starts the session again with
+session starts in; `M-x claude-restart` starts the session again with
 the options as they are, and its last conversation.
 `make test-clysm` talks with `tests/fake-claude.mjs`.
 
