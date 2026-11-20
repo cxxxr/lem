@@ -26,6 +26,17 @@
   "Seconds a live-resize step waits for the editor thread to redraw at the
 window's new size before showing the last frame unscaled instead.")
 
+(defvar *scroll-animation* t
+  "When true, a mouse wheel's notch scrolls a window over a short eased
+animation instead of at once (see *smooth-scroll*).")
+
+(defparameter *scroll-animation-frame-ms* 16
+  "Milliseconds between frames of a scroll animation.")
+
+(defparameter *scroll-animation-easing* 3/10
+  "The share of the remaining distance a scroll animation moves each frame;
+the animation settles in about ten frames.")
+
 (defvar *smooth-scroll* t
   "When true, the mouse wheel and trackpad scroll a window with a modeline
 by pixels, including fractions of a line, instead of by whole lines.")
@@ -42,23 +53,72 @@ by pixels, including fractions of a line, instead of by whole lines.")
          (typep view 'view:view)
          (view:view-use-modeline view))))
 
-(defun scroll-window-by-pixels (window display notches)
-  "Scroll WINDOW by NOTCHES of the wheel (positive scrolls toward the top of
-the buffer), each *scroll-speed* lines of DISPLAY's cell height.  Whole lines
-are scrolled by lem-core; the rest is the view's scroll offset."
+(defun notch-pixels (display notches)
+  "Return how many pixels NOTCHES of the wheel scroll on DISPLAY, positive
+toward the end of the buffer: *scroll-speed* lines a notch, and SDL's
+positive wheel values scroll toward the start."
+  (- (round (* notches (display:display-char-height display) lem:*scroll-speed*))))
+
+(defun scroll-window-by-pixels (window display pixels)
+  "Scroll WINDOW's body by PIXELS (positive toward the end of the buffer).
+Whole lines are scrolled by lem-core; the rest is the view's scroll offset.
+Return NIL if the window could not move because it is at the top or bottom
+of its buffer, true otherwise."
   (let* ((view (lem:window-view window))
          (char-height (display:display-char-height display))
          (anchor (view-point-anchor window))
-         (lines (view:add-scroll-delta view
-                                       (- (round (* notches char-height lem:*scroll-speed*)))
-                                       char-height)))
+         (lines (view:add-scroll-delta view pixels char-height))
+         (moved t))
     (unless (zerop lines)
       (lem:with-current-window window
         (lem:call-command (lem:find-command "scroll-down") lines))
-      ;; The window could not move: it is at the top or bottom of its buffer.
       (when (equal anchor (view-point-anchor window))
-        (setf (view:view-scroll-offset view) 0)))
-    (setf (view:view-scroll-anchor view) (view-point-anchor window))))
+        (setf (view:view-scroll-offset view) 0
+              moved nil)))
+    (setf (view:view-scroll-anchor view) (view-point-anchor window))
+    moved))
+
+(defun notch-delta-p (delta)
+  "True if the wheel DELTA is a whole number of notches, as a mouse wheel
+reports; a trackpad, and macOS's momentum after it, report fractions."
+  (= delta (fround delta)))
+
+(defun scroll-animation-step (window display)
+  "Move WINDOW's body one frame of its scroll animation: *scroll-animation-
+easing* of what remains, at least a pixel.  Return true while some remains."
+  (let* ((view (lem:window-view window))
+         (step (view:next-scroll-step (view:view-scroll-remaining view)
+                                      *scroll-animation-easing*)))
+    (decf (view:view-scroll-remaining view) step)
+    (unless (scroll-window-by-pixels window display step)
+      (setf (view:view-scroll-remaining view) 0))
+    (/= 0 (view:view-scroll-remaining view))))
+
+(defun scroll-animation-frame (display)
+  "Run one frame of every scroll animation on DISPLAY, and stop the
+animation timer once none is left.  Runs on the editor thread, which redraws
+after each frame."
+  (setf (display:display-scrolling-windows display)
+        (loop :for window :in (display:display-scrolling-windows display)
+              :when (and (member window (lem:window-list))
+                         (scroll-animation-step window display))
+                :collect window))
+  (when (and (null (display:display-scrolling-windows display))
+             (display:display-scroll-animation-timer display))
+    (lem:stop-timer (display:display-scroll-animation-timer display))
+    (setf (display:display-scroll-animation-timer display) nil)))
+
+(defun animate-scroll (window display pixels)
+  "Scroll WINDOW's body by PIXELS over a short eased animation, as an editor
+scrolls a mouse wheel's notch, adding to any animation still running."
+  (incf (view:view-scroll-remaining (lem:window-view window)) pixels)
+  (pushnew window (display:display-scrolling-windows display))
+  (unless (display:display-scroll-animation-timer display)
+    (setf (display:display-scroll-animation-timer display)
+          (lem:start-timer (lem:make-timer (lambda () (scroll-animation-frame display))
+                                           :name "lem-sdl3 scroll animation")
+                           *scroll-animation-frame-ms*
+                           :repeat t))))
 
 (defun scrolled-char-y (display char-x char-y pixel-y)
   "Return the cell row under the pointer at PIXEL-Y, for a window with a
@@ -149,11 +209,15 @@ by pixels (see *smooth-scroll*)."
       (lem:send-event
        (lambda ()
          (let ((window (lem:focus-window-position (lem:current-frame) char-x char-y)))
-           (if (and window
-                    (/= 0 precise-y)
-                    (smooth-scroll-window-p window))
-               (scroll-window-by-pixels window display precise-y)
-               (lem:receive-mouse-wheel char-x char-y pixel-x pixel-y wheel-x wheel-y)))
+           (cond ((not (and window
+                            (/= 0 precise-y)
+                            (smooth-scroll-window-p window)))
+                  (lem:receive-mouse-wheel char-x char-y pixel-x pixel-y wheel-x wheel-y))
+                 ((and *scroll-animation* (notch-delta-p precise-y))
+                  (animate-scroll window display (notch-pixels display precise-y)))
+                 (t
+                  (scroll-window-by-pixels window display
+                                           (notch-pixels display precise-y)))))
          (when (= 0 (lem:event-queue-length))
            (lem:redraw-display)))))))
 
@@ -446,7 +510,10 @@ last frame is shown unscaled instead."
   ;; SDL3 may report keycodes already changed by Shift/AltGr.  The keyboard
   ;; code applies shift itself (see make-key-with-shift-careful), so ask for
   ;; the unmodified keycodes SDL2 delivered.
-  (ffi:set-hint "SDL_KEYCODE_OPTIONS" "unmodified"))
+  (ffi:set-hint "SDL_KEYCODE_OPTIONS" "unmodified")
+  ;; Deliver the trackpad's momentum after the fingers lift as wheel events,
+  ;; as macOS applications glide; SDL drops it by default.
+  (ffi:set-hint "SDL_MAC_SCROLL_MOMENTUM" "1"))
 
 (defmethod lem-if:invoke ((implementation sdl3) function)
   (flet ((thunk ()
@@ -643,6 +710,7 @@ keeping its cell size."
     (let ((anchor (view-point-anchor (view:view-window view))))
       (unless (equal anchor (view:view-scroll-anchor view))
         (setf (view:view-scroll-offset view) 0
+              (view:view-scroll-remaining view) 0
               (view:view-scroll-anchor view) anchor)))
     (display:with-display (display)
       (display:with-renderer (display)

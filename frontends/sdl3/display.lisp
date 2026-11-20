@@ -37,6 +37,8 @@
            :display-texture
            :texture-size-stale-p
            :display-live-resize-request
+           :display-scroll-animation-timer
+           :display-scrolling-windows
            :render-border-by-pixels
            :render-line
            :clear
@@ -116,6 +118,14 @@ Retina to a 1x display).")
              :reader display-renderer)
    (texture :initarg :texture
             :accessor display-texture)
+   (scroll-animation-timer :initform nil
+                           :accessor display-scroll-animation-timer
+                           :documentation "The timer running scroll animations,
+or NIL while none runs.")
+   (scrolling-windows :initform '()
+                      :accessor display-scrolling-windows
+                      :documentation "The windows with a scroll animation
+running.")
    (live-resize-request :initform nil
                         :accessor display-live-resize-request
                         :documentation "The semaphore the editor thread signals

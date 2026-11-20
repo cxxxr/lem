@@ -99,3 +99,17 @@ with INITARGS overriding those."
   (let ((display (stub-display))
         (view (make-view)))
     (ok (= 68 (view:view-render-height view display)) "no modeline, no overscan row")))
+
+(deftest scroll-animation-steps-ease-out-and-add-up
+  (let ((steps (loop :with remaining := 99
+                     :for step := (view:next-scroll-step remaining 3/10)
+                     :until (zerop step)
+                     :do (decf remaining step)
+                     :collect step)))
+    (ok (= 99 (reduce #'+ steps)) "the steps cover the whole distance")
+    (ok (apply #'>= steps) "each is no larger than the one before")
+    (ok (<= 8 (length steps) 20)
+        (format nil "and it settles in a few frames (~D)" (length steps))))
+  (ok (= -30 (view:next-scroll-step -100 3/10)) "upward too")
+  (ok (= 1 (view:next-scroll-step 2 3/10)) "at least a pixel a frame")
+  (ok (= 0 (view:next-scroll-step 0 3/10)) "nothing once settled"))
