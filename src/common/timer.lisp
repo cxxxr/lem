@@ -11,7 +11,7 @@
    :timer-error-backtrace
    :timer-error-condition
    :timer-error-outside-timer-p
-   :timer-passes-through-p
+   :cancels-timer-function-p
    :timer
    :timer-name
    :timer-expired-p
@@ -90,12 +90,13 @@ by a command run in a prompt it opened."))
                        (or (ignore-errors (princ-to-string condition))
                            "#<error printing the condition>"))))))
 
-(defgeneric timer-passes-through-p (condition)
+(defgeneric cancels-timer-function-p (condition)
   (:documentation "Return true if the error CONDITION, signalled in a timer's
-function, is let through as it is: not given to the timer's handle-function
-nor wrapped in a timer-error, so that the code around the timer handles it
-as its own. The editor's methods say so for an abort (C-g in a prompt the
-timer opened).")
+function, cancels that function rather than reporting a failure: it is not
+given to the timer's handle-function nor wrapped in a timer-error, and the
+timer's function just returns, so that the code around the timer (other
+timers, a command waiting in sit-for) is not interrupted by it. The editor
+says so for an abort (C-g in a prompt the timer opened).")
   (:method (condition)
     (declare (ignore condition))
     nil))
@@ -156,24 +157,23 @@ timer opened).")
         ;; The backtrace is taken here: by the time handler-case runs its
         ;; clause, the frames of the failing timer function are gone.
         (handler-bind ((error (lambda (condition)
-                                (unless (timer-passes-through-p condition)
+                                (unless (cancels-timer-function-p condition)
                                   (setf backtrace
                                         (ignore-errors
                                          (lem/common/backtrace:safe-backtrace))
                                         outside-timer-p (not (running-timer-p)))))))
           (if (timer-handle-function timer)
               (handler-bind ((error (lambda (condition)
-                                      (unless (timer-passes-through-p condition)
+                                      (unless (cancels-timer-function-p condition)
                                         (funcall (timer-handle-function timer)
                                                  condition)))))
                 (funcall (timer-function timer)))
               (funcall (timer-function timer))))
       (error (condition)
-        (if (timer-passes-through-p condition)
-            ;; Signalled again outside of the timer, whose frames are gone.
-            (error condition)
-            (error 'timer-error :timer timer :condition condition :backtrace backtrace
-                                :outside-timer-p outside-timer-p))))))
+        ;; A cancelled function just returns.
+        (unless (cancels-timer-function-p condition)
+          (error 'timer-error :timer timer :condition condition :backtrace backtrace
+                              :outside-timer-p outside-timer-p))))))
 
 
 ;;; timer
@@ -310,10 +310,18 @@ timer opened).")
 (defmacro with-idle-timers (() &body body)
   `(call-with-idle-timers (lambda () ,@body)))
 
+(defun timer-started-p (timer)
+  "Return true if the idle TIMER counts from a time. One started while the
+editor was not idle counts from the next with-idle-timers: such as one that
+a command started in a prompt a timer opened, seen by the read loop the
+timer ran in before that loop enters with-idle-timers again."
+  (not (null (timer-last-time timer))))
+
 (defun update-idle-timers ()
   (let* ((tick-time (get-microsecond-time *timer-manager*))
          (updating-timers (remove-if-not (lambda (timer)
-                                           (< (timer-next-time timer) tick-time))
+                                           (and (timer-started-p timer)
+                                                (< (timer-next-time timer) tick-time)))
                                          *idle-timer-list*))
          (deleting-timers (remove-if #'timer-repeat-p
                                      updating-timers))
@@ -332,7 +340,7 @@ timer opened).")
     (not (null updating-timers))))
 
 (defun get-next-timer-timing-ms ()
-  (when-let (timers *idle-timer-list*)
+  (when-let (timers (remove-if-not #'timer-started-p *idle-timer-list*))
     (- (loop :for timer :in timers
              :minimize (timer-next-time timer))
        (get-microsecond-time *timer-manager*))))

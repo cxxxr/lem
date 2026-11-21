@@ -36,7 +36,8 @@
   ()
   (:default-initargs :message nil))
 
-(defmethod timer-passes-through-p ((condition editor-abort))
-  ;; C-g in a prompt a timer opened cancels it, as in a command's prompt:
-  ;; "Abort" in the echo area, not *EDITOR ERROR*.
+(defmethod cancels-timer-function-p ((condition editor-abort))
+  "C-g in a prompt a timer opened cancels the timer's function quietly, as
+it cancels a command's prompt: no *EDITOR ERROR*, no incident, and the
+command or the timers around it go on."
   t)

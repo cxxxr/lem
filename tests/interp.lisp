@@ -138,8 +138,31 @@ condition that left the timer: TIMER-ERROR, EDITOR-ABORT or NIL."
            handle-function-p (lem:make-key :ctrl t :sym "g"))
         (testing "nothing is reported"
           (ok (null contexts)))
-        (testing "the abort leaves the timer as it is, not as a timer-error"
-          (ok (eq 'editor-abort escaped)))))))
+        (testing "the timer's function returns: nothing leaves the timer"
+          (ok (null escaped)))))))
+
+(deftest an-abort-in-a-prompt-of-an-idle-timer-leaves-the-other-timers-running
+  (lem-fake-interface:with-fake-interface ()
+    (lem:with-current-buffers ()
+      (let* ((ran '())
+             (lem/common/timer::*timer-manager* (make-instance 'lem-core::lem-timer-manager))
+             (lem/common/timer::*idle-timer-list* '())
+             (lem/common/timer::*processed-idle-timer-list* '())
+             (lem-core::*toplevel-command-loop-p* nil)
+             (prompting (lem:make-idle-timer
+                         (lambda ()
+                           (push :prompting ran)
+                           (lem:prompt-for-string "in a timer: "))
+                         :name "a timer with a prompt"))
+             (other (lem:make-idle-timer (lambda () (push :other ran))
+                                         :name "another timer")))
+        ;; Both due now; update-idle-timers calls the timers in list order.
+        (dolist (timer (list other prompting))
+          (lem:start-timer timer 1)
+          (setf (lem/common/timer::timer-last-time timer) 0))
+        (lem:unread-key (lem:make-key :ctrl t :sym "g"))
+        (ok (lem/common/timer:update-idle-timers))
+        (ok (equal '(:other :prompting) ran))))))
 
 (deftest a-background-job-error-that-cannot-be-printed-is-shown
   (lem-fake-interface:with-fake-interface ()
