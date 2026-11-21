@@ -7,15 +7,11 @@
 (in-package :lem-tests/frame-multiplexer)
 
 (defun call-with-fresh-editor (function)
-  ;; Frames made by earlier tests stay in lem-core::*frames*, and delete-buffer
-  ;; switches the windows of every frame, so give each test its own frames.
-  ;; The current buffer is also left from earlier tests; switch-to-buffer would
-  ;; put it back into this test's buffer list.
-  (let ((lem-core::*frames* '()))
-    (with-current-buffers ()
-      (with-fake-interface ()
-        (setf (current-buffer) (window-buffer (current-window)))
-        (funcall function)))))
+  ;; with-fake-interface gives the test its own frames and current buffer;
+  ;; the tests here also compare whole buffer lists, so start from an empty one.
+  (with-current-buffers ()
+    (with-fake-interface ()
+      (funcall function))))
 
 (defmacro with-fresh-editor (() &body body)
   `(call-with-fresh-editor (lambda () ,@body)))
