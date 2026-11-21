@@ -373,25 +373,28 @@ it."
     ;; Before the bypass commands: the mouse wheel scrolls from within
     ;; <mouse-event>, and scrolls up with SCROLL-DOWN by a negative count.
     ((and (typep command '(or scroll-up scroll-down))
-          (alexandria:when-let ((terminal (get-current-terminal)))
-            (not (terminal:process-exited-p terminal))))
-     ;; A scroll of zero lines does nothing (as SCROLL-DOWN does).
-     (if (eql argment 0)
-         (call-next-method)
-         (call-with-scrollback (get-current-terminal) (current-window)
-                               (eq (typep command 'scroll-down) (plusp (or argment 1)))
-                               (lambda () (call-next-method)))))
+          (get-current-terminal))
+     (let ((terminal (get-current-terminal))
+           (downward-p (eq (typep command 'scroll-down) (plusp (or argment 1)))))
+       (cond
+         ;; A scroll of zero lines does nothing (as SCROLL-DOWN does).
+         ((eql argment 0)
+          (call-next-method))
+         ;; Once the process has exited the buffer is plain text: the
+         ;; scrollback is put above it once, for scrolling up to reach it.
+         ((terminal:process-exited-p terminal)
+          (unless downward-p
+            (terminal:activate-scrollback terminal))
+          (call-next-method))
+         (t
+          (call-with-scrollback terminal (current-window) downward-p
+                                (lambda () (call-next-method)))))))
     (*running-bypass-command*
      (call-next-method))
     ((member command *bypass-commands* :test #'typep)
      (let ((*running-bypass-command* t))
        (call-next-method)))
-    ((typep command 'scroll-up)
-     ;; Populate buffer with scrollback lines so Lem can scroll up
-     (alexandria:when-let ((terminal (get-current-terminal)))
-       (terminal:activate-scrollback terminal))
-     (call-next-method))
-    ((typep command 'scroll-down)
+    ((typep command '(or scroll-up scroll-down))
      (call-next-method))
     ;; Once the process has exited the buffer is plain read-only text holding
     ;; the final screen, so let every other command behave as in any other buffer.

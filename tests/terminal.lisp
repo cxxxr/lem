@@ -555,3 +555,17 @@ internal RENDER-TICK, which MANUAL-TIMER-MANAGER keeps from running)."
      (wheel window 1)
      (ok (= (- (lem:buffer-nlines buffer) rows)
             (lem-terminal/terminal:copy-mode-on (buffer-terminal buffer)))))))
+
+(deftest wheel-up-after-the-exit-shows-the-scrollback
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (lem-terminal/terminal::finish-process (buffer-terminal buffer) 0)
+     (ng (equal "1" (first-line buffer)) "the exit shows the final screen")
+     ;; as M-v does: the wheel, from within <mouse-event>, the same
+     (wheel window 1)
+     (ok (equal "1" (first-line buffer)) "the scrollback is put above it")
+     (let ((nlines (lem:buffer-nlines buffer)))
+       (wheel window 1)
+       (ok (= nlines (lem:buffer-nlines buffer)) "once")))))
