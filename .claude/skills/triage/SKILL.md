@@ -65,6 +65,9 @@ written as `"..."`, the signalling functions `ERROR`, `CERROR`, `SIGNAL`,
 `LEM/COMMON/TIMER::CALL-TIMER-FUNCTION` and
 `LEM-INCIDENT-RECORDER:RECORD-INCIDENT`; a function of the same name in
 another package, such as `MY-MODE::BAILOUT`, is where the error was).
+The frames above the topmost `SB-KERNEL::%SIGNAL`, `SIGNAL`, `ERROR`,
+`CERROR` or `WARN` are the handler that took the backtrace (a timer's
+handle-function, a mode's handler) and are left out too.
 `recent_commands` tells what the user did: the commands, their keys, and
 how many times in a row. Keys that type or delete text (characters,
 `Space`, `Return`, `Backspace`, also with shift, `Tab`, `Delete`, and `C-h`

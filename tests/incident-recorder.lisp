@@ -513,3 +513,51 @@ backtrace taken where it was signalled, as the editor's handlers do."
     (ok (< (length saved) (+ (length name) 100)))
     ;; the length of the whole frame
     (ok (search (format nil "(~D chars)" (length line)) saved))))
+
+(defun signal-and-capture-elsewhere (function)
+  "As signal-and-capture, from another handler: a timer's handle-function or
+a mode's own handler that calls pop-up-backtrace."
+  (let (condition backtrace)
+    (block nil
+      (handler-bind ((error (lambda (c)
+                              (setf condition c
+                                    backtrace (lem/common/backtrace:safe-backtrace))
+                              (return))))
+        (funcall function)))
+    (values condition backtrace)))
+
+(deftest the-handler-of-an-error-is-not-in-its-fingerprint
+  (multiple-value-bind (condition-1 backtrace-1)
+      (signal-and-capture (lambda () (fail-in-place-a "one")))
+    (multiple-value-bind (condition-2 backtrace-2)
+        (signal-and-capture-elsewhere (lambda () (fail-in-place-a "two")))
+      ;; the handlers' frames are above the signal
+      (ok (search "SIGNAL-AND-CAPTURE-ELSEWHERE) " backtrace-2))
+      ;; FAIL-IN-PLACE-A is called by the two capture functions, which differ
+      (let ((ir::*fingerprint-frame-count* 1))
+        (ok (equal (ir:incident-fingerprint condition-1 backtrace-1)
+                   (ir:incident-fingerprint condition-2 backtrace-2)))))))
+
+(deftest frames-above-the-signal-are-left-out
+  (let ((condition (make-condition 'simple-error)))
+    (flet ((fingerprint (&rest lines)
+             (ir:incident-fingerprint
+              condition
+              (format nil "~{~D: (~A)~%~}"
+                      (loop :for line :in lines
+                            :for i :from 0
+                            :collect i :collect line)))))
+      (ok (equal (fingerprint "LEM/COMMON/BACKTRACE:SAFE-BACKTRACE"
+                              "LEM-CORE:POP-UP-BACKTRACE #<X>"
+                              "(LAMBDA (CONDITION) :IN LEM/AUTO-SAVE::ENABLE) #<X>"
+                              "SB-KERNEL::%SIGNAL #<X>"
+                              "ERROR \"x\""
+                              "LEM/AUTO-SAVE::CHECKPOINT-ALL-BUFFERS")
+                 (fingerprint "LEM/COMMON/BACKTRACE:SAFE-BACKTRACE"
+                              "(LAMBDA (CONDITION) :IN LEM/COMMON/TIMER::CALL-TIMER-FUNCTION) #<X>"
+                              "SB-KERNEL::%SIGNAL #<X>"
+                              "ERROR \"x\""
+                              "LEM/AUTO-SAVE::CHECKPOINT-ALL-BUFFERS")))
+      ;; with no signalling frame, every frame below the machinery counts
+      (ng (equal (fingerprint "LEM-USER::A" "LEM-USER::B")
+                 (fingerprint "LEM-USER::C" "LEM-USER::B"))))))
