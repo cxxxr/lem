@@ -384,7 +384,8 @@ backtrace taken where it was signalled, as the editor's handlers do."
                (ir::normalize-frame-name
                 "(LAMBDA () :IN \"C:\\\\Users\\\\a\\\\.lem\\\\init.lisp\")")))))
 
-(deftest the-fingerprint-does-not-depend-on-the-print-variables
+(deftest the-condition-type-in-the-fingerprint-does-not-depend-on-the-print-variables
+  ;; only the type is printed here; safe-backtrace prints the frame names
   (multiple-value-bind (condition backtrace)
       (signal-and-capture (lambda () (error 'test-error)))
     (let ((fingerprint (ir:incident-fingerprint condition backtrace)))
@@ -394,8 +395,11 @@ backtrace taken where it was signalled, as the editor's handlers do."
                    (ir:incident-fingerprint condition backtrace)))))))
 
 (deftest space-return-tab-and-backspace-are-not-recorded
-  (dolist (sym '("Space" "Return" "Tab" "Backspace"))
+  (dolist (sym '("Space" "Return" "Tab" "Backspace" "Delete"))
     (ok (null (ir::recorded-keys (list (lem:make-key :sym "p") (lem:make-key :sym sym))))
+        sym)
+    ;; some frontends set shift on named keys
+    (ok (null (ir::recorded-keys (list (lem:make-key :shift t :sym sym))))
         sym))
   (ok (equal "C-x Return" (ir::recorded-keys (list (lem:make-key :ctrl t :sym "x")
                                                    (lem:make-key :sym "Return"))))))
@@ -426,10 +430,12 @@ backtrace taken where it was signalled, as the editor's handlers do."
             (simple (record :simple)))
         (ok (equal "TYPE-ERROR" (gethash "type" (gethash "condition" type))))
         (ok (equal "SIMPLE-ERROR" (gethash "type" (gethash "condition" simple))))
-        (ok (equal "b: simple" (gethash "message" (gethash "condition" simple))))
+        ;; the message is the timer-error's, which names the timer
+        (ok (search "failing timer" (gethash "message" (gethash "condition" simple))))
+        (ok (search "b: simple" (gethash "message" (gethash "condition" simple))))
         (ng (equal (gethash "fingerprint" type) (gethash "fingerprint" simple)))))))
 
-(deftest a-failed-write-does-not-hold-the-slot
+(deftest a-failed-write-is-counted-as-dropped
   (with-recorder (directory)
     (multiple-value-bind (condition backtrace)
         (signal-and-capture (lambda () (fail-in-place-a "disk full")))
@@ -439,9 +445,16 @@ backtrace taken where it was signalled, as the editor's handlers do."
       (ok (handler-case (progn (ir:record-incident condition backtrace :command) nil)
             (error () t)))
       (delete-file (merge-pathnames "new" directory))
+      ;; the slot stays taken: a directory that cannot be written is not
+      ;; tried again on every error
+      (ok (null (ir:record-incident condition backtrace :command)))
+      (let ((fingerprint (ir:incident-fingerprint condition backtrace)))
+        (decf (gethash fingerprint ir::*last-written-times*)
+              (1+ ir::*same-fingerprint-interval*)))
+      ;; the next one written counts the failed one and the suppressed one
       (let ((path (ir:record-incident condition backtrace :command)))
         (ok path)
-        (ok (= 1 ir::*incident-count*))))))
+        (ok (= 2 (gethash "suppressed_since_last" (read-incident path))))))))
 
 (deftest a-failed-write-leaves-no-temporary-file
   (with-recorder (directory)

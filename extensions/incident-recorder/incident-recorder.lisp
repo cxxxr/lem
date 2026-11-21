@@ -104,17 +104,19 @@ the names of lambdas defined at the top level of a file.")
   (reverse (copy-list *recent-commands*)))
 
 (defun text-key-p (key)
-  "Return true if KEY types or deletes a character: one character with no
-modifier other than shift, a key insertion-key-p takes (Space, Return, Tab),
-or Backspace. Recording Space or Backspace would tell the length of the
-words of a typed password."
-  (or (insertion-key-p key)
-      (match-key key :sym "Backspace")
-      (and (not (or (key-ctrl key) (key-meta key) (key-super key) (key-hyper key)))
-           (= 1 (length (key-sym key))))))
+  "Return true if KEY types or deletes a character: one character, Space,
+Return, Tab, Backspace or Delete, with no modifier other than shift (which
+some frontends set on named keys). Recording Space or Backspace would tell
+the length of the words of a typed password."
+  (and (not (or (key-ctrl key) (key-meta key) (key-super key) (key-hyper key)))
+       (let ((sym (key-sym key)))
+         (or (= 1 (length sym))
+             (member sym '("Space" "Return" "Tab" "Backspace" "Delete")
+                     :test #'string=)))))
 
 (defun recorded-keys (keys)
-  "Return KEYS as a string, or NIL when every key of them types a character.
+  "Return KEYS as a string, or NIL when every key of them types or deletes a
+character (text-key-p).
 Many commands run on typed text, not only self-insert (terminal-input,
 isearch, completion, skk), so typed text is told by its keys and not by
 the command: a password typed in a terminal or a prompt is not recorded."
@@ -277,7 +279,8 @@ one build to the next."
     ;; With *package* bound to KEYWORD every symbol is printed with its
     ;; package, whatever package was current when the error was signalled,
     ;; and the same way whatever the user set the printer to in init.lisp.
-    ;; safe-backtrace already binds *package* to CL for the frames.
+    ;; The frame names are printed by safe-backtrace, with *package* bound
+    ;; to CL.
     (fnv-1a (format nil "~A~{|~A~}"
                     (let ((*package* (find-package :keyword))
                           (*print-case* :upcase)
@@ -331,12 +334,21 @@ an incident is written while the editor may be in a broken state."
            table))
        (recent-commands)))
 
+(defun recorded-condition (condition)
+  "Return the error a timer-error CONDITION wraps, else CONDITION: two
+errors of a timer's function are told apart by their types."
+  (if (typep condition 'lem/common/timer:timer-error)
+      (lem/common/timer:timer-error-condition condition)
+      condition))
+
 (defun incident-json (condition backtrace context fingerprint time suppressed)
   "Return the incident as a hash table for yason."
   (let ((table (make-hash-table :test 'equal))
         (condition-table (make-hash-table :test 'equal))
         (lem-table (make-hash-table :test 'equal)))
-    (setf (gethash "type" condition-table) (safe-string (lambda () (type-of condition)))
+    ;; A timer-error's message names the timer
+    (setf (gethash "type" condition-table)
+          (safe-string (lambda () (type-of (recorded-condition condition))))
           (gethash "message" condition-table)
           (cut-string (or (safe-string (lambda () condition)) "") *max-message-length*))
     (setf (gethash "revision" lem-table) (safe-string #'lem-git-revision)
@@ -361,34 +373,26 @@ an incident is written while the editor may be in a broken state."
 
 (defun claim-slot (fingerprint time)
   "Decide whether an incident with FINGERPRINT at TIME is written.
-Return (values write-p suppressed-count-to-report last-written-time), the
-last two for release-slot."
+Return (values write-p suppressed-count-to-report)."
   (bt2:with-lock-held (*recorder-lock*)
     (let ((last (gethash fingerprint *last-written-times*)))
       (cond ((or (>= *incident-count* *max-incidents-per-session*)
                  (and last (< (- time last) *same-fingerprint-interval*)))
              (incf (gethash fingerprint *suppressed-counts* 0))
-             (values nil 0 last))
+             (values nil 0))
             (t
              (incf *incident-count*)
              (setf (gethash fingerprint *last-written-times*) time)
-             (values t
-                     (prog1 (gethash fingerprint *suppressed-counts* 0)
-                       (remhash fingerprint *suppressed-counts*))
-                     last))))))
+             (values t (prog1 (gethash fingerprint *suppressed-counts* 0)
+                         (remhash fingerprint *suppressed-counts*))))))))
 
-(defun release-slot (fingerprint time suppressed last)
-  "Undo the claim-slot that returned SUPPRESSED and LAST for FINGERPRINT at
-TIME, when the incident could not be written: the next error with
-FINGERPRINT is written, and says how many were dropped before."
+(defun release-slot (fingerprint suppressed)
+  "Count the incident with FINGERPRINT that could not be written, and the
+SUPPRESSED ones its claim-slot took, as dropped: the next one written says
+so. The slot itself stays taken, so that a directory that cannot be written
+is tried once per fingerprint and interval, not on every error."
   (bt2:with-lock-held (*recorder-lock*)
-    (decf *incident-count*)
-    ;; unless another error with FINGERPRINT was written since
-    (when (eql time (gethash fingerprint *last-written-times*))
-      (if last
-          (setf (gethash fingerprint *last-written-times*) last)
-          (remhash fingerprint *last-written-times*)))
-    (incf (gethash fingerprint *suppressed-counts* 0) suppressed)))
+    (incf (gethash fingerprint *suppressed-counts* 0) (1+ suppressed))))
 
 (defun write-incident-file (table directory name)
   "Write TABLE as JSON to DIRECTORY/NAME, through a temporary file, so that
@@ -414,15 +418,12 @@ The temporary file is deleted if the write fails."
   "Write CONDITION as an incident under (incident-directory)/new/ and return
 its pathname, or NIL when recording is off or the incident was rate limited.
 Meant for lem-core:*error-report-hook*.
-A timer-error is recorded as the error it wraps, so that two errors of a
-timer's function are told apart by their types."
+A timer-error is recorded with the type and fingerprint of the error it
+wraps (recorded-condition) and its own message, which names the timer."
   (when *incident-recording-enabled*
-    (let* ((condition (if (typep condition 'lem/common/timer:timer-error)
-                          (lem/common/timer:timer-error-condition condition)
-                          condition))
-           (time (get-universal-time))
-           (fingerprint (incident-fingerprint condition backtrace)))
-      (multiple-value-bind (write-p suppressed last) (claim-slot fingerprint time)
+    (let* ((time (get-universal-time))
+           (fingerprint (incident-fingerprint (recorded-condition condition) backtrace)))
+      (multiple-value-bind (write-p suppressed) (claim-slot fingerprint time)
         (when write-p
           (let ((directory (merge-pathnames "new/" (incident-directory)))
                 (name (format nil "~A-~A-~A.json"
@@ -436,7 +437,7 @@ timer's function are told apart by their types."
                              directory
                              name))
               (unless path
-                (release-slot fingerprint time suppressed last)))
+                (release-slot fingerprint suppressed)))
             (ignore-errors (log:error "Incident ~A written to ~A" fingerprint path))
             path))))))
 

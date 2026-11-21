@@ -46,7 +46,9 @@ Each of these is filed with `$I resolve <fp> wontfix "<why>"`:
   would do: then it is a bug, go on).
 
 Look for an existing issue too: `gh issue list -R cxxxr/lem --search
-"<fingerprint>"` and a search by the condition type and function name.
+"<fingerprint>"` and a search by the condition type and function name (the
+fingerprint of an error changes when the recorder's normalization does, as
+in cxxxr/lem#79).
 
 ## 3. Reproduce it
 
@@ -57,8 +59,9 @@ machinery: `SB-*`, `SAFE-BACKTRACE` (frame 0 of every incident),
 user did: the commands, their keys, and how many times in a row. Keys that
 type or delete text (characters, `Space`, `Return`, `Tab`, `Backspace`) are
 not kept, whatever the command, so `keys` is null for them and the typed
-text is unknown. A timer's error is recorded as the error the timer
-function signalled, not as `TIMER-ERROR`. `buffer` gives the major mode, the minor modes, the file
+text is unknown. A timer's error has the type and fingerprint of the error
+the timer's function signalled, not `TIMER-ERROR`; its message names the
+timer. `buffer` gives the major mode, the minor modes, the file
 type and the line count.
 
 - Write a Rove test that fails the same way (same condition type at the same
