@@ -553,3 +553,23 @@
     (testing "the later error is warned about"
       (ok (= 1 (length warnings)))
       (ok (search "3" (first warnings))))))
+
+(deftest map-protected/a-warning-handler-that-exits-skips-nothing
+  ;; map-protected is internal: a helper of teardown-frames and teardown-windows.
+  (let ((called '()))
+    (block exit
+      (handler-bind ((warning (lambda (w)
+                                (declare (ignore w))
+                                (return-from exit))))
+        (handler-case
+            (lem-core::map-protected
+             (lambda (n)
+               (push n called)
+               (case n
+                 (0 (error "0"))
+                 ;; As teardown-windows inside teardown-frames: a nested
+                 ;; map-protected whose two calls fail warns about the second.
+                 (1 (lem-core::map-protected (lambda (x) (error "~A" x)) '(a b)))))
+             '(0 1 2))
+          (error () nil))))
+    (ok (equal '(0 1 2) (reverse called)))))

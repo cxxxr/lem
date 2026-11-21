@@ -178,15 +178,23 @@ errors are only warned about, so that they do not replace the first."
                      (funcall function element)
                      (setf done t))
                 (unless done
-                  ;; Warned once all are done, so that a handler of the
-                  ;; warning that exits cannot skip the rest.
-                  (let ((failures '()))
+                  ;; The warnings, also those of nested calls, are held until
+                  ;; all are done, so that a handler of a warning that exits
+                  ;; cannot skip the rest.
+                  (let ((warnings '()))
                     (dolist (other rest)
-                      (handler-case (funcall function other)
+                      (handler-case
+                          (handler-bind ((warning (lambda (warning)
+                                                    (push warning warnings)
+                                                    (muffle-warning warning))))
+                            (funcall function other))
                         (error (condition)
-                          (push (cons other condition) failures))))
-                    (loop :for (other . condition) :in (nreverse failures)
-                          :do (warn "~A also failed: ~A" other condition))))))))
+                          (push (make-condition 'simple-warning
+                                                :format-control "~A also failed: ~A"
+                                                :format-arguments (list other condition))
+                                warnings))))
+                    (dolist (warning (nreverse warnings))
+                      (warn warning))))))))
 
 (defun teardown-frames ()
   "Tear down every frame: the ones made (all-frames), such as the hidden tabs of
