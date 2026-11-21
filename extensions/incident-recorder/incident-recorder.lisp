@@ -25,6 +25,10 @@ errors can be triaged and fixed later (.claude/skills/triage/)."))
 (defparameter *max-incidents-per-session* 100
   "No more incidents are written in this session after this many.")
 
+(defparameter *max-failed-writes-per-session* 10
+  "No more incidents are tried in this session after this many failed to be
+written (a full disk, a read-only home).")
+
 (defparameter *same-fingerprint-interval* 60
   "Seconds during which another error with the same fingerprint is not written again.")
 
@@ -32,7 +36,8 @@ errors can be triaged and fixed later (.claude/skills/triage/)."))
   "Characters kept of the condition's message, which may hold user text.")
 
 (defparameter *max-frame-length* 400
-  "Characters kept of each backtrace frame.")
+  "Characters kept of each backtrace frame, at least its whole function
+name (cut-frame).")
 
 (defparameter *max-backtrace-lines* 120
   "Lines kept of the backtrace.")
@@ -43,15 +48,19 @@ errors can be triaged and fixed later (.claude/skills/triage/)."))
 (defparameter *machinery-frame-regex*
   (ppcre:create-scanner
    (format nil "~{(?:~A)~^|~}"
-           '(;; the Lisp, its debugger and uiop's backtrace printer
+           '(;; the Lisp and its debugger, and uiop and asdf, which run
+             ;; the code that failed in a load or a test
              "^\\(?(?:SB-[A-Z-]+|UIOP[A-Z/-]*|ASDF[A-Z/-]*)::?"
              ;; "foreign function: call_into_lisp" and the like
              "^\""
              ;; signalling functions
-             "^(?:ERROR|CERROR|SIGNAL|WARN|EDITOR-ERROR|LEM[A-Z/-]*::?EDITOR-ERROR)$"
-             ;; the editor's handlers and this recorder, also as the
-             ;; parent of a (LAMBDA ... :IN ...) or (FLET ... :IN ...) frame
-             "(?:BACKTRACE-STRING|SAFE-BACKTRACE|POP-UP-BACKTRACE|BAILOUT|REPORT-ERROR|RECORD-INCIDENT|CALL-TIMER-FUNCTION|CALL-BACKGROUND-JOB)\\)?$"
+             "^(?:ERROR|CERROR|SIGNAL|WARN|LEM/BUFFER/ERRORS::?EDITOR-ERROR)$"
+             ;; the editor's handlers, safe-backtrace (frame 0 of every
+             ;; backtrace) and this recorder, by their full names, also as
+             ;; the parent of a (LAMBDA ... :IN ...) or (FLET ... :IN ...)
+             ;; frame: a function of the same name in another package is
+             ;; where an error was signalled
+             "(?:^|:IN )(?:LEM-CORE::?(?:BACKTRACE-STRING|POP-UP-BACKTRACE|BAILOUT|REPORT-ERROR|CALL-BACKGROUND-JOB)|LEM/COMMON/BACKTRACE::?SAFE-BACKTRACE|LEM/COMMON/TIMER::?CALL-TIMER-FUNCTION|LEM-INCIDENT-RECORDER::?RECORD-INCIDENT)\\)*$"
              ;; the handler of with-error-handler, expanded in these functions
              "^\\(LAMBDA \\(CONDITION\\) :IN LEM-CORE::?(?:TOPLEVEL-)?COMMAND-LOOP\\)$"))
    :case-insensitive-mode t)
@@ -64,12 +73,16 @@ Written only in the editor thread.")
 (defvar *incident-count* 0
   "Incidents written in this session.")
 
+(defvar *failed-write-count* 0
+  "Incidents that failed to be written in this session.")
+
 (defvar *last-written-times* (make-hash-table :test 'equal)
-  "Fingerprint -> universal time it was last written.")
+  "Fingerprint -> universal time it was last written, or last tried to be.")
 
 (defvar *suppressed-counts* (make-hash-table :test 'equal)
   "Fingerprint -> errors not written since the last write, because of
-*same-fingerprint-interval*.")
+*same-fingerprint-interval* or *max-incidents-per-session*, or because the
+write failed.")
 
 (defvar *recorder-lock* (bt2:make-lock :name "incident recorder")
   "Guards the counters: a crash can be reported from another thread.")
@@ -90,7 +103,8 @@ the names of lambdas defined at the top level of a file.")
   "Forget the recent commands and the per-session counters (for tests)."
   (bt2:with-lock-held (*recorder-lock*)
     (setf *recent-commands* '()
-          *incident-count* 0)
+          *incident-count* 0
+          *failed-write-count* 0)
     (clrhash *last-written-times*)
     (clrhash *suppressed-counts*)))
 
@@ -100,17 +114,29 @@ the names of lambdas defined at the top level of a file.")
   (reverse (copy-list *recent-commands*)))
 
 (defun text-key-p (key)
-  "Return true if KEY types a character: one character with no modifier
-other than shift."
-  (and (not (or (key-ctrl key) (key-meta key) (key-super key) (key-hyper key)))
-       (= 1 (length (key-sym key)))))
+  "Return true if KEY types or deletes a character: one character, Space,
+Return or Backspace with no modifier other than shift (which some frontends
+keep on these keys while a capital is typed), or Tab or Delete with no
+modifier (Shift-Tab and Shift-Delete run commands). Recording Space or
+Backspace would tell the length of the words of a typed password."
+  (let ((sym (key-sym key)))
+    (or (and (not (or (key-ctrl key) (key-meta key) (key-super key) (key-hyper key)))
+             (or (= 1 (length sym))
+                 (member sym '("Space" "Return" "Backspace") :test #'string=)))
+        (match-key key :sym "Tab")
+        (match-key key :sym "Delete"))))
 
 (defun recorded-keys (keys)
-  "Return KEYS as a string, or NIL when every key of them types a character.
+  "Return KEYS as a string, or NIL when every key of them types or deletes a
+character (text-key-p).
 Many commands run on typed text, not only self-insert (terminal-input,
 isearch, completion, skk), so typed text is told by its keys and not by
-the command: a password typed in a terminal or a prompt is not recorded."
-  (when (and keys (notevery #'text-key-p keys))
+the command: a password typed in a terminal or a prompt is not recorded.
+C-h alone is NIL too, as a terminal sends it for Backspace; C-h f is not."
+  (when (and keys
+             (notevery #'text-key-p keys)
+             (not (and (null (rest keys))
+                       (match-key (first keys) :ctrl t :sym "h"))))
     (keyseq-to-string keys)))
 
 (defun record-command ()
@@ -147,34 +173,68 @@ one line per frame."
       (loop :for line := (read-line in nil)
             :for count :from 0
             :while (and line (< count *max-backtrace-lines*))
-            :do (write-line (cut-string line *max-frame-length*) out)))))
+            :do (write-line (cut-frame line) out)))))
 
 (defun frame-function-name (line)
   "Return the function part of a backtrace LINE such as
 \"3: (LEM-CORE::FOO #<BUFFER a> 1)\", or NIL if LINE is not a frame."
   (ppcre:register-groups-bind (rest) ("^\\s*\\d+: \\((.*)$" line)
-    (if (and (plusp (length rest)) (char= #\( (char rest 0)))
-        ;; (LAMBDA (X) :IN FOO) or (FLET BAR :IN FOO): up to the matching
-        ;; paren, not counting the parens in strings such as :IN "/a (b).lisp"
-        (loop :with depth := 0
-              :with in-string := nil
-              :with escaped := nil
-              :for i :from 0 :below (length rest)
-              :for c := (char rest i)
-              :do (cond (escaped (setf escaped nil))
-                        (in-string (case c
-                                     (#\\ (setf escaped t))
-                                     (#\" (setf in-string nil))))
-                        (t (case c
-                             (#\" (setf in-string t))
-                             (#\( (incf depth))
-                             (#\) (decf depth)
-                              (when (zerop depth)
-                                (return (subseq rest 0 (1+ i))))))))
-              :finally (return rest))
-        (subseq rest 0 (or (position-if (lambda (c) (member c '(#\Space #\))))
-                                        rest)
-                           (length rest))))))
+    (subseq rest 0 (name-end rest))))
+
+(defun name-end (text)
+  "Return where the name TEXT starts with ends: after the paren that closes
+it when it is a list such as (LAMBDA (X) :IN FOO), else at the first space
+or closing paren. Parens and spaces in strings (:IN \"/a (b).lisp\"), in
+|...| symbol names, after a backslash and after #\\ do not count."
+  (let ((listp (and (plusp (length text)) (char= #\( (char text 0))))
+        (depth 0)
+        (quote-char nil)
+        (i 0))
+    (loop :while (< i (length text))
+          :do (let ((c (char text i)))
+                (cond ((char= c #\\)
+                       ;; the next character is taken as it is
+                       (incf i))
+                      (quote-char
+                       (when (char= c quote-char)
+                         (setf quote-char nil)))
+                      ((member c '(#\" #\|))
+                       (setf quote-char c))
+                      ((and (char= c #\#)
+                            (< (1+ i) (length text))
+                            (char= #\\ (char text (1+ i))))
+                       ;; #\( is a character, not a paren
+                       (incf i 2))
+                      ((char= c #\()
+                       (incf depth))
+                      ((char= c #\))
+                       (cond ((not listp) (return-from name-end i))
+                             ((= depth 1) (return-from name-end (1+ i)))
+                             (t (decf depth))))
+                      ((and (char= c #\Space) (not listp))
+                       (return-from name-end i))))
+              (incf i))
+    (length text)))
+
+(defun cut-frame (line)
+  "Return the backtrace LINE cut to about *max-frame-length* characters.
+The function name is kept whole and the arguments are cut instead: the name
+tells where the error was, and the fingerprint is made of it."
+  (let* ((name (frame-function-name line))
+         (start (and name (search name line))))
+    (if (and start (> (length line) *max-frame-length*))
+        (let ((end (max *max-frame-length* (+ start (length name)))))
+          (format nil "~A... (~D chars)" (subseq line 0 end) (length line)))
+        (cut-string line *max-frame-length*))))
+
+(defun type-name (condition package)
+  "Return the type of CONDITION printed in PACKAGE with the standard printer
+settings, whatever the user set them to in init.lisp (case, gensyms,
+readtable case): in KEYWORD every symbol has its package."
+  (with-standard-io-syntax
+    (let ((*package* (find-package package))
+          (*print-readably* nil))
+      (prin1-to-string (type-of condition)))))
 
 (defun fnv-1a (string)
   "Return the 32-bit FNV-1a hash of STRING's UTF-8 octets as 8 hex digits.
@@ -185,9 +245,12 @@ Used instead of sxhash, which may change between Lisp versions."
     (format nil "~(~8,'0x~)" hash)))
 
 (defun normalize-source-path (path)
-  "Return PATH relative to *lem-source-root* if it is under it, else its
-file name: the same file gives the same text in every checkout."
-  (let ((root *lem-source-root*))
+  "Return PATH, the text of a printed string (its backslashes doubled),
+relative to *lem-source-root* if it is under it, else its file name, with /
+for the directory separator: the same file gives the same text in every
+checkout, on Windows too."
+  (let ((path (substitute #\/ #\\ (ppcre:regex-replace-all "\\\\(.)" path "\\1")))
+        (root (and *lem-source-root* (substitute #\/ #\\ *lem-source-root*))))
     (if (and root
              (> (length path) (length root))
              (string= root path :end2 (length root)))
@@ -195,17 +258,29 @@ file name: the same file gives the same text in every checkout."
         (let ((slash (position #\/ path :from-end t)))
           (if slash (subseq path (1+ slash)) path)))))
 
+(defun strip-gensym-counters (name)
+  "Return NAME without the counters of the gensyms in it: #:CONDITION0 in
+(LAMBDA (#:CONDITION0) ...) from a macro, #:|params12|, and the name of a
+flet or labels made by gensym, which SBCL prints as a string,
+(FLET \"THUNK0\" :IN FOO)."
+  (reduce (lambda (name rule)
+            (ppcre:regex-replace-all (first rule) name (second rule)))
+          '(("(#:[^\\s()|]*?)[0-9]+(?=[\\s()]|$)" "\\1")
+            ("(#:\\|[^|]*?)[0-9]+\\|" "\\1|")
+            ("(\\((?:FLET|LABELS) \"[^\"]*?)[0-9]+\"" "\\1\""))
+          :initial-value name))
+
 (defun normalize-frame-name (name)
   "Return NAME without what changes from one build or checkout to another:
-the counters of gensyms, (LAMBDA (#:CONDITION0) ...) from a macro, and the
-absolute path of a lambda defined at the top level of a file,
+the counters of gensyms (strip-gensym-counters) and the absolute path of a
+lambda defined at the top level of a file,
 (LAMBDA () :IN \"/home/u/lem/src/lem.lisp\")."
   (ppcre:regex-replace-all
    ":IN \"((?:[^\"\\\\]|\\\\.)*)\""
-   (ppcre:regex-replace-all "(#:[^\\s()|]*?)[0-9]+(?=[\\s()]|$)" name "\\1")
+   (strip-gensym-counters name)
    (lambda (match path)
      (declare (ignore match))
-     (format nil ":IN \"~A\"" (normalize-source-path path)))
+     (format nil ":IN ~S" (normalize-source-path path)))
    :simple-calls t))
 
 (defun incident-fingerprint (condition backtrace)
@@ -215,7 +290,7 @@ topmost frames below the error machinery. Frame arguments and the error
 message are left out, since they change from one occurrence to the next,
 and the names are normalized (normalize-frame-name), since they change from
 one build to the next."
-  ;; The lines are read whole: sanitize-backtrace could cut a long name.
+  ;; The lines are read whole, not as sanitize-backtrace cuts them.
   (let ((names (with-input-from-string (in (or backtrace ""))
                  (loop :for line := (read-line in nil)
                        :while line
@@ -224,11 +299,12 @@ one build to the next."
                                   (not (ppcre:scan *machinery-frame-regex* name)))
                          :collect (normalize-frame-name name)))))
     ;; With *package* bound to KEYWORD every symbol is printed with its
-    ;; package, whatever package was current when the error was signalled.
-    ;; safe-backtrace already binds *package* to CL for the frames.
+    ;; package, whatever package was current when the error was signalled,
+    ;; and the same way whatever the user set the printer to in init.lisp.
+    ;; The frame names are printed by safe-backtrace, with *package* bound
+    ;; to CL.
     (fnv-1a (format nil "~A~{|~A~}"
-                    (let ((*package* (find-package :keyword)))
-                      (prin1-to-string (type-of condition)))
+                    (type-name condition :keyword)
                     (subseq names 0 (min *fingerprint-frame-count* (length names)))))))
 
 (defun utc-timestamp (universal-time &key compact)
@@ -266,21 +342,32 @@ an incident is written while the editor may be in a broken state."
     table))
 
 (defun commands-json ()
-  "Return the recent commands as a list of hash tables, oldest first."
-  (mapcar (lambda (entry)
-            (let ((table (make-hash-table :test 'equal)))
-              (setf (gethash "command" table) (getf entry :command)
-                    (gethash "keys" table) (getf entry :keys)
-                    (gethash "count" table) (getf entry :count))
-              table))
-          (recent-commands)))
+  "Return the recent commands as a vector of hash tables, oldest first
+(a vector, since yason writes an empty list as null)."
+  (map 'vector
+       (lambda (entry)
+         (let ((table (make-hash-table :test 'equal)))
+           (setf (gethash "command" table) (getf entry :command)
+                 (gethash "keys" table) (getf entry :keys)
+                 (gethash "count" table) (getf entry :count))
+           table))
+       (recent-commands)))
+
+(defun recorded-condition (condition)
+  "Return the error a timer-error CONDITION wraps, else CONDITION: two
+errors of a timer's function are told apart by their types."
+  (if (typep condition 'lem/common/timer:timer-error)
+      (lem/common/timer:timer-error-condition condition)
+      condition))
 
 (defun incident-json (condition backtrace context fingerprint time suppressed)
   "Return the incident as a hash table for yason."
   (let ((table (make-hash-table :test 'equal))
         (condition-table (make-hash-table :test 'equal))
         (lem-table (make-hash-table :test 'equal)))
-    (setf (gethash "type" condition-table) (safe-string (lambda () (type-of condition)))
+    ;; A timer-error's message names the timer
+    (setf (gethash "type" condition-table)
+          (ignore-errors (type-name (recorded-condition condition) :cl))
           (gethash "message" condition-table)
           (cut-string (or (safe-string (lambda () condition)) "") *max-message-length*))
     (setf (gethash "revision" lem-table) (safe-string #'lem-git-revision)
@@ -309,6 +396,7 @@ Return (values write-p suppressed-count-to-report)."
   (bt2:with-lock-held (*recorder-lock*)
     (let ((last (gethash fingerprint *last-written-times*)))
       (cond ((or (>= *incident-count* *max-incidents-per-session*)
+                 (>= *failed-write-count* *max-failed-writes-per-session*)
                  (and last (< (- time last) *same-fingerprint-interval*)))
              (incf (gethash fingerprint *suppressed-counts* 0))
              (values nil 0))
@@ -318,37 +406,65 @@ Return (values write-p suppressed-count-to-report)."
              (values t (prog1 (gethash fingerprint *suppressed-counts* 0)
                          (remhash fingerprint *suppressed-counts*))))))))
 
+(defun release-slot (fingerprint suppressed)
+  "Count the incident with FINGERPRINT that could not be written, and the
+SUPPRESSED ones its claim-slot took, as dropped: the next one written says
+so. The slot itself stays taken, so that a directory that cannot be written
+is tried once per fingerprint and interval, not on every error, and at
+most *max-failed-writes-per-session* times. The first failure is logged."
+  (when (= 1 (bt2:with-lock-held (*recorder-lock*)
+               ;; not counted toward *max-incidents-per-session*, which is
+               ;; for files written
+               (decf *incident-count*)
+               (incf (gethash fingerprint *suppressed-counts* 0) (1+ suppressed))
+               (incf *failed-write-count*)))
+    (ignore-errors
+     (log:error "Incidents cannot be written to ~A" (incident-directory)))))
+
 (defun write-incident-file (table directory name)
   "Write TABLE as JSON to DIRECTORY/NAME, through a temporary file, so that
-a reader never sees a partly written incident. Return the pathname."
+a reader never sees a partly written incident. Return the pathname.
+The temporary file is deleted if the write fails."
   (let ((tmp (merge-pathnames (concatenate 'string "." name ".tmp") directory))
-        (path (merge-pathnames name directory)))
+        (path (merge-pathnames name directory))
+        (written nil))
     (ensure-directories-exist directory)
-    (with-open-file (out tmp :direction :output
-                             :if-exists :supersede
-                             :external-format :utf-8)
-      (yason:encode table (yason:make-json-output-stream out :indent 2)))
-    (rename-file tmp path)
+    (unwind-protect
+         (progn
+           (with-open-file (out tmp :direction :output
+                                    :if-exists :supersede
+                                    :external-format :utf-8)
+             (yason:encode table (yason:make-json-output-stream out :indent 2)))
+           (rename-file tmp path)
+           (setf written t))
+      (unless written
+        (ignore-errors (delete-file tmp))))
     path))
 
 (defun record-incident (condition backtrace context)
   "Write CONDITION as an incident under (incident-directory)/new/ and return
 its pathname, or NIL when recording is off or the incident was rate limited.
-Meant for lem-core:*error-report-hook*."
+Meant for lem-core:*error-report-hook*.
+A timer-error is recorded with the type and fingerprint of the error it
+wraps (recorded-condition) and its own message, which names the timer."
   (when *incident-recording-enabled*
     (let* ((time (get-universal-time))
-           (fingerprint (incident-fingerprint condition backtrace)))
+           (fingerprint (incident-fingerprint (recorded-condition condition) backtrace)))
       (multiple-value-bind (write-p suppressed) (claim-slot fingerprint time)
         (when write-p
-          (let* ((directory (merge-pathnames "new/" (incident-directory)))
-                 (name (format nil "~A-~A-~A.json"
-                               (utc-timestamp time :compact t)
-                               fingerprint
-                               (string-downcase (symbol-name context))))
-                 (path (write-incident-file
-                        (incident-json condition backtrace context fingerprint time suppressed)
-                        directory
-                        name)))
+          (let ((directory (merge-pathnames "new/" (incident-directory)))
+                (name (format nil "~A-~A-~A.json"
+                              (utc-timestamp time :compact t)
+                              fingerprint
+                              (string-downcase (symbol-name context))))
+                (path nil))
+            (unwind-protect
+                 (setf path (write-incident-file
+                             (incident-json condition backtrace context fingerprint time suppressed)
+                             directory
+                             name))
+              (unless path
+                (release-slot fingerprint suppressed)))
             (ignore-errors (log:error "Incident ~A written to ~A" fingerprint path))
             path))))))
 

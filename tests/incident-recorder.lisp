@@ -17,6 +17,7 @@
          (lem:*error-report-hook* '())
          (ir::*recent-commands* '())
          (ir::*incident-count* 0)
+         (ir::*failed-write-count* 0)
          (ir::*last-written-times* (make-hash-table :test 'equal))
          (ir::*suppressed-counts* (make-hash-table :test 'equal))
          (lem-core::*last-reported-condition* nil))
@@ -232,7 +233,7 @@ backtrace taken where it was signalled, as the editor's handlers do."
   (ok (null (ir::recorded-keys (list (lem:make-key :sym "p") (lem:make-key :sym "w")))))
   (ok (null (ir::recorded-keys (list (lem:make-key :shift t :sym "P")))))
   (ok (equal "C-a" (ir::recorded-keys (list (lem:make-key :ctrl t :sym "a")))))
-  (ok (equal "Return" (ir::recorded-keys (list (lem:make-key :sym "Return")))))
+  (ok (equal "M-x" (ir::recorded-keys (list (lem:make-key :meta t :sym "x")))))
   (ok (null (ir::recorded-keys '()))))
 
 (define-condition test-error (error) ())
@@ -336,3 +337,179 @@ backtrace taken where it was signalled, as the editor's handlers do."
       (let ((other (ppcre:regex-replace "#:CONDITION[0-9]+" backtrace "#:CONDITION99999")))
         (ok (equal (ir:incident-fingerprint condition backtrace)
                    (ir:incident-fingerprint condition other)))))))
+
+(deftest machinery-frames-are-matched-by-their-full-names
+  (dolist (name '("LEM-CORE::REPORT-ERROR"
+                  "LEM-CORE:POP-UP-BACKTRACE"
+                  "LEM/COMMON/TIMER::CALL-TIMER-FUNCTION"
+                  "LEM-INCIDENT-RECORDER:RECORD-INCIDENT"
+                  "LEM/BUFFER/ERRORS:EDITOR-ERROR"
+                  "(LAMBDA (C) :IN LEM-CORE::CALL-BACKGROUND-JOB)"
+                  "(LAMBDA (CONDITION) :IN LEM/COMMON/TIMER::CALL-TIMER-FUNCTION)"
+                  "(LAMBDA () :IN (LAMBDA (C) :IN LEM-CORE::CALL-BACKGROUND-JOB))"))
+    (ok (ppcre:scan ir::*machinery-frame-regex* name) name))
+  ;; other functions whose names end the same way are where the error is
+  (dolist (name '("CLYSM-UI::REPORT-ERROR"
+                  "LEM-LSP-MODE::LSP-REPORT-ERROR"
+                  "MY-MODE::BAILOUT"
+                  "(LAMBDA () :IN MY-MODE::CALL-BACKGROUND-JOB)"
+                  "MY-MODE::EDITOR-ERROR"))
+    (ng (ppcre:scan ir::*machinery-frame-regex* name) name)))
+
+(deftest frame-names-with-parens-in-characters-and-bars
+  (ok (equal "(:METHOD LEM-CORE::FOO ((EQL #\\()))"
+             (ir::frame-function-name "3: ((:METHOD LEM-CORE::FOO ((EQL #\\())) #\\( 1)")))
+  (ok (equal "(:METHOD LEM-CORE::FOO ((EQL #\\))))"
+             (ir::frame-function-name "3: ((:METHOD LEM-CORE::FOO ((EQL #\\)))) #\\) 1)")))
+  (ok (equal "(LAMBDA () :IN LEM-CORE::|a(b|)"
+             (ir::frame-function-name "3: ((LAMBDA () :IN LEM-CORE::|a(b|) 1)")))
+  (ok (equal "LEM-CORE::|a b)c|"
+             (ir::frame-function-name "3: (LEM-CORE::|a b)c| 1)"))))
+
+(deftest gensyms-in-flet-names-and-bars-are-normalized
+  (ok (equal (ir::normalize-frame-name "(FLET \"THUNK0\" :IN LEM-CORE::FOO)")
+             (ir::normalize-frame-name "(FLET \"THUNK17\" :IN LEM-CORE::FOO)")))
+  (ok (equal (ir::normalize-frame-name "(LABELS \"G0\" :IN LEM-CORE::FOO)")
+             (ir::normalize-frame-name "(LABELS \"G12\" :IN LEM-CORE::FOO)")))
+  (ok (equal (ir::normalize-frame-name "(LAMBDA (#:|params12|) :IN FOO)")
+             (ir::normalize-frame-name "(LAMBDA (#:|params104|) :IN FOO)")))
+  ;; a path in :IN keeps its digits
+  (ok (search "lem2.lisp" (ir::normalize-frame-name "(LAMBDA () :IN \"/x/lem2.lisp\")"))))
+
+(deftest windows-paths-are-made-relative-to-the-lem-tree
+  (let ((ir::*lem-source-root* "C:\\Users\\a\\lem\\"))
+    (ok (equal "(LAMBDA () :IN \"src/lem.lisp\")"
+               (ir::normalize-frame-name
+                "(LAMBDA () :IN \"C:\\\\Users\\\\a\\\\lem\\\\src\\\\lem.lisp\")")))
+    (ok (equal "(LAMBDA () :IN \"init.lisp\")"
+               (ir::normalize-frame-name
+                "(LAMBDA () :IN \"C:\\\\Users\\\\a\\\\.lem\\\\init.lisp\")")))))
+
+(deftest the-condition-type-in-the-fingerprint-does-not-depend-on-the-print-variables
+  ;; only the type is printed here; safe-backtrace prints the frame names
+  (multiple-value-bind (condition backtrace)
+      (signal-and-capture (lambda () (error 'test-error)))
+    (let ((fingerprint (ir:incident-fingerprint condition backtrace)))
+      (ok (equal fingerprint
+                 (let ((*print-case* :downcase)
+                       (*print-gensym* nil)
+                       (*readtable* (copy-readtable nil)))
+                   (setf (readtable-case *readtable*) :invert)
+                   (ir:incident-fingerprint condition backtrace)))))))
+
+(deftest space-return-tab-and-backspace-are-not-recorded
+  (dolist (sym '("Space" "Return" "Tab" "Backspace" "Delete"))
+    (ok (null (ir::recorded-keys (list (lem:make-key :sym "p") (lem:make-key :sym sym))))
+        sym))
+  ;; some frontends keep shift on these keys while a capital is typed
+  (dolist (sym '("Space" "Return" "Backspace"))
+    (ok (null (ir::recorded-keys (list (lem:make-key :shift t :sym sym)))) sym))
+  ;; a terminal sends C-h for Backspace, but C-h f is a help command
+  (ok (null (ir::recorded-keys (list (lem:make-key :ctrl t :sym "h")))))
+  (ok (equal "C-h f" (ir::recorded-keys (list (lem:make-key :ctrl t :sym "h")
+                                              (lem:make-key :sym "f")))))
+  ;; Shift-Tab and Shift-Delete run commands, they type nothing
+  (ok (equal "Shift-Tab" (ir::recorded-keys (list (lem:make-key :shift t :sym "Tab")))))
+  (ok (equal "Shift-Delete" (ir::recorded-keys (list (lem:make-key :shift t :sym "Delete")))))
+  (ok (equal "C-x Return" (ir::recorded-keys (list (lem:make-key :ctrl t :sym "x")
+                                                   (lem:make-key :sym "Return"))))))
+
+(deftest recent-commands-is-an-empty-array-when-empty
+  (with-recorder (directory)
+    (multiple-value-bind (condition backtrace)
+        (signal-and-capture (lambda () (fail-in-place-a "early")))
+      (let ((path (ir:record-incident condition backtrace :command)))
+        (ok (search "\"recent_commands\": []"
+                    (uiop:read-file-string path :external-format :utf-8)))))))
+
+(defun fail-with-type-error (x) (error 'type-error :datum x :expected-type 'integer))
+(defun fail-in-a-timer (kind)
+  (if (eq kind :type) (fail-with-type-error "x") (fail-in-place-b "simple")))
+
+(deftest a-timer-error-is-recorded-as-the-error-it-wraps
+  (with-recorder (directory)
+    (flet ((record (kind)
+             (let* ((timer (lem:make-idle-timer (lambda () (fail-in-a-timer kind))
+                                                :name "failing timer"))
+                    (timer-error (handler-case (progn (lem/common/timer::call-timer-function timer) nil)
+                                   (lem/common/timer:timer-error (e) e))))
+               (read-incident (ir:record-incident timer-error
+                                                  (lem/common/timer:timer-error-backtrace timer-error)
+                                                  :timer)))))
+      (let ((type (record :type))
+            (simple (record :simple)))
+        (ok (equal "TYPE-ERROR" (gethash "type" (gethash "condition" type))))
+        (ok (equal "SIMPLE-ERROR" (gethash "type" (gethash "condition" simple))))
+        ;; the message is the timer-error's, which names the timer
+        (ok (search "failing timer" (gethash "message" (gethash "condition" simple))))
+        (ok (search "b: simple" (gethash "message" (gethash "condition" simple))))
+        (ng (equal (gethash "fingerprint" type) (gethash "fingerprint" simple)))))))
+
+(deftest a-failed-write-is-counted-as-dropped
+  (with-recorder (directory)
+    (multiple-value-bind (condition backtrace)
+        (signal-and-capture (lambda () (fail-in-place-a "disk full")))
+      ;; new/ is a file, so the incident cannot be written
+      (ensure-directories-exist directory)
+      (with-open-file (out (merge-pathnames "new" directory) :direction :output))
+      (ok (handler-case (progn (ir:record-incident condition backtrace :command) nil)
+            (error () t)))
+      (delete-file (merge-pathnames "new" directory))
+      ;; the slot stays taken: a directory that cannot be written is not
+      ;; tried again on every error
+      (ok (null (ir:record-incident condition backtrace :command)))
+      (let ((fingerprint (ir:incident-fingerprint condition backtrace)))
+        (decf (gethash fingerprint ir::*last-written-times*)
+              (1+ ir::*same-fingerprint-interval*)))
+      ;; the next one written counts the failed one and the suppressed one
+      (let ((path (ir:record-incident condition backtrace :command)))
+        (ok path)
+        (ok (= 2 (gethash "suppressed_since_last" (read-incident path))))
+        ;; only the written one counts toward *max-incidents-per-session*
+        (ok (= 1 ir::*incident-count*))))))
+
+(deftest failed-writes-stop-after-a-few
+  (with-recorder (directory)
+    (let ((ir::*max-failed-writes-per-session* 2))
+      ;; new/ is a file, so no incident can be written
+      (ensure-directories-exist directory)
+      (with-open-file (out (merge-pathnames "new" directory) :direction :output))
+      (dolist (function '(fail-in-place-a fail-in-place-b))
+        (multiple-value-bind (condition backtrace)
+            (signal-and-capture (lambda () (funcall function "x")))
+          (ok (handler-case (progn (ir:record-incident condition backtrace :command) nil)
+                (error () t)))))
+      ;; a third fingerprint is not tried
+      (multiple-value-bind (condition backtrace)
+          (signal-and-capture (lambda () (error 'test-error)))
+        (ok (null (ir:record-incident condition backtrace :command)))))))
+
+(deftest the-type-in-an-incident-is-printed-the-standard-way
+  (with-recorder (directory)
+    (multiple-value-bind (condition backtrace)
+        (signal-and-capture (lambda () (error 'test-error)))
+      (let ((path (let ((*print-case* :downcase))
+                    (ir:record-incident condition backtrace :command))))
+        (ok (equal "LEM-TESTS/INCIDENT-RECORDER::TEST-ERROR"
+                   (gethash "type" (gethash "condition" (read-incident path)))))))))
+
+(deftest a-failed-write-leaves-no-temporary-file
+  (with-recorder (directory)
+    (let ((table (make-hash-table :test 'equal)))
+      (setf (gethash "a" table) 1)
+      ;; x.json is a directory with a file in it, so the rename fails after
+      ;; the temporary file is written
+      (ensure-directories-exist (merge-pathnames "x.json/y" directory))
+      (with-open-file (out (merge-pathnames "x.json/y" directory) :direction :output))
+      (ok (handler-case (progn (ir::write-incident-file table directory "x.json") nil)
+            (error () t)))
+      (ok (null (probe-file (merge-pathnames ".x.json.tmp" directory)))))))
+
+(deftest a-long-frame-keeps-its-name-and-loses-its-arguments
+  (let* ((name (format nil "(LAMBDA () :IN \"/~A/lem.lisp\")" (make-string 500 :initial-element #\a)))
+         (line (format nil "3: (~A ~A)" name (make-string 500 :initial-element #\b)))
+         (saved (string-right-trim '(#\Newline) (ir::sanitize-backtrace line))))
+    (ok (search name saved))
+    (ok (< (length saved) (+ (length name) 100)))
+    ;; the length of the whole frame
+    (ok (search (format nil "(~D chars)" (length line)) saved))))
