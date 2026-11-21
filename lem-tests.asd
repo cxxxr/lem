@@ -93,6 +93,7 @@
                (:file "visual-line")
                (:file "fold-region")
                (:file "terminal")
+               (:file "terminal-start")
                (:file "frame-multiplexer"))
   :perform (test-op (o c)
                     (symbol-call :rove :run c)))

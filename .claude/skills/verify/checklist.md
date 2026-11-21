@@ -174,5 +174,5 @@ anything. Keep the list short enough to read before each commit.
   not enough. `$V build` does not build `terminal.so`: run `make terminal-lib
   LISP="sbcl --non-interactive --load .qlot/setup.lisp"` first. tmux cannot
   send the ncurses Lem a wheel; bind a key in `*terminal-mode-keymap*` (and
-  `*bypass-commands*`) in `init.lisp` that calls `lem-core::receive-mouse-wheel`.
+  `*bypass-commands*`) in `init.lisp` that calls `lem:receive-mouse-wheel`.
 - **Origin:** the wheel could not scroll Claude Code's output in `M-x terminal`.

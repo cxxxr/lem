@@ -3,7 +3,6 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <assert.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -41,7 +40,12 @@ static run_shell_result run_shell(int rows, int cols, const char *program, char*
   int fd;
   struct winsize win = { rows, cols, 0, 0 };
   pid_t pid = forkpty(&fd, NULL, NULL, &win);
-  assert(pid >= 0);
+  if (pid < 0) {
+    /* No child and no PTY (out of processes or PTYs): let terminal_new
+       fail instead of aborting the editor. */
+    run_shell_result failed = { -1, -1 };
+    return failed;
+  }
   if (pid == 0) {
     setenv("TERM", "xterm-256color", 1);
     execvp(program, argv);
@@ -203,6 +207,17 @@ VTermScreenCallbacks screen_callbacks = {
   cb_sb_clear,
 };
 
+/* errno of this thread's last failed terminal_new.  Kept apart from errno,
+   which the FFI's own frees and the Lisp runtime can change before the
+   caller reads it. */
+static _Thread_local int last_error;
+
+/* Why the last terminal_new of this thread returned NULL (an errno value). */
+int terminal_last_error(void)
+{
+  return last_error;
+}
+
 struct terminal *terminal_new(int id,
                               int rows,
                               int cols,
@@ -218,23 +233,50 @@ struct terminal *terminal_new(int id,
                               void *cb_sb_popline,
                               void *cb_sb_clear)
 {
-  run_shell_result result = run_shell(rows, cols, program, argv);
-
-  VTerm *vterm = vterm_new(rows, cols);
-  vterm_set_utf8(vterm, 1);
-
-  VTermScreen *screen = vterm_obtain_screen(vterm);
-  /* Full-screen programs (less, vi, top, ...) switch to the alternate screen
-     and expect the original one back on exit; without this their last frame
-     overwrote the shell output and leaked into the scrollback. */
-  vterm_screen_enable_altscreen(screen, 1);
+  /* Everything that can fail is done before the shell is started, so a
+     failure has no child to kill and reap and no PTY to close.  On failure
+     NULL is returned, and terminal_last_error tells why. */
+  VTerm *vterm = NULL;
 
   /* Zeroed: the cursor is read at the first render, which can come before
      libvterm reports where the cursor is. */
   struct terminal *terminal = calloc(1, sizeof(struct terminal));
   if (terminal == NULL) {
+    last_error = ENOMEM;
     return NULL;
   }
+  /* Without the wake pipe the I/O thread could not be woken to exit. */
+  if (pipe(terminal->wake_pipe) != 0) {
+    last_error = errno;
+    free(terminal);
+    return NULL;
+  }
+  fcntl(terminal->wake_pipe[0], F_SETFD, FD_CLOEXEC);
+  fcntl(terminal->wake_pipe[1], F_SETFD, FD_CLOEXEC);
+
+  vterm = vterm_new(rows, cols);
+  if (vterm == NULL) {
+    last_error = ENOMEM;
+    goto fail;
+  }
+  vterm_set_utf8(vterm, 1);
+
+  VTermScreen *screen = vterm_obtain_screen(vterm);
+  if (screen == NULL) {
+    last_error = ENOMEM;
+    goto fail;
+  }
+  /* Full-screen programs (less, vi, top, ...) switch to the alternate screen
+     and expect the original one back on exit; without this their last frame
+     overwrote the shell output and leaked into the scrollback. */
+  vterm_screen_enable_altscreen(screen, 1);
+
+  run_shell_result result = run_shell(rows, cols, program, argv);
+  if (result.pid < 0) {
+    last_error = errno;
+    goto fail;
+  }
+
   terminal->id = id;
   terminal->screen = screen;
   terminal->vterm = vterm;
@@ -243,13 +285,6 @@ struct terminal *terminal_new(int id,
   terminal->eof = 0;
   terminal->reaped = 0;
   terminal->exit_status = -1;
-  if (pipe(terminal->wake_pipe) != 0) {
-    terminal->wake_pipe[0] = -1;
-    terminal->wake_pipe[1] = -1;
-  } else {
-    fcntl(terminal->wake_pipe[0], F_SETFD, FD_CLOEXEC);
-    fcntl(terminal->wake_pipe[1], F_SETFD, FD_CLOEXEC);
-  }
   /* Keep the PTY master out of shells spawned by later terminals. */
   fcntl(terminal->fd, F_SETFD, FD_CLOEXEC);
 
@@ -272,6 +307,14 @@ struct terminal *terminal_new(int id,
   vterm_screen_reset(screen, 1);
 
   return terminal;
+
+ fail:
+  if (vterm != NULL)
+    vterm_free(vterm);
+  close(terminal->wake_pipe[0]);
+  close(terminal->wake_pipe[1]);
+  free(terminal);
+  return NULL;
 }
 
 static int decode_wait_status(int status)
