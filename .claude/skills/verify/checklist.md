@@ -45,8 +45,14 @@ anything. Keep the list short enough to read before each commit.
   A test that depends on which buffers exist wraps its body in
   `(with-current-buffers () ...)`, which starts from an empty list and puts
   the old one back afterwards, as `tests/listener-mode.lisp` does.
+  A test that pops up a typeout window (`pop-up-backtrace`, `*EDITOR ERROR*`,
+  `pop-up-typeout-window`) also shares `lem-core::*typeout-window*` and its two
+  companions, which `with-fake-interface` does not rebind: the next popup in
+  another test reuses that window. Bind them to nil around the test, as
+  `tests/incident-recorder.lisp` does; passing locally proves little here.
 - **Origin:** cxxxr/lem#55 (a test passed alone and failed in the suite);
-  cxxxr/lem#63 (frames and the current buffer per use).
+  cxxxr/lem#63 (frames and the current buffer per use); cxxxr/lem#69 (a test
+  with two popups failed in CI only).
 
 ### A test for a bug fix
 - **Trigger:** a fix with a new regression test.

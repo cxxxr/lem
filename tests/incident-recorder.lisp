@@ -30,6 +30,22 @@
                          (declare (ignorable ,directory))
                          ,@body)))
 
+;; *EDITOR ERROR* is a typeout window, and lem-core keeps the typeout window
+;; in globals that with-fake-interface does not rebind: a popup left open by
+;; an earlier test is reused by the next popup, with a point on lines its
+;; erase deleted. The buffer list is shared too. Start each test that pops up
+;; or runs commands from an empty buffer list and no typeout window.
+(defun call-with-isolated-editor (function)
+  (lem:with-current-buffers ()
+    (let ((lem-core::*typeout-window* nil)
+          (lem-core::*typeout-before-window* nil)
+          (lem-core::*typeout-window-rewinding-values* nil))
+      (with-fake-interface ()
+        (funcall function)))))
+
+(defmacro with-isolated-editor (() &body body)
+  `(call-with-isolated-editor (lambda () ,@body)))
+
 (defun incident-files (directory)
   (directory (merge-pathnames "new/*.json" directory)))
 
@@ -122,7 +138,7 @@ backtrace taken where it was signalled, as the editor's handlers do."
       (ok (eq :command (second (first called)))))))
 
 (deftest pop-up-backtrace-records-an-incident
-  (with-fake-interface ()
+  (with-isolated-editor ()
     (with-recorder (directory)
       (block nil
         (handler-bind ((error (lambda (c)
@@ -136,7 +152,7 @@ backtrace taken where it was signalled, as the editor's handlers do."
           (ok (search "FAIL-IN-PLACE-A" (gethash "backtrace" incident))))))))
 
 (deftest an-incident-file-describes-the-error
-  (with-fake-interface ()
+  (with-isolated-editor ()
     (with-recorder (directory)
       (lem:execute-key-sequence (list (lem:make-key :sym "s")
                                       (lem:make-key :sym "e")
@@ -230,7 +246,7 @@ backtrace taken where it was signalled, as the editor's handlers do."
                  (ir:incident-fingerprint condition backtrace))))))
 
 (deftest a-timer-error-shown-by-its-handle-function-is-recorded-once
-  (with-fake-interface ()
+  (with-isolated-editor ()
     (with-recorder (directory)
       (let* ((timer (lem:make-idle-timer (lambda () (fail-in-place-b "handled"))
                                          :name "handled timer"
