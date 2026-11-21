@@ -19,11 +19,18 @@ created again if it was killed, rather than a buffer of another workspace."
         (primordial-buffer))))
 
 (defun strip-buffer-from-frame-windows (buffer frame)
-  (dolist (window (get-buffer-windows buffer :frame frame :include-floating-windows t))
-    (with-current-window window
-      (switch-to-buffer (replacement-buffer buffer frame)))
-    (when (buffer-attached-buffer buffer)
-      (delete-buffer (buffer-attached-buffer buffer)))))
+  ;; The replacement is chosen once: switch-to-buffer moves the buffer it leaves,
+  ;; BUFFER, to the head of the buffer list, so choosing it again for the next
+  ;; window would give another buffer.
+  (alexandria:when-let ((windows (get-buffer-windows buffer
+                                                     :frame frame
+                                                     :include-floating-windows t)))
+    (let ((replacement (replacement-buffer buffer frame)))
+      (dolist (window windows)
+        (with-current-window window
+          (switch-to-buffer replacement))
+        (when (buffer-attached-buffer buffer)
+          (delete-buffer (buffer-attached-buffer buffer)))))))
 
 (defmethod delete-buffer-using-manager :before
     ((manager buffer-list-manager)

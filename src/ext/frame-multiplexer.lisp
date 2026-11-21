@@ -323,30 +323,48 @@ reuses its buffer and adds it to the current frame.")
     (setf (virtual-frame-height window) (display-height))
     (call-next-method)))
 
-(defun buffer-visible-in-entry-p (virtual-frame entry buffer)
-  "Return T if BUFFER is to be offered in ENTRY's frame.
-A buffer that no frame has shown, such as one a background process created,
-is offered in every frame so that it can be found at all."
-  (or (member buffer (frame-table-entry-buffers entry))
-      (notany (lambda (other)
-                (member buffer (frame-table-entry-buffers other)))
-              (virtual-frame-entries virtual-frame))))
+(defun claimed-buffers (virtual-frame)
+  "Return a hash table of the buffers that some frame of VIRTUAL-FRAME has shown."
+  (let ((claimed (make-hash-table :test 'eq)))
+    (loop :for entry :across (virtual-frame-id/frame-table virtual-frame)
+          :when entry
+            :do (dolist (buffer (frame-table-entry-buffers entry))
+                  (setf (gethash buffer claimed) t)))
+    claimed))
 
 (defun workspace-buffer-list (frame)
-  "Return the buffers of FRAME's workspace, or NIL to offer every buffer.
+  "Return the buffers of FRAME's workspace, and T as the second value.
+They are the buffers FRAME has shown, plus the ones no frame has shown (such as
+one a background process created), so that those can be found at all.
+Return NIL and NIL, to offer every buffer, when the buffers are not separated.
 This is set to lem:*frame-buffer-list-function* while frame-multiplexer is on."
-  (when (variable-value 'frame-multiplexer-separate-buffers :global)
-    (alexandria:when-let* ((vf (gethash (implementation) *virtual-frame-map*))
-                           (entry (find-frame-table-entry vf frame)))
-      (remove-if-not (lambda (buffer) (buffer-visible-in-entry-p vf entry buffer))
-                     (buffer-list)))))
+  (let* ((vf (and (variable-value 'frame-multiplexer-separate-buffers :global)
+                  (gethash (implementation) *virtual-frame-map*)))
+         (entry (and vf (find-frame-table-entry vf frame))))
+    (if entry
+        (let ((own (frame-table-entry-buffers entry))
+              (claimed (claimed-buffers vf)))
+          (values (remove-if-not (lambda (buffer)
+                                   (or (member buffer own)
+                                       (not (gethash buffer claimed))))
+                                 (buffer-list))
+                  t))
+        (values nil nil))))
+
+(defun windows-of-frame (frame)
+  "Return every window of FRAME: the tiled ones, the floating ones and the side ones."
+  (append (window-list frame)
+          (frame-floating-windows frame)
+          (remove nil (list (frame-leftside-window frame)
+                            (frame-rightside-window frame)
+                            (frame-bottomside-window frame)))))
 
 (defun find-entry-of-current-window (virtual-frame)
   "Return the entry of the frame that holds the current window.
 It is not always the displayed frame: killing a buffer switches the windows
-of every frame to another buffer."
+of every frame, including their floating and side windows, to another buffer."
   (or (find-if (lambda (entry)
-                 (member (current-window) (window-list (frame-table-entry-frame entry))))
+                 (member (current-window) (windows-of-frame (frame-table-entry-frame entry))))
                (virtual-frame-entries virtual-frame))
       (find-frame-table-entry virtual-frame (virtual-frame-current virtual-frame))))
 
