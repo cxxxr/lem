@@ -10,6 +10,15 @@
            :positions-set-equal))
 (in-package :lem-tests/cursors)
 
+(defclass dropping-timer-manager (lem/common/timer:timer-manager) ()
+  (:documentation "Drops the notifications of the timers that the tests start
+(the timeouts of messages): their functions do not run, also not in a
+running Lem that the tests are run in."))
+
+(defmethod lem/common/timer:send-timer-notification
+    ((timer-manager dropping-timer-manager) continue)
+  (declare (ignore continue)))
+
 (defun make-testing-killring ()
   (let ((killring (lem/common/killring:make-killring 10)))
     (push-killring-item killring "aaa")
@@ -124,7 +133,7 @@
   "Execute COMMAND-CLASS in a buffer with two fake cursors, then call
 FUNCTION with the buffer while the buffer and *Messages* are still live."
   (lem-fake-interface:with-fake-interface ()
-    (lem/common/timer:with-timer-manager (make-instance 'lem/common/timer:timer-manager)
+    (lem/common/timer:with-timer-manager (make-instance 'dropping-timer-manager)
       (with-testing-buffer (buffer (make-text-buffer (lines "abc" "def" "ghi")))
         (lem:switch-to-buffer buffer)
         (make-testing-fake-cursors (lem:buffer-point buffer) 2)
@@ -152,7 +161,7 @@ FUNCTION with the buffer while the buffer and *Messages* are still live."
 (defun call-in-buffer-with-fake-cursors (function)
   "Call FUNCTION with a buffer that has the real cursor and two fake cursors."
   (lem-fake-interface:with-fake-interface ()
-    (lem/common/timer:with-timer-manager (make-instance 'lem/common/timer:timer-manager)
+    (lem/common/timer:with-timer-manager (make-instance 'dropping-timer-manager)
       (with-testing-buffer (buffer (make-text-buffer (lines "abc" "def" "ghi")))
         (lem:switch-to-buffer buffer)
         (make-testing-fake-cursors (lem:buffer-point buffer) 2)
