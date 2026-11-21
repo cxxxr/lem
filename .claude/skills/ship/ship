@@ -7,15 +7,23 @@
 #   ship pr BODY-FILE [TITLE]   push the branch and open its PR, or find its open one
 #                               (from this repository's owner) and set its body (and
 #                               TITLE if given); prints the PR number (TITLE: the first
-#                               commit's subject).  The push replaces the PR's branch
-#                               after a rebase, unless someone else pushed to it since
-#                               this clone last pushed or fetched it
+#                               commit's subject).  The push fast-forwards the PR's
+#                               branch, or replaces it after a rebase when the commit
+#                               on the remote is one this branch had (its reflog), so
+#                               that nobody else's push is overwritten
 #   ship head PR                the commit SHA at the head of the PR
 #   ship comment PR FILE        add FILE as a comment on the PR
 #   ship wait PR SHA            wait for the CI of commit SHA, once it is the PR's head:
-#                               0 passed, 1 a check failed or was cancelled, 3 timed out,
-#                               4 GitHub could not be read (3 polls in a row), 5 the PR's
-#                               head moved past SHA to a newer commit
+#                               0 passed, 1 a check failed or was cancelled (printed with
+#                               its URL: the run ID follows /runs/), 3 timed out, 4 GitHub
+#                               could not be read (3 polls in a row), 5 the PR's head
+#                               moved past SHA, or was replaced by a later commit (a
+#                               rebase pushed over it)
+#   ship rerun RUN              re-run the failed jobs of workflow run RUN (an ID or a
+#                               URL from wait) and wait until the new attempt started,
+#                               so that a wait right after it does not read the old one
+#   ship scheduled              the newest scheduled run of each workflow on the base
+#                               branch (the daily tests of what was merged); 1 if one failed
 #   ship merge PR SHA           merge the PR if its head is still SHA, then fetch the base
 #
 # Exit status: 0 done, 1 failed, 2 usage error; wait also 3, 4 and 5 (above).
@@ -27,12 +35,16 @@
 #   SHIP_CI_TIMEOUT  seconds to wait for CI (default: 2400)
 #   SHIP_CI_SLOW     checks allowed to be still pending at the timeout, as an
 #                    extended regexp on their names (default: macos; those runners
-#                    are often queued for a long time; empty: none)
-#   SHIP_CI_IGNORED  changed files no workflow runs for, as an extended regexp
-#                    (default: the paths-ignore of .github/workflows/test.yml and
-#                    ci.yml: .claude/, docs/, *.md); a PR changing only those
-#                    passes once no check and no run appeared for SHIP_CI_START
-#                    seconds (default: 180)
+#                    are often queued for a long time; empty: none).  Pull requests
+#                    build on Linux only, but a workflow with a macOS job can still
+#                    run on them (build-terminal-shared-object.yml)
+#   SHIP_CI_START    seconds with no check and no run before wait decides that no
+#                    CI applies (default: 180)
+#   SHIP_CI_IGNORED  unset (the default): no CI applies when every pull_request
+#                    workflow in .github/workflows of SHA skips all the changed
+#                    files by its paths or paths-ignore; set: an extended regexp of
+#                    the files no workflow runs for, used instead; empty: never
+#                    decide that no CI applies
 set -eu
 
 repo=${SHIP_REPO:-cxxxr/lem}
@@ -58,6 +70,89 @@ from_caller() {
 
 current_branch() {
     git symbolic-ref -q --short HEAD || { echo "not on a branch" >&2; exit 1; }
+}
+
+# Whether commit $1 is in the history of some past state of branch $2 (its
+# reflog): this branch had it before a rebase or a reset.
+included() {
+    git cat-file -e "$1^{commit}" 2>/dev/null || return 1
+    for c in $(git reflog show --format=%H "refs/heads/$2" --); do
+        git merge-base --is-ancestor "$1" "$c" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+# The pull_request filters of the workflow file $1 at commit $2, one per
+# line: "always" (it runs for every PR), "unknown" (a form not read here,
+# taken as "always"), "ignore ERE" (paths-ignore) or "paths ERE" (paths),
+# each glob turned into an extended regexp; nothing when it does not run on
+# pull requests.  Reads the block style of YAML the workflows use.
+pr_filters() {
+    git show "$2:$1" | awk '
+        function indent(s) { match(s, /^ */); return RLENGTH }
+        function value(s) {
+            sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]+#.*$/, "", s); sub(/^#.*$/, "", s)
+            return s
+        }
+        function ere(g) {
+            gsub(/[.(){}|^$\\]/, "\\\\&", g)
+            gsub(/\*\*\//, "\001", g); gsub(/\*\*/, "\002", g)
+            gsub(/\*/, "[^/]*", g)
+            gsub(/\001/, "(.*/)?", g); gsub(/\002/, ".*", g)
+            return "^" g "$"
+        }
+        function endpr() { if (pr && !filtered) print "always"; pr = 0 }
+        /^[ \t]*(#.*)?$/ { next }
+        /^[^ ]/ {
+            endpr(); inon = 0
+            if ($0 ~ /^("on"|\047on\047|on|true):/) {
+                v = value($0)
+                if (v == "") { inon = 1; child = -1 }
+                else if (v ~ /pull_request/) print "always"
+            }
+            next
+        }
+        !inon { next }
+        {
+            ind = indent($0); line = substr($0, ind + 1)
+            if (child < 0) child = ind
+            if (ind <= child) {
+                endpr(); list = ""
+                if (line ~ /^- *pull_request(_target)? *(#.*)?$/) print "always"
+                else if (line ~ /^pull_request(_target)?:/) {
+                    pr = 1; filtered = 0; v = value(line)
+                    if (v != "" && v != "{}" && v != "null" && v != "~") { print "unknown"; filtered = 1 }
+                }
+                next
+            }
+            if (!pr) next
+            if (line ~ /^(paths|paths-ignore):/) {
+                filtered = 1; list = (line ~ /^paths:/) ? "paths" : "ignore"; listind = ind
+                if (value(line) != "") { print "unknown"; list = "" }
+            } else if (list != "" && ind >= listind && line ~ /^- /) {
+                g = line; sub(/^- */, "", g); sub(/[ \t]+#.*$/, "", g)
+                if (g ~ /^\047.*\047$/ || g ~ /^".*"$/) g = substr(g, 2, length(g) - 2)
+                if (g ~ /^!/) print "unknown"; else print list " " ere(g)
+            } else if (ind <= listind) list = ""
+        }
+        END { endpr() }'
+}
+
+# Whether some pull_request workflow of commit $2 runs for the changed files
+# listed in file $1 (status 0), or each skips all of them (status 1).
+ci_applies() {
+    wfs=$(git ls-tree --name-only "$2" .github/workflows/) || return 0
+    for wf in $wfs; do
+        case $wf in *.yml|*.yaml) ;; *) continue ;; esac
+        filters=$(pr_filters "$wf" "$2") || return 0
+        [ -n "$filters" ] || continue
+        if echo "$filters" | grep -qxE 'always|unknown'; then return 0; fi
+        ign=$(echo "$filters" | sed -n 's/^ignore //p' | paste -sd'|' -)
+        pat=$(echo "$filters" | sed -n 's/^paths //p' | paste -sd'|' -)
+        if [ -n "$ign" ] && grep -qvE "$ign" "$1"; then return 0; fi
+        if [ -n "$pat" ] && grep -qE "$pat" "$1"; then return 0; fi
+    done
+    return 1
 }
 
 case "${1:-}" in
@@ -98,11 +193,25 @@ case "${1:-}" in
         body=$(from_caller "${2:?usage: ship pr BODY-FILE [TITLE]}")
         [ -r "$body" ] || { echo "cannot read $body" >&2; exit 1; }
         branch=$(current_branch)
-        # A branch rebased after its first push does not fast-forward: replace
-        # it, but only if the remote branch is still the commit this clone
-        # last saw there (none: it must not exist yet).
-        lease=$(git rev-parse -q --verify "refs/remotes/$remote/$branch" || true)
-        git push -q -u --force-with-lease="$branch:$lease" "$remote" "$branch"
+        # The remote branch as it is now, not as this clone last fetched it:
+        # a tracking ref can be stale (the branch was deleted after its merge)
+        # or missing (pushed from another clone), and a fetch moves it to a
+        # commit nobody here has seen.
+        tip=$(git ls-remote "$remote" "refs/heads/$branch") || exit 1
+        tip=${tip%%[[:space:]]*}
+        if [ -z "$tip" ]; then
+            git update-ref -d "refs/remotes/$remote/$branch" 2>/dev/null || true
+            git push -q -u "$remote" "$branch"
+        elif git merge-base --is-ancestor "$tip" HEAD 2>/dev/null; then
+            git push -q -u "$remote" "$branch"
+        elif included "$tip" "$branch"; then
+            # Rebased since that push: replace it, unless it moved meanwhile.
+            git push -q -u --force-with-lease="$branch:$tip" "$remote" "$branch"
+        else
+            echo "$remote/$branch is at $tip, a commit this branch never had:" >&2
+            echo "someone else pushed to it; fetch it and look before pushing" >&2
+            exit 1
+        fi
         # --head matches the branch name of any fork: keep the owner's PR only.
         number=$(gh pr list --repo "$repo" --head "$branch" --state open \
             --json number,headRepositoryOwner \
@@ -136,15 +245,22 @@ case "${1:-}" in
         ;;
     wait)
         number=${2:?usage: ship wait PR SHA}
-        sha=${3:?usage: ship wait PR SHA}
+        given=${3:?usage: ship wait PR SHA}
         timeout=${SHIP_CI_TIMEOUT:-2400}
         slow=${SHIP_CI_SLOW-macos}
         start=${SHIP_CI_START:-180}
-        ignored=${SHIP_CI_IGNORED:-'^(\.claude/|docs/)|\.md$'}
-        err=$(mktemp)
-        trap 'rm -f "$err"' EXIT
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+        err=$tmp/err
+        # The full SHA, lower case, as GitHub gives the head: a short or upper
+        # case one would never equal it.
+        sha=$(git rev-parse -q --verify "$given^{commit}" 2>/dev/null) || {
+            git fetch -q "$remote" "refs/pull/$number/head" 2>/dev/null || true
+            sha=$(git rev-parse -q --verify "$given^{commit}" 2>/dev/null)
+        } || { echo "no commit $given here or at the head of PR $number" >&2; exit 2; }
         waited=0
         errors=0
+        seen=
         moved=
         pending=
         running=
@@ -153,7 +269,8 @@ case "${1:-}" in
         last=
         # One poll: the PR's head and, when it is SHA, the checks, the commit
         # statuses and the workflow runs of SHA, one per line as
-        # "STATUS/CONCLUSION<tab>NAME".  Fails with gh's message in $err.
+        # "STATUS/CONCLUSION<tab>NAME<tab>CHECK-SUITE<tab>URL".  Fails with
+        # gh's message in $err.
         read_ci() {
             # The checks of commit SHA itself, not of whatever the PR's head is:
             # right after a push, the PR still shows the previous commit's checks.
@@ -161,25 +278,55 @@ case "${1:-}" in
             checks=
             runs=
             [ "$head" = "$sha" ] || return 0
-            checks=$(gh api "repos/$repo/commits/$sha/check-runs?per_page=100" \
-                --jq '.check_runs[] | "\(.status)/\(.conclusion)\t\(.name)"' 2>"$err") || return 1
+            gh api "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
+                --jq '[.workflow_runs[] | {workflow_id, event, run_number, name, status, conclusion,
+                                           suite: .check_suite_id, started: .run_started_at, url: .html_url}]' \
+                >"$tmp/runs" 2>"$err" || return 1
+            gh api "repos/$repo/commits/$sha/check-runs?per_page=100" \
+                --jq '[.check_runs[] | {name, status, conclusion, suite: .check_suite.id,
+                                         completed: .completed_at, url: .html_url}]' \
+                >"$tmp/checks" 2>"$err" || return 1
+            # A workflow run completes only after all its jobs, also the ones
+            # created late because they need another job.  Only the newest run
+            # of each workflow and event counts (a workflow runs on both push
+            # and pull_request), and with it only the check runs of its check
+            # suite and of its latest attempt: a newer run (workflow_dispatch,
+            # a reopened PR) replaces an older failed or stuck one, and so does
+            # a re-run of the failed jobs, whose new attempt starts at
+            # run_started_at.  Check runs of other apps have no workflow run.
+            jq -rn --slurpfile runs "$tmp/runs" --slurpfile checks "$tmp/checks" '
+                ($runs[0] | group_by([.workflow_id, .event]) | map(max_by(.run_number))) as $kept
+                | ([$runs[0][].suite] - [$kept[].suite]) as $dropped
+                | ($kept | map({key: (.suite | tostring), value: .started}) | from_entries) as $started
+                | $checks[0][]
+                | select(.suite as $s | any($dropped[]; . == $s) | not)
+                | select(.completed == null or ($started[.suite | tostring] // "") <= .completed)
+                | "\(.status)/\(.conclusion)\t\(.name)\t\(.suite)\t\(.url)"' >"$tmp/kept" 2>"$err" || return 1
+            checks=$(cat "$tmp/kept")
+            runs=$(jq -r 'group_by([.workflow_id, .event]) | map(max_by(.run_number))[]
+                          | "\(.status)/\(.conclusion)\tworkflow \(.name)\t\(.suite)\t\(.url)"' \
+                       "$tmp/runs" 2>"$err") || return 1
             # Commit statuses (the older API some integrations use), in the
             # same form: success passes, failure and error fail, pending runs.
             statuses=$(gh api "repos/$repo/commits/$sha/status" \
                 --jq '.statuses[] | (if .state == "success" then "completed/success"
                                      elif .state == "pending" then "in_progress/null"
-                                     else "completed/failure" end) + "\t" + .context' 2>"$err") || return 1
+                                     else "completed/failure" end)
+                                   + "\t" + .context + "\t-\t" + (.target_url // "")' 2>"$err") || return 1
             if [ -n "$statuses" ]; then
                 checks=$(printf '%s\n%s' "$checks" "$statuses" | sed '/^$/d')
             fi
-            # A workflow run completes only after all its jobs, also the ones
-            # created late because they need another job.  Only the newest run
-            # of each workflow and event counts: a workflow runs on both push
-            # and pull_request, and a newer run of the same event (a reopened
-            # PR) replaces an older failed or stuck one.
-            runs=$(gh api "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-                --jq '.workflow_runs | group_by([.workflow_id, .event]) | map(max_by(.run_number))[]
-                      | "\(.status)/\(.conclusion)\tworkflow \(.name)"' 2>"$err") || return 1
+        }
+        # Whether the pending checks are all slow ones, and each workflow run
+        # not completed yet has one of them: a run waiting only for other jobs
+        # (one that needs a slow job, not created yet) is not let through.
+        only_slow_pending() {
+            [ -n "$slow" ] && [ -n "$pending" ] || return 1
+            ! echo "$pending" | cut -f2 | grep -qvE "$slow" || return 1
+            for suite in $(echo "$running" | cut -f3); do
+                echo "$pending" | awk -F '\t' -v s="$suite" '$3 == s { print $2 }' |
+                    grep -qE "$slow" || return 1
+            done
         }
         while :; do
             if ! read_ci; then
@@ -195,14 +342,25 @@ case "${1:-}" in
                 continue
             fi
             errors=0
-            if [ "$head" != "$sha" ] && [ "$head" != "$moved" ]; then
-                # A head that is a newer commit on top of SHA: SHA will not be
-                # the head again.  (An older head is a push not seen yet.)
+            if [ "$head" = "$sha" ]; then
+                seen=1
+            elif [ "$head" != "$moved" ]; then
                 moved=$head
                 git cat-file -e "$head^{commit}" 2>/dev/null ||
                     git fetch -q "$remote" "refs/pull/$number/head" 2>/dev/null || true
+                # A newer commit on top of SHA, or one that replaced it (a
+                # rebase pushed over it, so SHA is not in the PR any more): SHA
+                # will not be the head again.  An older head that SHA is on
+                # top of, or one older than SHA, is a push not seen yet.
                 if git merge-base --is-ancestor "$sha" "$head" 2>/dev/null; then
                     echo "the head of PR $number moved past $sha to $head" >&2
+                    exit 5
+                fi
+                if git cat-file -e "$head^{commit}" 2>/dev/null &&
+                       ! git merge-base --is-ancestor "$head" "$sha" &&
+                       { [ -n "$seen" ] ||
+                             [ "$(git show -s --format=%ct "$head")" -gt "$(git show -s --format=%ct "$sha")" ]; }; then
+                    echo "the head of PR $number is $head, which replaced $sha (a rebase or a force-push)" >&2
                     exit 5
                 fi
             fi
@@ -210,22 +368,26 @@ case "${1:-}" in
             # workflow file) creates none.
             failed=$(printf '%s\n%s\n' "$checks" "$runs" |
                          grep -E '^completed/(failure|cancelled|timed_out|action_required|startup_failure|stale)' || true)
-            if [ -n "$failed" ]; then echo "$failed" >&2; exit 1; fi
-            # No CI applies: the workflows skip changes only to the paths in
-            # their paths-ignore (SHIP_CI_IGNORED mirrors that list).  Only when
-            # no check and no run appeared for a while and every changed file
-            # is such a path, so a workflow that failed to start is not taken
-            # for this.
+            if [ -n "$failed" ]; then echo "$failed" | cut -f1,2,4 >&2; exit 1; fi
+            # No CI applies: every pull_request workflow skips the changed
+            # files (or SHIP_CI_IGNORED matches them all).  Only when no check
+            # and no run appeared for a while, so a workflow that failed to
+            # start is not taken for this.
             if [ "$head" = "$sha" ] && [ -z "$checks" ] && [ -z "$runs" ] &&
-                   [ "$waited" -ge "$start" ]; then
+                   [ "$waited" -ge "$start" ] && [ "${SHIP_CI_IGNORED-unset}" != "" ]; then
                 # Every changed file (gh pr view lists only the first 100), and
                 # not over 300: GitHub's paths filters look at the first 300.
-                if files=$(gh api --paginate "repos/$repo/pulls/$number/files?per_page=100" \
-                               --jq '.[].filename' 2>"$err") &&
-                       [ -n "$files" ] && [ "$(echo "$files" | wc -l)" -le 300 ] &&
-                       ! echo "$files" | grep -qvE "$ignored"; then
-                    echo "no CI applies to PR $number: it changes only files the workflows skip"
-                    exit 0
+                if gh api --paginate "repos/$repo/pulls/$number/files?per_page=100" \
+                       --jq '.[].filename' >"$tmp/files" 2>"$err" &&
+                       [ -s "$tmp/files" ] && [ "$(wc -l <"$tmp/files")" -le 300 ]; then
+                    if [ -n "${SHIP_CI_IGNORED+set}" ]; then
+                        ! grep -qvE "$SHIP_CI_IGNORED" "$tmp/files"
+                    else
+                        ! ci_applies "$tmp/files" "$sha"
+                    fi && {
+                        echo "no CI applies to PR $number: it changes only files the workflows skip"
+                        exit 0
+                    }
                 fi
             fi
             if [ -n "$checks" ]; then
@@ -251,9 +413,7 @@ case "${1:-}" in
                        { [ -z "$pending" ] || [ "$names" != "$last" ]; }; then
                     sleep 30; waited=$((waited + 30)); continue
                 fi
-                # Only slow checks pending (their workflow runs are pending too).
-                if [ -n "$checks" ] && [ -n "$pending" ] && [ "$names" = "$last" ] &&
-                       [ -n "$slow" ] && ! echo "$pending" | cut -f2 | grep -qvE "$slow"; then
+                if [ -n "$checks" ] && [ "$names" = "$last" ] && only_slow_pending; then
                     echo "CI passed for $sha except checks still pending:" >&2
                     echo "$pending" | cut -f2 | sed 's/^/  /' >&2
                     exit 0
@@ -262,7 +422,7 @@ case "${1:-}" in
                     echo "the head of PR $number is $head, not $sha" >&2
                 else
                     echo "CI timed out after ${timeout}s; pending:" >&2
-                    printf '%s\n%s\n' "$pending" "$running" | sed '/^$/d' | cut -f2 |
+                    printf '%s\n%s\n' "$pending" "$running" | sed '/^$/d' | cut -f2,4 |
                         sed 's/^/  /' | grep . >&2 || echo "  (no checks reported)" >&2
                 fi
                 exit 3
@@ -270,6 +430,47 @@ case "${1:-}" in
             sleep 30
             waited=$((waited + 30))
         done
+        ;;
+    rerun)
+        run=${2:?usage: ship rerun RUN}
+        run=${run##*/runs/}
+        run=${run%%/*}
+        attempt=$(gh api "repos/$repo/actions/runs/$run" --jq .run_attempt)
+        gh run rerun "$run" --failed --repo "$repo"
+        # Until the new attempt shows, the run and its check runs are still
+        # the failed ones.
+        tries=0
+        while [ "$tries" -lt 24 ]; do
+            now=$(gh api "repos/$repo/actions/runs/$run" --jq '"\(.run_attempt) \(.status)"' 2>/dev/null || true)
+            if [ "${now%% *}" -gt "$attempt" ] 2>/dev/null; then
+                echo "run $run: attempt ${now%% *} ${now#* }"
+                exit 0
+            fi
+            sleep 5
+            tries=$((tries + 1))
+        done
+        echo "no new attempt of run $run after 2 minutes" >&2
+        exit 1
+        ;;
+    scheduled)
+        # The newest scheduled run of each workflow still in the base branch.
+        tmp=$(mktemp)
+        trap 'rm -f "$tmp"' EXIT
+        git fetch -q "$remote" "$base"
+        gh api "repos/$repo/actions/runs?event=schedule&branch=$base&per_page=100" \
+            --jq '.workflow_runs | group_by(.workflow_id) | map(max_by(.run_number))[]
+                  | "\(.path)\t\(.status)/\(.conclusion)\t\(.name)\t\(.head_sha[:12])\t\(.created_at)\t\(.html_url)"' \
+            >"$tmp"
+        status=0
+        while IFS="$(printf '\t')" read -r path state rest; do
+            git cat-file -e "$remote/$base:$path" 2>/dev/null || continue
+            printf '%s\t%s\n' "$state" "$rest"
+            case $state in
+                completed/failure|completed/cancelled|completed/timed_out|completed/startup_failure|completed/action_required|completed/stale)
+                    status=1 ;;
+            esac
+        done <"$tmp"
+        exit "$status"
         ;;
     merge)
         number=${2:?usage: ship merge PR SHA}
