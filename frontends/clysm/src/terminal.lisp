@@ -950,7 +950,8 @@ a terminal that is shown is left silent)."
         (now (get-universal-time)))
     (when (and (not (terminal-dead terminal))
                (not (deleted-buffer-p buffer))
-               (null (get-buffer-windows buffer))
+               ;; side and floating windows show it too
+               (null (get-buffer-windows buffer :include-floating-windows t))
                (or (null (terminal-last-bell-time terminal))
                    (>= (- now (terminal-last-bell-time terminal)) *bell-interval-seconds*)))
       (setf (terminal-last-bell-time terminal) now)

@@ -420,14 +420,33 @@ from the screen does nothing: there is nothing below it."
      ;; screen again (see BACK-TO-SCREEN).
      (terminal-input))))
 
+(defun window-text-rows (window)
+  (- (window-height window) (if (window-use-modeline-p window) 1 0)))
+
 (defun resize-terminal (terminal window)
-  "Fit TERMINAL to the smallest window showing WINDOW's buffer, so no window
-loses the bottom rows (where the prompt is) when the buffer is shown in
-windows of different sizes."
-  (let ((windows (adjoin window (get-buffer-windows (window-buffer window)))))
+  "Fit TERMINAL to the smallest window of the current frame showing WINDOW's
+buffer, side and floating windows included, so no window loses the bottom
+rows (where the prompt is) when the buffer is shown in windows of different
+sizes.  Windows of other frames (hidden frame-multiplexer tabs) are not
+seen: the terminal fits them when their tab is shown (see
+FIT-SHOWN-TERMINALS)."
+  (let ((windows (adjoin window (get-buffer-windows (window-buffer window)
+                                                    :include-floating-windows t))))
     (terminal:resize terminal
-                     :rows (reduce #'min windows :key (lambda (w) (1- (window-height w))))
+                     :rows (reduce #'min windows :key #'window-text-rows)
                      :cols (reduce #'min windows :key #'window-width))))
+
+(defun fit-shown-terminals ()
+  "Fit each terminal shown in the current frame to its windows there, after
+every command: the command may have shown another tab, or split or closed a
+window, without the current buffer being the terminal."
+  (let ((seen '()))
+    (dolist (window (append (window-list) (frame-floating-windows (current-frame))))
+      (let ((buffer (window-buffer window)))
+        (unless (member buffer seen)
+          (push buffer seen)
+          (alexandria:when-let ((terminal (buffer-terminal buffer)))
+            (resize-terminal terminal window)))))))
 
 (define-command terminal-resize () ()
   (alexandria:when-let ((terminal (get-current-terminal))
@@ -473,7 +492,7 @@ only frozen terminals look at their windows."
         (stop-scrolling terminal)))))
 
 (add-hook *post-command-hook*
-          'terminal-resize)
+          'fit-shown-terminals)
 
 (add-hook *post-command-hook*
           'release-read-terminals)
