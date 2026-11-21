@@ -6,6 +6,7 @@
    :with-timer-manager
    :running-timer
    :running-timer-p
+   :call-outside-timer
    :timer-error
    :timer-error-backtrace
    :timer-error-condition
@@ -24,14 +25,25 @@
   (:lock t))
 (in-package :lem/common/timer)
 
-(defvar *running-timer*)
+(defvar *running-timer* nil
+  "The timer whose function runs, NIL outside of one.")
+
+(defvar *timer-manager*)
+
 (defun running-timer () *running-timer*)
 
 (defun running-timer-p ()
-  "Return true while a timer's function (or its handle-function) runs."
-  (boundp '*running-timer*))
+  "Return true while a timer's function (or its handle-function) runs,
+outside of call-outside-timer."
+  (not (null *running-timer*)))
 
-(defvar *timer-manager*)
+(defun call-outside-timer (function)
+  "Call FUNCTION with no timer running, as running-timer-p sees it: for a
+command loop entered from a timer's function (a prompt it opens), whose
+commands are not the timer's code. A timer that fires in FUNCTION is
+running again while its own function runs."
+  (let ((*running-timer* nil))
+    (funcall function)))
 
 (defgeneric send-timer-notification (timer-manager continue))
 
