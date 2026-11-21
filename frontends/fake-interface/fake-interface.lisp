@@ -119,8 +119,8 @@
   ;;
   ;; The frames are torn down at the end, so that the points of their windows
   ;; do not stay in buffers that outlive this use, such as *tmp*.
-  ;; teardown-frame frees the window tree, the floating windows and the left
-  ;; and right side windows; it does not free bottom side or header windows.
+  ;; teardown-frame frees the window tree, the floating, side and header
+  ;; windows (a header window with the last frame that has it).
   (let* ((lem-core::*frames* '())
          (lem-core::*display-frame-map* (make-hash-table))
          (lem-core::*last-focused-window* nil)
@@ -139,9 +139,12 @@
              (setf (current-buffer) (window-buffer (current-window)))
              (funcall function))
         ;; teardown-frame removes the frame from *frames*.  A frame never
-        ;; set up (make-frame alone) has no windows to tear down.
-        (dolist (frame (copy-list (all-frames)))
-          (when (frame-window-tree frame)
+        ;; set up (make-frame alone) has no windows to tear down; it is
+        ;; dropped first, as it may hold the header windows of the others,
+        ;; which are freed with the last frame that has them.
+        (let ((frames (copy-list (all-frames))))
+          (setf lem-core::*frames* (remove-if-not #'frame-window-tree frames))
+          (dolist (frame (copy-list (all-frames)))
             (teardown-frame frame)))))))
 
 (defmacro with-fake-interface (() &body body)

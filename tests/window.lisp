@@ -346,3 +346,128 @@
         (lem:kill-buffer buffer)
         (ok (lem:deleted-buffer-p attached))
         (ok (= 1 count))))))
+
+(deftest kill-buffer/attached-buffer-of-a-hidden-buffer
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (make-attached-buffer))
+             (attached (lem-core::buffer-attached-buffer buffer))
+             (count 0))
+        (lem:switch-to-buffer (lem:make-buffer "other"))
+        (assert (null (lem:get-buffer-windows buffer :include-floating-windows t)))
+        (lem:add-hook (lem:variable-value 'lem:kill-buffer-hook :buffer attached)
+                      (lambda (buffer)
+                        (declare (ignore buffer))
+                        (incf count)))
+        (lem:kill-buffer buffer)
+        (ok (lem:deleted-buffer-p buffer))
+        (testing "the attached buffer is deleted although BUFFER was in no window"
+          (ok (lem:deleted-buffer-p attached))
+          (ok (= 1 count)))))))
+
+(deftest delete-buffer/refused-while-a-header-window-shows-it
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (lem:make-buffer "header" :temporary t))
+             (header (make-instance 'lem:header-window :buffer buffer)))
+        (unwind-protect
+             (progn
+               (ok (signals (lem:delete-buffer buffer)))
+               (testing "nothing is changed"
+                 (ng (lem:deleted-buffer-p buffer))
+                 (ok (eq buffer (lem:window-buffer header)))))
+          (lem:delete-window header))
+        (testing "once the header window is deleted, the buffer can be"
+          (lem:delete-buffer buffer)
+          (ok (lem:deleted-buffer-p buffer)))))))
+
+(deftest delete-buffer/refused-while-a-header-window-shows-the-attached-buffer
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (make-attached-buffer))
+             (attached (lem-core::buffer-attached-buffer buffer))
+             (header (make-instance 'lem:header-window :buffer attached)))
+        (lem:switch-to-buffer buffer)
+        (unwind-protect
+             (let ((windows (lem:get-buffer-windows buffer)))
+               (assert windows)
+               (ok (signals (lem:delete-buffer buffer)))
+               (testing "nothing is changed, the windows still show BUFFER"
+                 (ng (lem:deleted-buffer-p buffer))
+                 (ng (lem:deleted-buffer-p attached))
+                 (ok (equal windows (lem:get-buffer-windows buffer)))))
+          (lem:delete-window header))))))
+
+(deftest delete-window/a-header-window-leaves-every-frame
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (lem:make-buffer "header" :temporary t))
+             (header (make-instance 'lem:header-window :buffer buffer))
+             ;; As frame-multiplexer's new tabs: the new frame gets the header windows.
+             (other (lem:make-frame (lem:current-frame))))
+        (lem:setup-frame other (lem:make-buffer "other"))
+        (unwind-protect
+             (progn
+               (assert (member header (lem:frame-header-windows other)))
+               (lem:delete-window header)
+               (ok (null (lem:frame-header-windows other)))
+               (testing "so its buffer can be deleted afterwards"
+                 (lem:delete-buffer buffer)
+                 (ok (lem:deleted-buffer-p buffer))))
+          (lem:teardown-frame other))))))
+
+(defun buffer-has-point-p (buffer point)
+  ;; lem exports no way to list the points registered in a buffer.
+  (and (member point (lem/buffer/internal::buffer-points buffer)) t))
+
+(defun window-points (window)
+  (list (lem:window-view-point window) (lem-core::%window-point window)))
+
+(defun call-recording-freed-windows (function)
+  "Call FUNCTION with the windows freed during it recorded, and return them."
+  (let ((freed '())
+        (original (fdefinition 'lem-core::%free-window)))
+    ;; lem-core is a locked package on SBCL.
+    (#+sbcl sb-ext:without-package-locks #-sbcl progn
+      (unwind-protect
+           (progn
+             (setf (fdefinition 'lem-core::%free-window)
+                   (lambda (window)
+                     (push window freed)
+                     (funcall original window)))
+             (funcall function))
+        (setf (fdefinition 'lem-core::%free-window) original)))
+    freed))
+
+(deftest teardown-frame/frees-side-and-header-windows-once
+  (lem:with-current-buffers ()
+    (let* ((shown (lem:make-buffer "shown"))
+           (windows '())
+           (header-points '())
+           (freed
+             (call-recording-freed-windows
+              (lambda ()
+                (with-fake-interface ()
+                  (lem:make-leftside-window shown)
+                  (lem:make-bottomside-window shown)
+                  (let* ((header (make-instance 'lem:header-window :buffer shown))
+                         ;; As frame-multiplexer's new tabs: the new frames get
+                         ;; the header windows; one is never set up.
+                         (other (lem:make-frame (lem:current-frame))))
+                    (lem:make-frame (lem:current-frame))
+                    (lem:setup-frame other (lem:make-buffer "other"))
+                    (setf windows (list header
+                                        (lem:frame-leftside-window (lem:current-frame))
+                                        (lem:frame-bottomside-window (lem:current-frame)))
+                          header-points (window-points header))
+                    (testing "a header window another frame still has is kept"
+                      (lem:teardown-frame other)
+                      (ng (lem-core::window-deleted-p header))
+                      (ok (every (lambda (point) (buffer-has-point-p shown point))
+                                 header-points)))))))))
+      (testing "the side and header windows are freed, each once"
+        (ok (every (lambda (window) (= 1 (count window freed))) windows))
+        (ok (= (length freed) (length (remove-duplicates freed)))))
+      (testing "the points of the header window are deleted"
+        (ok (notany (lambda (point) (buffer-has-point-p shown point))
+                    header-points))))))

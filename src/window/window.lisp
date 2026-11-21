@@ -338,10 +338,29 @@ to the frame again (balance-windows, a resize of the display)."
     (setf (frame-window-tree frame) window)))
 
 (defun teardown-windows (frame)
-  (mapc #'%free-window (window-list frame))
-  (mapc #'%free-window (frame-floating-windows frame))
-  (mapc #'%free-window (uiop:ensure-list (frame-leftside-window frame)))
-  (mapc #'%free-window (uiop:ensure-list (frame-rightside-window frame)))
+  "Free the windows of FRAME: the window tree, the floating windows (side
+windows among them) and the header windows that no other frame has.
+Each is freed once and marked deleted, so that a later delete-window does
+nothing.  Attached windows are not freed."
+  (flet ((free (window)
+           (unless (window-deleted-p window)
+             (%free-window window)
+             (setf (window-deleted-p window) t))))
+    ;; A side window is a floating window too: FREE skips it the second time.
+    (mapc #'free (window-list frame))
+    (mapc #'free (frame-floating-windows frame))
+    (mapc #'free (remove nil (list (frame-leftside-window frame)
+                                   (frame-rightside-window frame)
+                                   (frame-bottomside-window frame))))
+    ;; make-frame gives each new frame the header windows of the current one
+    ;; (each frame-multiplexer tab has the tab bar): free a header window with
+    ;; the last frame that has it.
+    (dolist (header (frame-header-windows frame))
+      (unless (some (lambda (other)
+                      (and (not (eq other frame))
+                           (member header (frame-header-windows other))))
+                    (all-frames))
+        (free header))))
   (values))
 
 (defun adjust-view-point (window)
@@ -825,7 +844,9 @@ You can pass in the optional argument WINDOW-LIST to replace the default
                                        (include-floating-windows nil))
   "Return the windows of FRAME that show BUFFER, each once.
 With INCLUDE-FLOATING-WINDOWS, the floating windows and the side windows
-(left, right and bottom) are included too."
+(left, right and bottom) are included too.
+Header windows (frame-header-windows) never are: each draws into a buffer of
+its own and is not a place to show another buffer."
   ;; A side window is a floating window, so it is usually in
   ;; frame-floating-windows as well: remove-duplicates keeps it once.
   (loop :for window :in (remove-duplicates
