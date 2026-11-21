@@ -2,7 +2,10 @@
 ;;; warnings.  Redefinition warnings are expected and not reported.
 ;;; Exits with 0 when no file had a warning, 1 otherwise.
 
-(ql:quickload '(:lem-fake-interface :lem-tests) :silent t)
+;; Loading compiles the changed files of these systems first: a warning there
+;; must not end the run, so that the compile below reports it.
+(let ((uiop:*compile-file-failure-behaviour* :warn))
+  (ql:quickload '(:lem-fake-interface :lem-tests) :silent t))
 
 (defun verify-absolute-file (file)
   "FILE (relative to the repository, the current directory) as an absolute pathname."

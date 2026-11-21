@@ -167,11 +167,11 @@ case "${1:-}" in
             fi
             # A workflow run completes only after all its jobs, also the ones
             # created late because they need another job.  Only the newest run
-            # of each workflow counts, whatever started it: a run started again
-            # (reopened PR, workflow_dispatch) replaces an older failed or
-            # stuck one.
+            # of each workflow and event counts: a workflow runs on both push
+            # and pull_request, and a newer run of the same event (a reopened
+            # PR) replaces an older failed or stuck one.
             runs=$(gh api "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-                --jq '.workflow_runs | group_by(.workflow_id) | map(max_by(.run_number))[]
+                --jq '.workflow_runs | group_by([.workflow_id, .event]) | map(max_by(.run_number))[]
                       | "\(.status)/\(.conclusion)\tworkflow \(.name)"' 2>"$err") || return 1
         }
         while :; do
