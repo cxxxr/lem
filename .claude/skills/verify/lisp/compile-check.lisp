@@ -42,12 +42,34 @@ for as a system because of its case, or NIL.  Printed when no system is found.")
                                    *verify-failed-fasls*)))))
     (call-next-method)))
 
+(defun verify-condition-systems (condition)
+  "The names of the systems at fault for CONDITION, a load error: the system
+of the file that signalled it, and the system that was not found (also when a
+file loads it at load time).  NIL when none is known."
+  (let ((component (verify-failing-component condition)))
+    (append
+     (and component (list (asdf:component-name (asdf:component-system component))))
+     (typecase condition
+       (ql:system-not-found (list (ql:system-not-found-name condition)))
+       (asdf:missing-component
+        ;; Only a system that does not exist: not one that is too old, nor
+        ;; a missing sibling of a component (required by that component,
+        ;; not by a system), as Quicklisp tells them apart.
+        (let ((name (and (or (not (typep condition 'asdf/find-component:missing-dependency))
+                             (let ((by (asdf/find-component:missing-required-by condition)))
+                               (or (null by) (typep by 'asdf:system))))
+                         (ignore-errors
+                          (asdf:coerce-name
+                           (asdf/find-component:missing-requires condition))))))
+          (and name (not (ignore-errors (asdf:find-system name nil)))
+               (list name))))))))
+
 (defun verify-quickload (systems)
   "Quickload SYSTEMS, letting a file that fails to compile with a warning or
 a \"caught ERROR\" go on: the compile below reports it.  Returns T when the
 load succeeded; otherwise prints the error, with the file that signalled it,
-and returns NIL and the name of the system at fault (see
-`verify-condition-system')."
+and returns NIL and the names of the systems at fault (see
+`verify-condition-systems')."
   (handler-case
       (let ((uiop:*compile-file-failure-behaviour* :warn))
         (ql:quickload systems :silent t)
@@ -56,20 +78,7 @@ and returns NIL and the name of the system at fault (see
       (format t "~&FAILED to load ~{~(~a~)~^, ~}:~%  ~a~%"
               (uiop:ensure-list systems) condition)
       (verify-print-failing-file condition)
-      (values nil (verify-condition-system condition)))))
-
-(defun verify-condition-system (condition)
-  "The name of the system at fault for CONDITION, a load error: the system of
-the file that signalled it, or the system that was not found, or NIL."
-  (or (verify-failing-system condition)
-      (typecase condition
-        (ql:system-not-found (ql:system-not-found-name condition))
-        (asdf:missing-component
-         ;; Only a system that does not exist: not one that is too old, nor
-         ;; a missing component of a system.
-         (let ((name (ignore-errors
-                      (asdf:coerce-name (asdf/find-component:missing-requires condition)))))
-           (and name (not (ignore-errors (asdf:find-system name nil))) name))))))
+      (values nil (verify-condition-systems condition)))))
 
 (defun verify-dependency-name (dependency)
   "The system name of the ASDF DEPENDENCY specifier, or NIL for one that
@@ -83,9 +92,12 @@ names no system (:require)."
               (verify-dependency-name (third dependency))))))
 
 (defun verify-failed-dependency (system)
-  "A system of `*verify-failed-systems*' that SYSTEM is or depends on, directly
-or not, or NIL.  Loaded systems are not looked into: they loaded.  Nothing is
-looked up (ASDF may load .asd files for it) while no system has failed."
+  "The first system of `*verify-failed-systems*' that SYSTEM or one of its
+unloaded dependencies (direct or not) is, or NIL.  Loaded systems are not
+looked into: they loaded.  Nothing is looked up (ASDF may load .asd files for
+it) while no system has failed.  A system that only shares a file with a failed
+one is still loaded: the file may have failed only for lack of the failed
+system's dependencies (main.lisp under lem-migemo/main, without cl-migemo)."
   (let ((seen (make-hash-table :test 'equal)))
     (unless *verify-failed-systems*
       (return-from verify-failed-dependency nil))
@@ -290,15 +302,13 @@ depends on one, is not loaded again for the next file."
                         nil)
                        (t
                         (format t "~&loading ~a for ~a~%" system file)
-                        (multiple-value-bind (loaded failing-system)
+                        (multiple-value-bind (loaded failing-systems)
                             (verify-quickload system)
                           (unless loaded
-                            ;; Also the system of the file at fault, which
-                            ;; may be a dependency of SYSTEM.
-                            (pushnew system *verify-failed-systems* :test #'string=)
-                            (when failing-system
-                              (pushnew failing-system *verify-failed-systems*
-                                       :test #'string=)))
+                            ;; Also the systems at fault, which may be
+                            ;; dependencies of SYSTEM.
+                            (dolist (name (cons system failing-systems))
+                              (pushnew name *verify-failed-systems* :test #'string=)))
                           loaded)))))
               (failed-asds
                ;; FILE may be in one of these.
