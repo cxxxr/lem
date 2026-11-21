@@ -145,14 +145,20 @@ it in a test process, not in a Lem in use."
       (lem:with-current-buffers ()
         (lem-fake-interface:with-fake-interface ()
           (let ((buffers (lem:buffer-list))
+                (terminals lem-terminal/terminal::*terminals*)
                 (errors 0))
-            (call-with-no-free-fd
-             (lambda ()
-               (handler-case (lem-terminal/terminal-mode::terminal t)
-                 (lem:editor-error () (incf errors)))
-               (handler-case (lem-terminal/terminal-mode::create-terminal-with-command
-                              "/bin/sh" (list "/bin/sh"))
-                 (lem:editor-error () (incf errors)))))
+            (unwind-protect
+                 (call-with-no-free-fd
+                  (lambda ()
+                    (handler-case (lem-terminal/terminal-mode::terminal t)
+                      (lem:editor-error () (incf errors)))
+                    (handler-case (lem-terminal/terminal-mode::create-terminal-with-command
+                                   "/bin/sh" (list "/bin/sh"))
+                      (lem:editor-error () (incf errors)))))
+              ;; terminals that started after all are not left running
+              (dolist (terminal (set-difference lem-terminal/terminal::*terminals*
+                                                terminals))
+                (lem-terminal/terminal:destroy terminal)))
             (ok (= 2 errors) "M-x terminal and a command terminal signal editor-error")
             (ok (equal buffers (lem:buffer-list)) "no *Terminal* buffer is left"))))
       (skip "terminal.so is not built or is older than its failure handling")))

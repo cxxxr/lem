@@ -91,7 +91,8 @@ buffer is left behind."
     (unwind-protect
          (prog1 (apply #'terminal:create :cols 80 :rows 24 :buffer buffer args)
            (setf started t))
-      (unless started
+      ;; Lem on Clysm's create deletes a fresh buffer itself.
+      (unless (or started (deleted-buffer-p buffer))
         (delete-buffer buffer)))))
 
 (defun make-terminal-buffer (buffer-directory)
@@ -163,7 +164,8 @@ and returning to the same terminal would do nothing."
 (define-command terminal-restart () ()
   "Start the terminal's command again in the current terminal buffer, after
 its process has exited.  The old output is discarded once the new process has
-started; when it cannot start, the buffer is left as it was."
+started; when it cannot start, the buffer is left as it was.  The old terminal
+is freed only then, so the restart needs room for a second PTY."
   (let* ((buffer (current-buffer))
          (old (buffer-terminal buffer)))
     (unless old
