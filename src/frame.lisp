@@ -156,7 +156,7 @@ is left; callers that need a buffer must handle that."
 
 (defun unmap-frame (display)
   (let ((frame (gethash display *display-frame-map*)))
-    (remhash display frame)
+    (remhash display *display-frame-map*)
     frame))
 
 (defun setup-frame (frame buffer)

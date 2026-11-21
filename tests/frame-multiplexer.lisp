@@ -24,6 +24,16 @@
   ;; uses frame-multiplexer leaves its tabs and its setting as they were.
   ;; with-global-variable-value restores the previous value without running
   ;; the variable's hook.
+  ;;
+  ;; Unlike the let bindings, with-global-variable-value is not local to this
+  ;; thread: it sets the value in the editor variable itself, which every
+  ;; thread reads.  Run from a REPL thread of a running Lem, these tests turn
+  ;; that Lem's frame-multiplexer variable (and, in
+  ;; separation-can-be-turned-off, frame-multiplexer-separate-buffers) off and
+  ;; on until they finish, and the editor thread sees it meanwhile.  Editor
+  ;; variables have no per-thread value, so these tests assume that no other
+  ;; thread uses the editor while they run: run them in a Lem that is idle, or
+  ;; outside of one (make test, verify tests).
   (with-fresh-editor ()
     (let ((lem/frame-multiplexer::*virtual-frame-map* (make-hash-table))
           (lem/frame-multiplexer::*recent-list* nil)
@@ -100,6 +110,7 @@
   (with-frame-multiplexer ()
     (visit-new-buffer "a")
     (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+    ;; This sets the variable for every thread; see call-with-frame-multiplexer.
     (with-global-variable-value (lem/frame-multiplexer:frame-multiplexer-separate-buffers nil)
       (ok (member "a" (offered-buffer-names) :test #'string=)))))
 
@@ -261,15 +272,24 @@ counts, in the order of NAMES."
 (deftest the-test-helper-leaves-a-running-frame-multiplexer-as-it-was
   ;; As in a Lem that uses frame-multiplexer: the variable is on and the
   ;; workspace functions are set.
+  ;; The running Lem's table of virtual frames has an entry of its own; the
+  ;; helper must not clear it (frame-multiplexer-init clears the table).
   (let ((list-function (lambda (frame) (declare (ignore frame)) nil))
-        (recent-list (lem/common/ring:make-ring 1)))
+        (recent-list (lem/common/ring:make-ring 1))
+        (virtual-frame-map (make-hash-table)))
+    (setf (gethash :running-lem virtual-frame-map) :its-virtual-frame)
     (with-global-variable-value (lem/frame-multiplexer::frame-multiplexer t)
-      (let ((lem/frame-multiplexer::*virtual-frame-map* (make-hash-table))
+      (let ((lem/frame-multiplexer::*virtual-frame-map* virtual-frame-map)
             (lem/frame-multiplexer::*recent-list* recent-list)
             (*frame-buffer-list-function* list-function))
         (with-frame-multiplexer ()
           (testing "the test gets a frame-multiplexer of its own"
-            (ok (gethash (implementation) lem/frame-multiplexer::*virtual-frame-map*))))
+            (ok (gethash (implementation) lem/frame-multiplexer::*virtual-frame-map*))
+            (ok (null (gethash :running-lem lem/frame-multiplexer::*virtual-frame-map*)))))
+        (testing "the running Lem's virtual frames are left as they were"
+          (ok (eq virtual-frame-map lem/frame-multiplexer::*virtual-frame-map*))
+          (ok (= 1 (hash-table-count virtual-frame-map)))
+          (ok (eq :its-virtual-frame (gethash :running-lem virtual-frame-map))))
         (testing "the setting and the workspace functions are restored"
           (ok (eq t (variable-value 'lem/frame-multiplexer::frame-multiplexer :global)))
           (ok (eq list-function *frame-buffer-list-function*))
