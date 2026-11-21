@@ -117,7 +117,28 @@
                                            height)
   nil)
 
+(defun call-with-fake-interface (function)
+  ;; Give each use its own frames and current buffer.  Frames made by an
+  ;; earlier use would stay in the frame list, where delete-buffer switches
+  ;; their windows too, and the current buffer would stay a buffer of an
+  ;; earlier use.  Inside a running Lem, binding them also keeps the user's
+  ;; frames and current buffer as they were.  lem-core exports no way to
+  ;; reset these variables, so they are bound directly.  Threads made in
+  ;; FUNCTION get the same bindings, as with-implementation does for
+  ;; *implementation*.
+  (let* ((lem-core::*frames* '())
+         (lem-core::*display-frame-map* (make-hash-table))
+         (lem/buffer/internal::*current-buffer* (primordial-buffer))
+         (bt2:*default-special-bindings*
+           (list* (cons 'lem-core::*frames* 'lem-core::*frames*)
+                  (cons 'lem-core::*display-frame-map* 'lem-core::*display-frame-map*)
+                  (cons 'lem/buffer/internal::*current-buffer*
+                        'lem/buffer/internal::*current-buffer*)
+                  bt2:*default-special-bindings*)))
+    (with-implementation (make-instance 'fake-interface)
+      (setup-first-frame)
+      (setf (current-buffer) (window-buffer (current-window)))
+      (funcall function))))
+
 (defmacro with-fake-interface (() &body body)
-  `(with-implementation (make-instance 'fake-interface)
-     (setup-first-frame)
-     ,@body))
+  `(call-with-fake-interface (lambda () ,@body)))
