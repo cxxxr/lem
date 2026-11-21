@@ -314,10 +314,14 @@ find-file start where the shell is."
 (defun start-scrolling (terminal buffer)
   "Freeze TERMINAL with its scrollback shown above the screen in BUFFER, unless
 it already is, so output arriving while one reads the history does not take
-it away.  Returns the number of scrollback lines in BUFFER."
+it away.  Returns the number of scrollback lines in BUFFER, or NIL when there
+are none: TERMINAL is not frozen then, as there is nothing to read."
   (or (buffer-value buffer 'scrollback-lines)
-      (setf (buffer-value buffer 'scrollback-lines)
-            (terminal:copy-mode-on terminal))))
+      (when (plusp (terminal:scrollback-count terminal))
+        (let ((lines (terminal:copy-mode-on terminal)))
+          (if (plusp lines)
+              (setf (buffer-value buffer 'scrollback-lines) lines)
+              (progn (terminal:copy-mode-off terminal) nil))))))
 
 (defun stop-scrolling (terminal buffer)
   "Undo START-SCROLLING: remove the scrollback and show the whole screen again."
@@ -328,24 +332,44 @@ it away.  Returns the number of scrollback lines in BUFFER."
 
 (defun back-to-screen (buffer)
   "Show the screen of BUFFER's terminal again, for input sent to it: what the
-program does with it is to be seen.  Not in terminal-copy-mode, which keeps
-the history until one leaves it."
+program does with it is to be seen.  Not in terminal-copy-mode (which does not
+inherit terminal-mode), which keeps the history until one leaves it."
   (alexandria:when-let ((terminal (buffer-terminal buffer)))
-    (when (eq (buffer-major-mode buffer) 'terminal-mode)
+    (when (typep (ensure-mode-object (buffer-major-mode buffer)) 'terminal-mode)
       (stop-scrolling terminal buffer)
       (terminal:deactivate-scrollback terminal))))
 
+(defun view-line (window)
+  (line-number-at-point (window-view-point window)))
+
+(defun show-screen-top (window lines)
+  "Make WINDOW start at the screen's first row, below LINES lines of history."
+  (move-to-line (window-view-point window) (1+ lines))
+  (line-start (window-view-point window)))
+
 (defun call-with-scrollback (terminal window downward-p scroll)
   "Call SCROLL, a scroll of WINDOW (towards the end when DOWNWARD-P), with
-TERMINAL's scrollback shown; once WINDOW is back on the screen, the terminal
-runs on as before.  Scrolling down from the screen does nothing: there is
-nothing below it."
-  (let ((buffer (window-buffer window)))
-    (unless (and downward-p (not (buffer-value buffer 'scrollback-lines)))
+TERMINAL's scrollback shown.  A window that reaches the screen stops at its
+first row; once every window of the buffer is there, the terminal runs on as
+before.  Scrolling down from the screen does nothing: there is nothing below
+it."
+  (let* ((buffer (window-buffer window))
+         (windows (adjoin window (get-buffer-windows buffer)))
+         (scrolling (buffer-value buffer 'scrollback-lines)))
+    (unless (and downward-p
+                 (or (not scrolling) (> (view-line window) scrolling)))
       (let ((lines (start-scrolling terminal buffer)))
-        (funcall scroll)
-        (when (> (line-number-at-point (window-view-point window)) lines)
-          (stop-scrolling terminal buffer))))))
+        (if (null lines)
+            ;; No history: wheel up shows the screen from its first row.
+            (show-screen-top window 0)
+            (flet ((on-screen-p (window) (> (view-line window) lines)))
+              (when (on-screen-p window)
+                (show-screen-top window lines))
+              (unwind-protect (funcall scroll)
+                (cond ((every #'on-screen-p windows)
+                       (stop-scrolling terminal buffer))
+                      ((on-screen-p window)
+                       (show-screen-top window lines))))))))))
 
 (defmethod execute ((mode terminal-mode) command argment)
   (sync-buffer-directory (current-buffer))
@@ -355,9 +379,12 @@ nothing below it."
     ((and (typep command '(or scroll-up scroll-down))
           (alexandria:when-let ((terminal (get-current-terminal)))
             (not (terminal:process-exited-p terminal))))
-     (call-with-scrollback (get-current-terminal) (current-window)
-                           (eq (typep command 'scroll-down) (plusp (or argment 1)))
-                           (lambda () (call-next-method))))
+     ;; A scroll of zero lines does nothing (as SCROLL-DOWN does).
+     (if (eql argment 0)
+         (call-next-method)
+         (call-with-scrollback (get-current-terminal) (current-window)
+                               (eq (typep command 'scroll-down) (plusp (or argment 1)))
+                               (lambda () (call-next-method)))))
     (*running-bypass-command*
      (call-next-method))
     ((member command *bypass-commands* :test #'typep)

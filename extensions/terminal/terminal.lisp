@@ -393,16 +393,28 @@ latter case the exit is reported to the editor thread via FINISH-PROCESS."
 
 (defun finish-process (terminal status)
   "Editor-thread handler for the child process exiting.  Flushes the final
-output, freezes the terminal (see EXIT-STATUS) and appends an exit notice."
+output, freezes the terminal (see EXIT-STATUS) and appends an exit notice.
+When the scrollback is shown, one is reading it: it stays above the final
+screen, and the windows and the cursor stay where they were."
   (unless (or (terminal-dead terminal)
               (process-exited-p terminal))
-    ;; The I/O thread has stopped, so nothing else touches vterm now; the lock
-    ;; is taken only to honour RENDER's contract.
-    (bt2:with-lock-held ((terminal-io-lock terminal))
-      (render terminal))
-    (setf (terminal-exit-status terminal) status)
-    (append-exit-notice terminal status)
-    (redraw-display)))
+    (let* ((buffer (terminal-buffer terminal))
+           (history (and (terminal-scrollback-active terminal)
+                         (- (buffer-nlines buffer) (terminal-rows terminal))))
+           (points (buffer-view-points buffer))
+           (positions (point-positions points)))
+      ;; The I/O thread has stopped, so nothing else touches vterm now; the
+      ;; lock is taken only to honour RENDER's contract.  RENDER removes the
+      ;; scrollback.
+      (bt2:with-lock-held ((terminal-io-lock terminal))
+        (render terminal))
+      (setf (terminal-exit-status terminal) status)
+      (append-exit-notice terminal status)
+      ;; After the notice, which moves the cursor to its end.
+      (when history
+        (keep-points-in-history points positions history
+                                (or (activate-scrollback terminal) 0)))
+      (redraw-display))))
 
 (defmethod destroy ((terminal terminal))
   "Stop TERMINAL's I/O thread, kill its child process if it is still running
@@ -431,8 +443,10 @@ and free the native state.  Safe to call more than once."
 (defmethod copy-mode-on ((terminal terminal))
   "Freeze rendering and show the scrollback above the screen, so the whole
 history can be browsed and copied with ordinary Lem commands.  Returns the
-number of scrollback lines it put in the buffer."
-  (prog1 (or (activate-scrollback terminal :catch-up t) 0)
+number of scrollback lines in the buffer (also when they were shown already)."
+  (prog1 (if (terminal-scrollback-active terminal)
+             (- (buffer-nlines (terminal-buffer terminal)) (terminal-rows terminal))
+             (or (activate-scrollback terminal :catch-up t) 0))
     (setf (terminal-copy-mode terminal) t)))
 
 (defmethod copy-mode-off ((terminal terminal))
@@ -615,10 +629,26 @@ that may be edited by the user or watched by other features."
             (line-start point)
             (character-offset point (min charpos (length (line-string point))))))
 
+(defun keep-points-in-history (points positions old-count new-count)
+  "Move each of POINTS back to its entry of POSITIONS, taken when OLD-COUNT
+scrollback lines were above the screen, now that NEW-COUNT are: a line of the
+history keeps its number, as the lines added since go below it, and a row of
+the screen moves down with the screen."
+  (loop :for point :in points
+        :for (line-number . charpos) :in positions
+        :do (move-to-line point (if (<= line-number old-count)
+                                    line-number
+                                    (+ line-number (- new-count old-count))))
+            (line-start point)
+            (character-offset point (min charpos (length (line-string point))))))
+
 (defun deactivate-scrollback (terminal)
   "Remove scrollback lines from the buffer, keeping only terminal rows.
-Called when transitioning from scrollback-active to normal view."
-  (when (terminal-scrollback-active terminal)
+Called when transitioning from scrollback-active to normal view.  Not once the
+process has exited: the buffer then holds the final text, the exit notice at
+its end, and keeps it."
+  (when (and (terminal-scrollback-active terminal)
+             (not (process-exited-p terminal)))
     (setf (terminal-scrollback-active terminal) nil)
     (let* ((buffer (terminal-buffer terminal))
            (rows (terminal-rows terminal))
@@ -645,9 +675,12 @@ in the ring and would show twice otherwise."
     ;; insert into the buffer (editor-thread-only) outside the lock.
     (let ((combined
             (bt2:with-lock-held ((terminal-io-lock terminal))
+              ;; Not in copy mode: the screen rows shown are frozen, and the
+              ;; point and region put on them would move.
               (when (and catch-up
                          (not (terminal-dead terminal))
-                         (not (process-exited-p terminal)))
+                         (not (process-exited-p terminal))
+                         (not (terminal-copy-mode terminal)))
                 (render terminal))
               (let ((count (scrollback-count terminal)))
                 (when (plusp count)

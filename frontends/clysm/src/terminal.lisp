@@ -403,13 +403,25 @@ TERMINAL-RENDER-THROTTLE-MS ago, otherwise when that time has passed."
   "The child process has exited: render the final screen, freeze the
 terminal and append an exit notice.  The screen is rendered in copy mode
 too (as Lem's terminal does): RENDER removes the lines above the screen
-first, which COPY-MODE-OFF could not do right once the notice is appended."
+first, which COPY-MODE-OFF could not do right once the notice is appended.
+When the lines above the screen are shown, one is reading them: they are put
+back above the final screen, and the windows and the cursor stay where they
+were."
   (when (and (live-p terminal)
              (not (deleted-buffer-p (terminal-buffer terminal))))
-    (render terminal)
-    (setf (terminal-exit-status terminal) status)
-    (append-exit-notice terminal status)
-    (redraw-display)))
+    (let* ((buffer (terminal-buffer terminal))
+           (history (and (terminal-scrollback-active terminal)
+                         (- (buffer-nlines buffer) (terminal-rows terminal))))
+           (points (buffer-view-points buffer))
+           (positions (point-positions points)))
+      (render terminal)
+      (setf (terminal-exit-status terminal) status)
+      (append-exit-notice terminal status)
+      ;; After the notice, which moves the cursor to its end.
+      (when history
+        (keep-points-in-history points positions history
+                                (or (activate-scrollback terminal) 0)))
+      (redraw-display))))
 
 (defgeneric destroy (terminal)
   (:documentation "Kill TERMINAL's process if it still runs.  Safe to call more than once."))
@@ -439,7 +451,9 @@ Returns the number of scrollback lines put in the buffer."))
              (not (deleted-buffer-p (terminal-buffer terminal))))
     (render terminal))
   (setf (terminal-copy-mode terminal) t)
-  (or (activate-scrollback terminal) 0))
+  (if (terminal-scrollback-active terminal)
+      (- (buffer-nlines (terminal-buffer terminal)) (terminal-rows terminal))
+      (or (activate-scrollback terminal) 0)))
 
 (defmethod copy-mode-off ((terminal terminal))
   (setf (terminal-copy-mode terminal) nil)
@@ -707,9 +721,23 @@ the point at the cursor."))
             (line-start point)
             (character-offset point (min charpos (length (line-string point))))))
 
+(defun keep-points-in-history (points positions old-count new-count)
+  "Move each of POINTS back to its entry of POSITIONS, taken when OLD-COUNT
+lines were above the screen, now that NEW-COUNT are: a line of the history
+keeps its number, and a row of the screen moves down with the screen."
+  (loop :for point :in points
+        :for (line-number . charpos) :in positions
+        :do (move-to-line point (if (<= line-number old-count)
+                                    line-number
+                                    (+ line-number (- new-count old-count))))
+            (line-start point)
+            (character-offset point (min charpos (length (line-string point))))))
+
 (defun deactivate-scrollback (terminal)
-  "Remove the lines above the screen from the buffer."
-  (when (terminal-scrollback-active terminal)
+  "Remove the lines above the screen from the buffer.  Not once the process
+has exited: the buffer then holds the final text, and keeps it."
+  (when (and (terminal-scrollback-active terminal)
+             (not (process-exited-p terminal)))
     (setf (terminal-scrollback-active terminal) nil)
     (let* ((buffer (terminal-buffer terminal))
            (rows (terminal-rows terminal))

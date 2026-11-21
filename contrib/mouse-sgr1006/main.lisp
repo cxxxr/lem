@@ -166,7 +166,11 @@
        (let ((target-window (if *scroll-unfocused-window*
                                 (find-window-containing-pos x1 y1)
                                 (current-window))))
-         (lem:scroll-up *wheel-scroll-size* target-window)
+         ;; As a command, through the major mode's EXECUTE (a terminal
+         ;; buffer shows its history so), as src/mouse.lisp scrolls.
+         (when target-window
+           (with-current-window target-window
+             (call-command 'scroll-up *wheel-scroll-size*)))
          (lem:redraw-display)))
       ;; wheel down
       ((and (eql btype *mouse-wheel-down*)
@@ -174,7 +178,11 @@
        (let ((target-window (if *scroll-unfocused-window*
                                 (find-window-containing-pos x1 y1)
                                 (current-window))))
-         (lem:scroll-down *wheel-scroll-size* target-window)
+         ;; As a command, through the major mode's EXECUTE (a terminal
+         ;; buffer shows its history so), as src/mouse.lisp scrolls.
+         (when target-window
+           (with-current-window target-window
+             (call-command 'scroll-down *wheel-scroll-size*)))
          (lem:redraw-display)))
       )
     (when *message-on-mouse-event*
