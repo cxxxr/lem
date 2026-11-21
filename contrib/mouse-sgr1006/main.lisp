@@ -194,17 +194,21 @@
 
 (defun enable-hook ()
   (format lem-ncurses:*terminal-io-saved* "~A[?1000h~A[?1002h~A[?1006h~%" #\esc #\esc #\esc)
+  ;; The escape sequence above was written behind the display's back: draw
+  ;; every window again.  (IGNORE-ERRORS: when loaded before the display
+  ;; exists, there is nothing to draw.)
   (ignore-errors
-    (dolist (window (lem:window-list))
-      (lem:screen-clear (lem:window-screen window)))
+    (lem:clear-screens-of-window-list)
     (lem:redraw-display))
   (lem:run-hooks *enable-hook*))
 
 (defun disable-hook ()
   (format lem-ncurses:*terminal-io-saved* "~A[?1006l~A[?1002l~A[?1000l~%" #\esc #\esc #\esc)
+  ;; The escape sequence above was written behind the display's back: draw
+  ;; every window again.  (IGNORE-ERRORS: when loaded before the display
+  ;; exists, there is nothing to draw.)
   (ignore-errors
-    (dolist (window (lem:window-list))
-      (lem:screen-clear (lem:window-screen window)))
+    (lem:clear-screens-of-window-list)
     (lem:redraw-display))
   (run-hooks *disable-hook*))
 
