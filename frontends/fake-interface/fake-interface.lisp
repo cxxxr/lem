@@ -133,24 +133,22 @@
                         'lem/buffer/internal::*current-buffer*)
                   bt2:*default-special-bindings*)))
     (with-implementation (make-instance 'fake-interface)
-      (let ((returned nil)
-            (signalled nil))
+      (let ((returned nil))
         (unwind-protect
              (multiple-value-prog1
-                 (handler-bind ((error (lambda (condition)
-                                         (declare (ignore condition))
-                                         (setf signalled t))))
+                 (progn
                    (setup-first-frame)
                    (setf (current-buffer) (window-buffer (current-window)))
                    (funcall function))
                (setf returned t))
           ;; teardown-frames tears down every frame, also after one failed.
-          ;; Its error is not reported while an error of FUNCTION unwinds:
-          ;; it would replace that error.  It is after another exit
-          ;; (return-from, throw).
-          (if (and signalled (not returned))
-              (ignore-errors (teardown-frames))
-              (teardown-frames)))))))
+          ;; When FUNCTION did not return (an error, a throw), its error is
+          ;; only warned about: it would replace FUNCTION's own error.
+          (if returned
+              (teardown-frames)
+              (handler-case (teardown-frames)
+                (error (condition)
+                  (warn "Tearing down the frames failed: ~A" condition)))))))))
 
 (defmacro with-fake-interface (() &body body)
   `(call-with-fake-interface (lambda () ,@body)))

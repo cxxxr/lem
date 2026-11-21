@@ -513,6 +513,8 @@
         (ok (notany (lambda (point) (buffer-has-point-p attached point)) points))))))
 
 (deftest teardown-frames/every-frame
+  ;; window-deleted-p is internal: lem exports no way to tell that a window
+  ;; was freed.
   (lem:with-current-buffers ()
     (with-fake-interface ()
       (let* ((hidden-buffer (lem:make-buffer "hidden"))
@@ -529,3 +531,19 @@
             (ok (lem-core::window-deleted-p hidden-window))
             (ok (notany (lambda (point) (buffer-has-point-p hidden-buffer point))
                         points))))))))
+
+(deftest map-protected/the-first-error-is-signalled
+  ;; map-protected is internal: a helper of teardown-frames and teardown-windows.
+  (let ((called '()))
+    (ok (equal "1"
+               (handler-case
+                   (handler-bind ((warning #'muffle-warning))
+                     (lem-core::map-protected
+                      (lambda (n)
+                        (push n called)
+                        (when (oddp n)
+                          (error "~D" n)))
+                      '(0 1 2 3 4)))
+                 (error (e) (princ-to-string e)))))
+    (testing "every element is called, also after the errors"
+      (ok (equal '(0 1 2 3 4) (reverse called))))))

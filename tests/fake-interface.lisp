@@ -110,10 +110,11 @@
                        (push :not-a-window (lem:frame-floating-windows (current-frame)))
                        (error "the body's error"))
                    (error (e) (princ-to-string e)))))))
-  (testing "after a return-from, the error of the teardown is reported"
+  (testing "after a return-from, the error of the teardown is still told, as a warning"
     (with-current-buffers ()
       (ok (signals
            (block body
              (with-fake-interface ()
                (push :not-a-window (lem:frame-floating-windows (current-frame)))
-               (return-from body))))))))
+               (return-from body)))
+           'warning)))))
