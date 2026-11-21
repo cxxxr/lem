@@ -104,7 +104,8 @@ jobs:
                   });
                   return jobs.some((job) => job.name.startsWith('builds ') && job.conclusion === 'success');
                 };
-                const duration = (run) => Date.parse(run.updated_at) - Date.parse(run.run_started_at);
+                // 0 for a run not started yet (no run_started_at), not NaN, which breaks the sort.
+                const duration = (run) => (Date.parse(run.updated_at) - Date.parse(run.run_started_at)) || 0;
                 // Those that need no lookup (push and manual runs) first.
                 runs.sort((x, y) => (x.event === 'schedule') - (y.event === 'schedule') ||
                   duration(y) - duration(x));

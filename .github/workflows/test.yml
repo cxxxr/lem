@@ -82,8 +82,9 @@ jobs:
               // takes seconds, one that tested takes minutes, so the jobs of
               // few runs are looked up however many skipped; and at most
               // maxLookups: past that, test.  (A push whose push_image failed
-              // comes after the scheduled runs that skipped on it, so once in
-              // maxLookups days its commit is tested again.)
+              // comes after the scheduled runs that skipped on it, so its
+              // commit is tested once more after maxLookups of them; then not
+              // again, as that scheduled run comes first.)
               const maxLookups = 10;
               let lookups = 0;
               const tested = async (run) => {
@@ -98,7 +99,8 @@ jobs:
                 return jobs.some((job) => job.name === 'test' &&
                   (job.steps || []).some((step) => step.name === 'Run tests' && step.conclusion === 'success'));
               };
-              const duration = (run) => Date.parse(run.updated_at) - Date.parse(run.run_started_at);
+              // 0 for a run not started yet (no run_started_at), not NaN, which breaks the sort.
+              const duration = (run) => (Date.parse(run.updated_at) - Date.parse(run.run_started_at)) || 0;
               const candidates = runs
                 .filter((run) => run.event !== 'pull_request' && run.id !== context.runId)
                 .sort((x, y) => (y.conclusion === 'success') - (x.conclusion === 'success') ||
@@ -115,7 +117,7 @@ jobs:
               core.warning(`Could not look up the runs of ${context.sha}, testing: ${error.message}`);
               passed = null;
             }
-            if (passed) console.log(`${context.sha} already passed in run ${passed.html_url} (${passed.event}): skipping.`);
+            if (passed) console.log(`The tests of ${context.sha} already passed in run ${passed.html_url} (${passed.event}): skipping.`);
             else if (passed === undefined) console.log(`${context.sha} has no successful push, manual or scheduled test run yet: testing.`);
             core.setOutput('skip', String(Boolean(passed)));
 
