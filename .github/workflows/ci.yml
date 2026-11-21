@@ -83,9 +83,16 @@ jobs:
                 // only if it built (its build jobs, which run only then,
                 // succeeded).  Else, once the run it skipped on failed in a
                 // re-run, every later scheduled run would skip on it.
+                // The scheduled runs that took longest first: one that skipped
+                // takes seconds, one that built takes minutes, so the jobs of
+                // few runs are looked up however many skipped; and at most
+                // maxLookups: past that, build.
+                const maxLookups = 10;
+                let lookups = 0;
                 const built = async (run) => {
                   if (run.conclusion !== 'success' || run.event === 'pull_request') return false;
                   if (run.event !== 'schedule') return true;
+                  lookups += 1;
                   const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
                     owner: context.repo.owner,
                     repo: context.repo.repo,
@@ -95,7 +102,15 @@ jobs:
                   });
                   return jobs.some((job) => job.name.startsWith('builds ') && job.conclusion === 'success');
                 };
+                const duration = (run) => Date.parse(run.updated_at) - Date.parse(run.run_started_at);
+                // Those that need no lookup (push and manual runs) first.
+                runs.sort((x, y) => (x.event === 'schedule') - (y.event === 'schedule') ||
+                  duration(y) - duration(x));
                 for (const run of runs) {
+                  if (lookups >= maxLookups && run.event === 'schedule' && run.conclusion === 'success') {
+                    console.log(`Looked up the jobs of ${lookups} scheduled runs of ${context.sha}: no more.`);
+                    break;
+                  }
                   if (await built(run)) { passed = run; break; }
                 }
               } catch (error) {

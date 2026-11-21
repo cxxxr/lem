@@ -23,8 +23,8 @@ on:
       - '**.md'
       - 'docs/**'
   # Once a day on the default branch (staging on the cxxxr/lem fork),
-  # skipped when that commit already passed in a push or manual run, or in a
-  # scheduled run that tested rather than skipped.
+  # skipped when that commit's tests already passed in a push, manual or
+  # earlier scheduled run (one that tested rather than skipped).
   schedule:
     - cron: '30 19 * * *'   # 19:30 UTC, 04:30 JST
   workflow_dispatch:
@@ -65,17 +65,24 @@ jobs:
                 head_sha: context.sha,
                 per_page: 100,
               });
-              // Not the status: 'success' filter of the API: it can miss a run
-              // that finished minutes ago.  A run still in progress does not
-              // count (it can still fail), so the commit of a push just before
-              // the schedule is tested twice.
-              // A scheduled run that skipped ends as a success too: it counts
-              // only if it tested (its "Run tests" step succeeded).  Else, once
-              // the run it skipped on failed in a re-run, every later scheduled
-              // run would skip on it.
+              // Not the API's status filter: it can miss a run that finished
+              // minutes ago.  A run still testing does not count (it can still
+              // fail), so the commit of a push just before the schedule is
+              // tested twice.
+              // A run counts only if it tested: its "Run tests" step
+              // succeeded.  Not the run's conclusion: a scheduled run that
+              // skipped ends as a success too (and once the run it skipped on
+              // failed in a re-run, every later scheduled run would skip on
+              // it), and a push to main whose push_image failed ends as a
+              // failure though its tests passed.
+              // The runs that took longest first: one that skipped takes
+              // seconds, one that tested takes minutes, so the jobs of few
+              // runs are looked up however many skipped; and at most
+              // maxLookups: past that, test.
+              const maxLookups = 10;
+              let lookups = 0;
               const tested = async (run) => {
-                if (run.conclusion !== 'success' || run.event === 'pull_request') return false;
-                if (run.event !== 'schedule') return true;
+                lookups += 1;
                 const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -86,7 +93,15 @@ jobs:
                 return jobs.some((job) => job.name === 'test' &&
                   (job.steps || []).some((step) => step.name === 'Run tests' && step.conclusion === 'success'));
               };
-              for (const run of runs) {
+              const duration = (run) => Date.parse(run.updated_at) - Date.parse(run.run_started_at);
+              const candidates = runs
+                .filter((run) => run.event !== 'pull_request' && run.id !== context.runId)
+                .sort((x, y) => duration(y) - duration(x));
+              for (const run of candidates) {
+                if (lookups >= maxLookups) {
+                  console.log(`Looked up the jobs of ${lookups} runs of ${context.sha}: no more.`);
+                  break;
+                }
                 if (await tested(run)) { passed = run; break; }
               }
             } catch (error) {
