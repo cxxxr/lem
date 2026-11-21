@@ -7,6 +7,14 @@
   (:documentation "An object whose printed form goes on and then fails, as a
 structure with a buffer's whole text in a slot would take long to print."))
 
+(defstruct holder text)
+
+(defclass fresh-line-printer () ()
+  (:documentation "An object whose print-object starts with fresh-line."))
+
+(defmethod print-object ((object fresh-line-printer) stream)
+  (format stream "~&#<FRESH>"))
+
 (defmethod print-object ((object endless-printer) stream)
   (write-string (make-string 1000 :initial-element #\a) stream)
   (error "Printed too far"))
@@ -18,8 +26,6 @@ structure with a buffer's whole text in a slot would take long to print."))
                                 (make-string bt::*max-object-length* :initial-element #\a)
                                 "...")
                    printed)))))
-
-(defstruct holder text)
 
 (deftest a-structure-with-a-long-string-is-cut
   (let ((printed (bt::print-argument
@@ -34,15 +40,6 @@ structure with a buffer's whole text in a slot would take long to print."))
           (*print-gensym* nil)
           (*print-escape* nil))
       (ok (string= "#:FRAME-NAME" (bt::print-frame-name name))))))
-
-(deftest a-printed-backtrace-is-cut-line-by-line
-  (let ((cut (bt::cut-printed-backtrace
-              (format nil "0: (FOO ~A)~%~%   ~%1: (BAR)~%"
-                      (make-string 1000 :initial-element #\x)))))
-    (ok (= 2 (count #\Newline cut)))
-    (ok (string= "1: (BAR)" (second (uiop:split-string (string-right-trim '(#\Newline) cut)
-                                                     :separator '(#\Newline)))))
-    (ok (< (length cut) 500))))
 
 (defun recurse-then-capture (depth count)
   (if (zerop depth)
@@ -60,3 +57,6 @@ structure with a buffer's whole text in a slot would take long to print."))
     (setf (cdr (last circular)) circular)
     (let ((printed (bt::print-argument (make-holder :text circular) 0)))
       (ok (<= (length printed) (+ bt::*max-object-length* 3))))))
+
+(deftest fresh-line-in-print-object-adds-no-newline
+  (ok (string= "#<FRESH>" (bt::print-argument (make-instance 'fresh-line-printer) 0))))

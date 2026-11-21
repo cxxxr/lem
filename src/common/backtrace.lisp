@@ -17,16 +17,14 @@ with the frame arguments cut, so that buffer text is not copied whole."))
 (defparameter *max-depth* 2
   "Levels of nested lists printed in an argument.")
 
-(defparameter *max-line-length* 400
-  "Characters kept of a backtrace line printed by uiop, on a Lisp other than
-SBCL: there the arguments are printed by the implementation, not one by one.")
-
 (defclass limited-output-stream (trivial-gray-streams:fundamental-character-output-stream)
   ((limit :initarg :limit
           :reader stream-limit
           :documentation "Characters kept; writing one more throws to the stream.")
    (count :initform 0
           :accessor stream-count)
+   (column :initform 0
+           :accessor stream-column)
    (output :initform (make-string-output-stream)
            :reader stream-output))
   (:documentation "A string output stream that stops the printer once it has
@@ -58,22 +56,22 @@ text in a structure slot is then not printed whole only to be cut."))
   (when (>= (stream-count stream) (stream-limit stream))
     (throw stream nil))
   (incf (stream-count stream))
+  (setf (stream-column stream)
+        (if (char= char #\Newline) 0 (1+ (stream-column stream))))
   (write-char char (stream-output stream))
   char)
 
 (defmethod trivial-gray-streams:stream-write-string ((stream limited-output-stream) string
                                                      &optional (start 0) end)
-  (let* ((end (or end (length string)))
-         (room (- (stream-limit stream) (stream-count stream)))
-         (kept-end (min end (+ start (max room 0)))))
-    (write-string string (stream-output stream) :start start :end kept-end)
-    (incf (stream-count stream) (- kept-end start))
-    (when (< kept-end end)
-      (throw stream nil))
-    string))
+  ;; Character by character: at most LIMIT of them are written.
+  (loop :for i :from start :below (or end (length string))
+        :do (trivial-gray-streams:stream-write-char stream (char string i)))
+  string)
 
 (defmethod trivial-gray-streams:stream-line-column ((stream limited-output-stream))
-  nil)
+  ;; Known, so that fresh-line and ~& in a print-object method do not start
+  ;; every printed form with a newline.
+  (stream-column stream))
 
 (defun print-limited (object limit)
   "Return the first LIMIT characters of the printed form of OBJECT, and
@@ -146,24 +144,16 @@ strings unquoted with their newlines, which cannot be cut afterwards."
         ((consp object) "(...)")
         (t (print-object-safely object))))
 
-(defun cut-printed-backtrace (text)
-  "Return TEXT, a backtrace printed by uiop, without its empty lines and
-with each line cut to *max-line-length* characters."
-  (with-output-to-string (out)
-    (with-input-from-string (in text)
-      (loop :for line := (read-line in nil)
-            :while line
-            :unless (string= "" (string-trim '(#\Space #\Tab #\Return) line))
-              :do (write-line (one-line line *max-line-length*) out)))))
-
 (defun safe-backtrace (&key (count 100))
   "Return the backtrace of the current thread as a string, one line per
 frame: \"N: (NAME ARG...)\", with names printed in the CL package and the
 arguments cut (see print-argument). Call it where the error is signalled,
 before the stack unwinds. COUNT frames at most, all of them if it is NIL.
-On a Lisp other than SBCL it is uiop's backtrace with its lines cut
-(cut-printed-backtrace): the arguments are printed whole before being cut,
-and a frame may take several lines."
+It needs SBCL: elsewhere it returns a line saying so, with no frames, so
+that incidents are told apart only by their condition type there. uiop's
+backtrace is not a fallback: it prints the arguments whole (buffer text)
+and a frame on several lines, which neither the frames nor the fingerprint
+can be cut out of."
   #+sbcl
   (with-output-to-string (out)
     (let ((index 0))
@@ -182,6 +172,7 @@ and a frame may take several lines."
          (incf index))
        :count (or count most-positive-fixnum))))
   #-sbcl
-  (cut-printed-backtrace
-   (with-output-to-string (out)
-     (uiop:print-backtrace :stream out :count count))))
+  (progn
+    count
+    (format nil "(safe-backtrace needs SBCL; no frames on ~A)~%"
+            (lisp-implementation-type))))

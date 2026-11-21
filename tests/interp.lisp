@@ -52,12 +52,19 @@
      ,@body))
 
 (deftest the-last-reported-condition-is-not-kept-outside-a-command-loop
-  (with-reported-contexts (contexts)
-    (lem-core::report-error (make-condition 'simple-error :format-control "x")
-                            nil :command)
-    (ok (equal '(:command) contexts))
-    (ok (not (and (boundp 'lem-core::*last-reported-condition*)
-                  (symbol-value 'lem-core::*last-reported-condition*))))))
+  ;; In a thread of its own, with no binding of *last-reported-condition*:
+  ;; outside of a command loop also when the tests run in a Lem, whose
+  ;; command loop binds it. (lem-core is locked, so progv cannot unbind it.)
+  (let ((kept :not-run))
+    (bt2:join-thread
+     (bt2:make-thread
+      (lambda ()
+        (let ((lem:*error-report-hook* '()))
+          (lem-core::report-error (make-condition 'simple-error :format-control "x")
+                                  nil :command)
+          (setf kept (and (boundp 'lem-core::*last-reported-condition*)
+                          (symbol-value 'lem-core::*last-reported-condition*)))))))
+    (ok (null kept))))
 
 (deftest a-timer-error-is-reported-once-in-an-iteration
   (with-reported-contexts (contexts)
@@ -72,7 +79,7 @@
 (lem:define-command $fail-in-a-prompt () ()
   (error "A command in a prompt failed"))
 
-(deftest a-command-failing-in-a-prompt-of-a-timer-is-a-command-error
+(defun contexts-of-a-command-failing-in-a-prompt-of-a-timer (handle-function-p)
   (lem-fake-interface:with-fake-interface ()
     (lem:with-current-buffers ()
       (with-reported-contexts (contexts)
@@ -82,8 +89,9 @@
                        (lambda ()
                          (lem:prompt-for-string "in a timer: " :special-keymap keymap))
                        :name "a timer with a prompt"
-                       :handle-function (lambda (condition)
-                                          (lem:pop-up-backtrace condition)))))
+                       :handle-function (when handle-function-p
+                                          (lambda (condition)
+                                            (lem:pop-up-backtrace condition))))))
           (lem:define-key keymap "C-t" '$fail-in-a-prompt)
           (lem:unread-key key)
           ;; As in the editor: a timer runs inside the toplevel command loop,
@@ -95,5 +103,39 @@
             (handler-case (lem/common/timer::call-timer-function timer)
               (lem/common/timer:timer-error (c)
                 (lem:pop-up-backtrace c))))
-          (testing "reported once, by the handle-function, as a command error"
-            (ok (equal '(:command) contexts))))))))
+          contexts)))))
+
+(deftest a-command-failing-in-a-prompt-of-a-timer-is-a-command-error
+  (testing "with a handle-function: reported once, by it"
+    (ok (equal '(:command) (contexts-of-a-command-failing-in-a-prompt-of-a-timer t))))
+  (testing "without one: reported once, as the timer-error"
+    (ok (equal '(:command) (contexts-of-a-command-failing-in-a-prompt-of-a-timer nil)))))
+
+(define-condition unprintable-error (error) ()
+  (:report (lambda (condition stream)
+             (declare (ignore condition stream))
+             (error "This condition cannot be printed"))))
+
+(deftest a-background-job-error-that-cannot-be-printed-is-shown
+  (lem-fake-interface:with-fake-interface ()
+    (lem:with-current-buffers ()
+      (with-reported-contexts (contexts)
+        ;; The job's thread gets this test's event queue and hook.
+        (let* ((queue (lem-core::make-concurrent-queue))
+               (hook lem:*error-report-hook*)
+               (lem-core::*editor-event-queue* queue)
+               (bt2:*default-special-bindings*
+                 (list* (cons 'lem-core::*editor-event-queue* queue)
+                        (cons 'lem:*error-report-hook* (list 'quote hook))
+                        bt2:*default-special-bindings*))
+               (thread (lem-core::call-background-job
+                        (lambda () (error 'unprintable-error))
+                        (lambda (result) result))))
+          (bt2:join-thread thread)
+          (ok (equal '(:background-job) contexts))
+          (lem-core::receive-event 0)
+          (let ((buffer (lem:get-buffer "*BACKGROUND JOB ERROR*")))
+            (ok buffer)
+            (ok (and buffer
+                     (search "#<error printing the condition>"
+                             (lem:buffer-text buffer))))))))))

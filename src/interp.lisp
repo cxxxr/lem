@@ -73,11 +73,14 @@ reports worse."
               (write-string (or timer-backtrace (backtrace-string condition))
                             stream))))
     ;; A timer's handle-function shows the original error, not a timer-error.
-    ;; running-timer-p is false in a command loop the timer entered (a prompt
-    ;; it opened, see command-loop): a command failing there is :command.
+    ;; A command failing in a command loop the timer entered (a prompt it
+    ;; opened, see command-loop) is :command: running-timer-p is false there,
+    ;; and the timer-error that carries it out of the timer says so.
     (report-error condition
                   (or timer-backtrace (ignore-errors (safe-backtrace)))
-                  (if (or (typep condition 'timer-error) (running-timer-p))
+                  (if (if (typep condition 'timer-error)
+                          (not (timer-error-outside-timer-p condition))
+                          (running-timer-p))
                       :timer
                       :command))
     (funcall 'pop-up-typeout-window
@@ -244,7 +247,11 @@ reports worse."
            ;; Reported here, in the job's thread, which the report is about.
            (report-error condition backtrace :background-job)
            (let ((error-text (with-output-to-string (stream)
-                               (princ condition stream)
+                               ;; A condition's report may signal; the job's
+                               ;; thread has no handler around this.
+                               (write-string (or (ignore-errors (princ-to-string condition))
+                                                 "#<error printing the condition>")
+                                             stream)
                                (fresh-line stream)
                                (write-string (or printed-backtrace "") stream))))
              (send-event (lambda ()

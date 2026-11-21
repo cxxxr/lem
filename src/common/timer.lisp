@@ -10,6 +10,7 @@
    :timer-error
    :timer-error-backtrace
    :timer-error-condition
+   :timer-error-outside-timer-p
    :timer
    :timer-name
    :timer-expired-p
@@ -71,7 +72,13 @@ running again while its own function runs."
               :initform nil
               :reader timer-error-backtrace
               :documentation "The backtrace of CONDITION, taken before the stack unwound
-(lem/common/backtrace:safe-backtrace)."))
+(lem/common/backtrace:safe-backtrace).")
+   (outside-timer-p :initarg :outside-timer-p
+                    :initform nil
+                    :reader timer-error-outside-timer-p
+                    :documentation "True if CONDITION was signalled outside of the timer's
+code: in a command loop the timer's function entered (see call-outside-timer),
+by a command run in a prompt it opened."))
   (:report (lambda (c s)
              (with-slots (timer condition) c
                (format s "Error running timer ~S: ~A" (timer-name timer) condition)))))
@@ -126,7 +133,8 @@ running again while its own function runs."
 
 (defun call-timer-function (timer)
   (let ((*running-timer* timer)
-        (backtrace nil))
+        (backtrace nil)
+        (outside-timer-p nil))
     (handler-case
         ;; The backtrace is taken here: by the time handler-case runs its
         ;; clause, the frames of the failing timer function are gone.
@@ -134,13 +142,15 @@ running again while its own function runs."
                                 (declare (ignore condition))
                                 (setf backtrace
                                       (ignore-errors
-                                       (lem/common/backtrace:safe-backtrace))))))
+                                       (lem/common/backtrace:safe-backtrace))
+                                      outside-timer-p (not (running-timer-p))))))
           (if (timer-handle-function timer)
               (handler-bind ((error (timer-handle-function timer)))
                 (funcall (timer-function timer)))
               (funcall (timer-function timer))))
       (error (condition)
-        (error 'timer-error :timer timer :condition condition :backtrace backtrace)))))
+        (error 'timer-error :timer timer :condition condition :backtrace backtrace
+                            :outside-timer-p outside-timer-p)))))
 
 
 ;;; timer

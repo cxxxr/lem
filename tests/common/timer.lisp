@@ -4,6 +4,11 @@
         :lem/common/timer))
 (in-package :lem-tests/timer)
 
+(defparameter *wait-seconds* 10
+  "How long a test waits for a timer's message before failing: a bound on a
+broken timer, not on how soon a working one fires, which a loaded machine
+can delay by much more than the timer's own interval.")
+
 (defun testing-timer ())
 
 ;;TODO: These tests do work indeed with CCL but for some reason when launching the tests
@@ -43,11 +48,6 @@
      (let ((*current-time* 0)
            (lem/common/timer::*idle-timer-list* '()))
        ,@body)))
-
-(defparameter *wait-seconds* 10
-  "How long a test waits for a timer's message before failing: a bound on a
-broken timer, not on how soon a working one fires, which a loaded machine
-can delay by much more than the timer's own interval.")
 
 (defun receive (mailbox)
   "Return the next message of MAILBOX and whether one came within *wait-seconds*."
