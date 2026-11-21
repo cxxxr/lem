@@ -157,11 +157,15 @@ and returning to the same terminal would do nothing."
 its process has exited.  The old output is discarded."
   (let* ((buffer (current-buffer))
          (old (buffer-terminal buffer)))
-    (unless old
+    ;; A terminal-mode buffer without a terminal is one whose restart failed.
+    (unless (or old (mode-active-p buffer 'terminal-mode))
       (editor-error "Not a terminal buffer"))
-    (unless (terminal:process-exited-p old)
+    (when (and old (not (terminal:process-exited-p old)))
       (editor-error "Terminal process is still running"))
-    (terminal:destroy old)
+    (when old
+      (terminal:destroy old))
+    ;; Its native state is freed: keep no reference to it if create fails.
+    (setf (buffer-terminal buffer) nil)
     ;; The old process may have exited while the buffer was scrolled.
     (setf (buffer-value buffer 'scrollback-lines) nil)
     (with-buffer-read-only buffer nil
@@ -179,9 +183,10 @@ its process has exited.  The old output is discarded."
 
 (defun get-current-live-terminal ()
   "Return the current buffer's terminal, signalling `editor-error' when its
-process has already exited (so there is nothing to send input to)."
+process has already exited, or did not start (a failed `terminal-restart'),
+so there is nothing to send input to."
   (let ((terminal (get-current-terminal)))
-    (when (and terminal (terminal:process-exited-p terminal))
+    (when (or (null terminal) (terminal:process-exited-p terminal))
       (editor-error "Terminal process has exited"))
     terminal))
 
@@ -355,8 +360,9 @@ nothing below it."
      (call-next-method))
     ;; Once the process has exited the buffer is plain read-only text holding
     ;; the final screen, so let every other command behave as in any other buffer.
-    ((alexandria:when-let ((terminal (get-current-terminal)))
-       (terminal:process-exited-p terminal))
+    ;; The same holds when there is no terminal (its restart failed).
+    ((let ((terminal (get-current-terminal)))
+       (or (null terminal) (terminal:process-exited-p terminal)))
      (call-next-method))
     (t
      ;; Any other command (typing, etc.) goes to the terminal, which shows its

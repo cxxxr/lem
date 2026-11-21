@@ -10,6 +10,13 @@
 (defconstant +rlimit-nofile+ 7)
 (defconstant +emfile+ 24)
 
+(defclass quiet-timer-manager (lem/common/timer:timer-manager) ()
+  (:documentation "Drops the renders a started terminal's I/O thread asks for."))
+
+(defmethod lem/common/timer::send-timer-notification
+    ((timer-manager quiet-timer-manager) continue)
+  (declare (ignore continue)))
+
 (defun library-available-p ()
   "True when terminal.so is loaded and has this failure handling: an older
 build aborts in forkpty when it is out of file descriptors."
@@ -78,4 +85,45 @@ it in a test process, not in a Lem in use."
             "no terminal is registered")
         (ok (not (terminal-thread-p lem-terminal/terminal::*terminal-id-counter*))
             "no I/O thread is started"))
+      (skip "terminal.so is not built or is older than its failure handling")))
+
+(deftest a-failed-terminal-restart-keeps-no-freed-terminal
+  #-(and linux (or x86-64 arm64)) (skip "needs Linux on x86-64 or arm64")
+  #+(and linux (or x86-64 arm64))
+  (if (library-available-p)
+      (lem:with-current-buffers ()
+        (lem-fake-interface:with-fake-interface ()
+         (lem/common/timer:with-timer-manager (make-instance 'quiet-timer-manager)
+          (let* ((buffer (lem:make-buffer "*terminal restart test*"))
+                 (old (lem-terminal/terminal:create
+                       :rows 24 :cols 80 :buffer buffer :directory ""
+                       :program "/bin/sh" :argv (list "/bin/sh" "-c" "sleep 10")))
+                 (condition nil))
+            (lem:switch-to-buffer buffer)
+            (lem-terminal/terminal-mode::terminal-mode)
+            (setf (lem-terminal/terminal-mode::buffer-terminal buffer) old
+                  ;; as when the process has exited, which terminal-restart needs
+                  (lem-terminal/terminal::terminal-exit-status old) 0)
+            (unwind-protect
+                 (call-with-no-free-fd
+                  (lambda ()
+                    (handler-case (lem-terminal/terminal-mode::terminal-restart)
+                      (lem:editor-error (c) (setf condition c)))))
+              (lem-terminal/terminal:destroy old)
+              (alexandria:when-let
+                  ((new (lem-terminal/terminal-mode::buffer-terminal buffer)))
+                (unless (eq new old)
+                  (lem-terminal/terminal:destroy new))))
+            (ok condition "terminal-restart signals editor-error")
+            (ok (null (lem-terminal/terminal-mode::buffer-terminal buffer))
+                "the buffer keeps no reference to the destroyed terminal")
+            (ok (signals (lem-terminal/terminal-mode::terminal-input) 'lem:editor-error)
+                "typing says there is no process instead of failing on NIL")
+            (lem-terminal/terminal-mode::terminal-restart)
+            (let ((new (lem-terminal/terminal-mode::buffer-terminal buffer)))
+              (unwind-protect
+                   (ok (and new (not (lem-terminal/terminal:process-exited-p new)))
+                       "terminal-restart starts it once descriptors are free")
+                (when new
+                  (lem-terminal/terminal:destroy new))))))))
       (skip "terminal.so is not built or is older than its failure handling")))
