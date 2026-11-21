@@ -322,16 +322,18 @@ called again from a read loop its own function entered (a prompt it opened).")))
   ;; or handle-function) is expired: it does not come back. One still running
   ;; (this is the read loop of a prompt it opened) stays processed until the
   ;; idle time it fired in ends.
-  (let ((processed *processed-idle-timer-list*))
-    (setf *idle-timer-list*
-          (nconc (remove-if (lambda (timer)
-                              (or (timer-expired-p timer) (timer-running-p timer)))
-                            processed)
-                 *idle-timer-list*))
-    (setf *processed-idle-timer-list*
-          (remove-if-not (lambda (timer)
-                           (and (timer-running-p timer) (not (timer-expired-p timer))))
-                         processed))))
+  ;; Both lists are computed before either is set, as fresh lists: remove-if
+  ;; may share its argument's tail, and nconc onto it would join the lists.
+  (let* ((processed *processed-idle-timer-list*)
+         (back (remove-if (lambda (timer)
+                            (or (timer-expired-p timer) (timer-running-p timer)))
+                          processed))
+         (kept (remove-if-not (lambda (timer)
+                                (and (timer-running-p timer) (not (timer-expired-p timer))))
+                              processed)))
+    (setf *idle-timer-list* (append back (remove-if (lambda (timer) (member timer back))
+                                                    *idle-timer-list*))
+          *processed-idle-timer-list* (copy-list kept))))
 
 (defun call-with-idle-timers (function)
   ;; unwind-protect: a timer-error leaving FUNCTION must not leave the
@@ -362,24 +364,32 @@ another one expired."
         (expire-timer timer)
         (set-timer-last-time tick-time timer))))
 
+(defun idle-timer-due-p (timer tick-time)
+  "Return true if the idle TIMER is to be called at TICK-TIME."
+  (and (timer-started-p timer)
+       ;; Not again from a prompt it opened.
+       (not (timer-running-p timer))
+       (< (timer-next-time timer) tick-time)))
+
 (defun update-idle-timers ()
-  "Call the idle timers that are due, and return true if there were any.
+  "Call the idle timers that are due, and return true if any was called.
 They are taken and called one at a time: if one fails or leaves non-locally,
 the ones after it are still in the idle timers, for a later idle time, and
 none of their failures is lost. One that a timer called before stopped is
-not called."
+not called, nor one that it started again (it is not due any more)."
   (let* ((tick-time (get-microsecond-time *timer-manager*))
-         (due-timers (remove-if-not (lambda (timer)
-                                      (and (timer-started-p timer)
-                                           ;; Not again from a prompt it opened.
-                                           (not (timer-running-p timer))
-                                           (< (timer-next-time timer) tick-time)))
-                                    *idle-timer-list*)))
+         (due-timers (remove-if-not (lambda (timer) (idle-timer-due-p timer tick-time))
+                                    *idle-timer-list*))
+         (called nil))
     (dolist (timer due-timers)
-      (when (member timer *idle-timer-list*)
+      ;; Checked again: a timer called before may have stopped it, started it
+      ;; again, or (in its prompt) called it already.
+      (when (and (member timer *idle-timer-list*)
+                 (idle-timer-due-p timer tick-time))
         (take-due-timer timer tick-time)
+        (setf called t)
         (call-timer-function timer)))
-    (not (null due-timers))))
+    called))
 
 (defun get-next-timer-timing-ms ()
   ;; Not a running one: update-idle-timers does not call it, so it would be

@@ -165,7 +165,12 @@ condition that left the timer: TIMER-ERROR, EDITOR-ABORT or NIL."
           (setf (lem/common/timer::timer-last-time timer) 1))
         (lem:unread-key (lem:make-key :ctrl t :sym "g"))
         (ok (lem/common/timer:update-idle-timers))
-        (ok (equal '(:other :prompting) ran))))))
+        (ok (equal '(:prompting) ran))
+        ;; The prompt's read loop started the idle time again (keys were
+        ;; typed), so the other timer is due in a later one, not lost.
+        (testing "the other timer is still there"
+          (ok (member other lem/common/timer::*idle-timer-list*))
+          (ok (not (lem/common/timer:timer-expired-p other))))))))
 
 (deftest a-background-job-error-that-cannot-be-printed-is-shown
   (lem-fake-interface:with-fake-interface ()

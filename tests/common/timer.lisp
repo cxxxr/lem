@@ -242,3 +242,54 @@ can delay by much more than the timer's own interval.")
       (testing "it is in the list once, not expired"
         (ok (= 1 (count restarted lem/common/timer::*idle-timer-list*)))
         (ok (not (timer-expired-p restarted)))))))
+
+(deftest an-idle-timer-started-again-by-one-called-before-waits
+  (with-testing-timer-manager ()
+    (let* ((ran nil)
+           (later (due-idle-timer (lambda () (setf ran t)) :name "later")))
+      (due-idle-timer (lambda ()
+                        (stop-timer later)
+                        (start-timer later 1000))
+                      :name "postponing")
+      (with-idle-timers ()
+        (setf *current-time* 100)
+        (update-idle-timers))
+      (ok (not ran)))))
+
+(deftest a-running-idle-timer-started-again-is-not-waited-for-in-its-prompt
+  (with-testing-timer-manager ()
+    (let* ((timing :not-run)
+           (timer nil))
+      (setf timer (due-idle-timer
+                   (lambda ()
+                     (start-timer timer 10 :repeat t)
+                     ;; Its prompt's read loop, after the timer is due again.
+                     (with-idle-timers ()
+                       (setf *current-time* 1000)
+                       (setf timing (get-next-timer-timing-ms))))
+                   :repeat t :name "restarting itself"))
+      (with-idle-timers ()
+        (setf *current-time* 100)
+        (update-idle-timers))
+      (ok (null timing)))))
+
+(deftest stop-idle-timers-leaves-the-lists-apart
+  (with-testing-timer-manager ()
+    (let* ((repeating (due-idle-timer (lambda ()) :repeat t :name "repeating"))
+           (prompting nil))
+      (declare (ignorable repeating))
+      (setf prompting
+            (due-idle-timer (lambda ()
+                              ;; Started again while running, then a prompt.
+                              (start-timer prompting 10 :repeat t)
+                              (with-idle-timers ()))
+                            :repeat t :name "prompting"))
+      (with-idle-timers ()
+        (setf *current-time* 100)
+        (update-idle-timers))
+      (let ((idle lem/common/timer::*idle-timer-list*)
+            (processed lem/common/timer::*processed-idle-timer-list*))
+        (ok (alexandria:proper-list-p idle))
+        (ok (= (length idle) (length (remove-duplicates idle))))
+        (ok (null (intersection idle processed)))
+        (ok (= 2 (length idle)))))))
