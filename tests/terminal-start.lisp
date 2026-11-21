@@ -198,7 +198,9 @@ terminal is freed, its child reaped, before the failed start returns."
   (set-difference (child-pids) before))
 
 (deftest a-start-that-fails-after-the-fork-leaves-no-shell
-  (if (library-available-p)
+  (if (and (library-available-p)
+           ;; CHILD-PIDS reads /proc: without it the check could not fail
+           (probe-file "/proc/self/stat"))
       (let ((buffer (lem:make-buffer "*terminal orphan test*" :temporary t))
             (terminals lem-terminal/terminal::*terminals*)
             (children (child-pids))
@@ -218,10 +220,12 @@ terminal is freed, its child reaped, before the failed start returns."
             (format nil "the error of the failed step goes on: ~A" condition))
         (ok (null (new-children children)) "the shell is killed and reaped")
         (ok (eq terminals lem-terminal/terminal::*terminals*) "no terminal is registered"))
-      (skip "terminal.so is not built or is older than its failure handling")))
+      (skip "needs terminal.so with its failure handling, and /proc")))
 
 (deftest a-terminal-buffer-whose-setup-fails-leaves-no-shell
-  (if (library-available-p)
+  (if (and (library-available-p)
+           ;; CHILD-PIDS reads /proc: without it the check could not fail
+           (probe-file "/proc/self/stat"))
       (lem:with-current-buffers ()
         (lem-fake-interface:with-fake-interface ()
          (lem/common/timer:with-timer-manager (make-instance 'quiet-timer-manager)
@@ -243,4 +247,4 @@ terminal is freed, its child reaped, before the failed start returns."
             (ok (equal terminals lem-terminal/terminal::*terminals*)
                 "the terminal is not registered")
             (ok (equal buffers (lem:buffer-list)) "the buffer is deleted")))))
-      (skip "terminal.so is not built or is older than its failure handling")))
+      (skip "needs terminal.so with its failure handling, and /proc")))

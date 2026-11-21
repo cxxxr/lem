@@ -100,11 +100,13 @@ the buffer: no empty buffer, and no shell nobody can kill, is left behind."
            (prog1 (funcall setup buffer)
              (setf done t)))
       (unless done
-        (when terminal
-          (terminal:destroy terminal))
-        ;; Lem on Clysm's create deletes a fresh buffer itself.
-        (unless (deleted-buffer-p buffer)
-          (delete-buffer buffer))))))
+        ;; The buffer goes even when destroying the terminal fails.
+        (unwind-protect
+             (when terminal
+               (terminal:destroy terminal))
+          ;; Lem on Clysm's create deletes a fresh buffer itself.
+          (unless (deleted-buffer-p buffer)
+            (delete-buffer buffer)))))))
 
 (defun show-terminal-buffer (buffer)
   "Show BUFFER's terminal in a window, fitted to it, and select that window."
