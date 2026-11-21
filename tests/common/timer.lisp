@@ -287,11 +287,12 @@ editor reads the global manager) goes on as before."
 
 (deftest only-the-editors-manager-sends-to-the-editor
   ;; A manager of a test that does not say what to do with the notifications
-  ;; must not run its timers in a running Lem's editor thread.
-  (flet ((has-a-method-p (timer-manager)
-           (not (null (compute-applicable-methods
-                       #'send-timer-notification
-                       (list timer-manager (lambda ())))))))
-    ;; (lem-timer-manager is internal to lem-core: only the editor makes one.)
-    (ok (has-a-method-p (make-instance 'lem-core::lem-timer-manager)))
-    (ok (not (has-a-method-p (make-instance 'timer-manager))))))
+  ;; drops them: its timers do not run in a running Lem's editor thread.
+  (let ((ran nil))
+    (send-timer-notification (make-instance 'timer-manager)
+                             (lambda () (setf ran t)))
+    (ok (not ran)))
+  ;; (lem-timer-manager is internal to lem-core: only the editor makes one.)
+  (ok (find-method #'send-timer-notification '()
+                   (list (find-class 'lem-core::lem-timer-manager) (find-class t))
+                   nil)))
