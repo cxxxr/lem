@@ -636,9 +636,14 @@ frozen while any of them reads the history."
          :append (get-buffer-windows buffer :frame frame :include-floating-windows t))))
 
 (defun buffer-view-points (buffer)
-  "Return the buffer point and the view points of every window showing BUFFER."
+  "Return the buffer point, and the view points and points of every window
+showing BUFFER."
   (cons (buffer-point buffer)
-        (mapcar #'window-view-point (buffer-windows buffer))))
+        (loop :for window :in (buffer-windows buffer)
+              :collect (window-view-point window)
+              ;; a window that is not the current one has a point of its own
+              :unless (eq window (current-window))
+                :collect (window-point window))))
 
 (defun point-positions (points)
   "Return the (line-number . charpos) of each of POINTS."

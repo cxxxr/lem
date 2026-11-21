@@ -627,3 +627,23 @@ tests/frame-multiplexer.lisp does)."
               (loop :repeat 50 :do (wheel window -1))
               (ok (not (copy-mode-p buffer))
                   "every window on the screen: the terminal runs on")))))))))
+
+(deftest the-point-of-another-window-stays-on-its-line
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     ;; (no output after the 100 lines: the screen rows keep their text)
+     (ok (wait-for-output buffer (format nil "99~%100~%")))
+     (lem:split-window-vertically window)
+     ;; the terminal fits the smaller windows now
+     (ok (wait-for-output buffer (format nil "99~%100~%")))
+     (let* ((other (lem:get-next-window window))
+            (point (lem:window-point other)))
+       ;; at the start of the buffer, where the scrollback goes in
+       (lem:buffer-start point)
+       (let ((text (lem:line-string point)))
+         (wheel window 1)
+         (ok (copy-mode-p buffer) "the scrollback is put in")
+         (ok (equal text (lem:line-string (lem:window-point other)))
+             "the other window's point is still on its line"))))
+   :script "seq 1 100; sleep 30"))

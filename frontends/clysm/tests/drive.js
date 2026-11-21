@@ -529,8 +529,9 @@ module.exports = (win, app) => {
       // page is going away: asking it would fail ("Render frame was
       // disposed"), so the 'closed' handler ends the run instead.
       let closing = false;
+      let closed = false;
       win.once('close', () => { closing = true; });
-      win.once('closed', () => { check('exit', true); finish(); });
+      win.once('closed', () => { closed = true; check('exit', true); finish(); });
       await key('x', ['control']); await key('c', ['control']);
       const pageSaysExited = async () => {
         if (closing) return false;
@@ -544,6 +545,10 @@ module.exports = (win, app) => {
       const exited = await until(pageSaysExited, 3000);
       if (!closing) {
         check('exit', exited, 'C-x C-c did not close the window');
+        finish();
+      } else if (!await until(async () => closed, 3000)) {
+        // (the window may hide instead of closing, e.g. a resident application)
+        check('exit', false, 'the window began to close and did not');
         finish();
       }
     } catch (e) {

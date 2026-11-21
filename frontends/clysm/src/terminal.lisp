@@ -720,7 +720,11 @@ frozen while any of them reads the history."
 
 (defun buffer-view-points (buffer)
   (cons (buffer-point buffer)
-        (mapcar #'window-view-point (buffer-windows buffer))))
+        (loop :for window :in (buffer-windows buffer)
+              :collect (window-view-point window)
+              ;; a window that is not the current one has a point of its own
+              :unless (eq window (current-window))
+                :collect (window-point window))))
 
 (defun point-positions (points)
   (mapcar (lambda (point)
