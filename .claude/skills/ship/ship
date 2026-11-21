@@ -26,7 +26,8 @@
 #                               read the old one: 0 started, 1 gh refused the re-run or
 #                               no new attempt in 2 minutes, 2 not a workflow run, 3 the
 #                               run did not complete within SHIP_CI_TIMEOUT, 4 the run
-#                               could not be read (a wrong ID, GitHub)
+#                               could not be read (a wrong ID or GitHub at the first
+#                               read; later 3 reads in a row)
 #   ship scheduled              the newest scheduled run of each workflow on the base
 #                               branch (CI and Nix CI test what was merged; also the
 #                               nightly builds and the stale bot): 1 if one failed,
@@ -161,15 +162,15 @@ pr_filters() {
         END { endpr() }'
 }
 
-# Whether trigger $3 of the filters in $2 runs for a pull request into the
-# base branch changing the files listed in file $1.
+# Whether trigger $3 of the filters in $2 runs for a pull request into
+# branch $target (the PR's base) changing the files listed in file $1.
 trigger_runs() {
     f=$(echo "$2" | sed -n "s/^$3 //p")
     if echo "$f" | grep -qx unknown; then return 0; fi
     br=$(echo "$f" | sed -n 's/^branches //p' | paste -sd'|' -)
     bri=$(echo "$f" | sed -n 's/^branches-ignore //p' | paste -sd'|' -)
-    if [ -n "$br" ] && ! printf '%s\n' "$base" | grep -qE "$br"; then return 1; fi
-    if [ -n "$bri" ] && printf '%s\n' "$base" | grep -qE "$bri"; then return 1; fi
+    if [ -n "$br" ] && ! printf '%s\n' "$target" | grep -qE "$br"; then return 1; fi
+    if [ -n "$bri" ] && printf '%s\n' "$target" | grep -qE "$bri"; then return 1; fi
     if echo "$f" | grep -qx always; then return 0; fi
     ign=$(echo "$f" | sed -n 's/^ignore //p' | paste -sd'|' -)
     pat=$(echo "$f" | sed -n 's/^paths //p' | paste -sd'|' -)
@@ -305,6 +306,7 @@ case "${1:-}" in
         errors=0
         moved=
         replaced=
+        previous_head=
         pending=
         running=
         previous=
@@ -317,7 +319,11 @@ case "${1:-}" in
         read_ci() {
             # The checks of commit SHA itself, not of whatever the PR's head is:
             # right after a push, the PR still shows the previous commit's checks.
-            head=$(gh pr view "$number" --repo "$repo" --json headRefOid --jq .headRefOid 2>"$err") || return 1
+            pr=$(gh pr view "$number" --repo "$repo" --json headRefOid,baseRefName \
+                     --jq '.headRefOid + " " + .baseRefName' 2>"$err") || return 1
+            head=${pr%% *}
+            target=${pr#* }
+            target=${target:-$base}
             checks=
             runs=
             [ "$head" = "$sha" ] || return 0
@@ -386,6 +392,7 @@ case "${1:-}" in
                 continue
             fi
             errors=0
+            if [ "$waited" -lt "$timeout" ]; then previous_head=$head; fi
             if [ "$head" = "$sha" ]; then
                 # A head read before (a stale read, or one undone) is looked
                 # at again when it comes back.
@@ -459,8 +466,11 @@ case "${1:-}" in
                 fi
             fi
             if [ "$waited" -ge "$timeout" ]; then
-                # A head that moved, seen once: decided at the next poll.
-                if [ -n "$replaced" ] && [ "$waited" -lt $((timeout + 120)) ]; then
+                # A head other than SHA first seen at this poll (one that
+                # moved, or a stale read): decided at the next poll.
+                if [ "$head" != "$sha" ] && [ "$head" != "$previous_head" ] &&
+                       [ "$waited" -lt $((timeout + 120)) ]; then
+                    previous_head=$head
                     sleep 30; waited=$((waited + 30)); continue
                 fi
                 # The same two-poll rule holds at the timeout: a list of checks
@@ -502,12 +512,15 @@ case "${1:-}" in
         esac
         # GitHub re-runs only a completed run: wait for the jobs still running
         # (wait exits at the first failed check).
+        tmp=$(mktemp)
+        trap 'rm -f "$tmp"' EXIT
         # Not read at the first try: a wrong ID (a job's, not the run's) or
         # GitHub, at once; later, 3 polls in a row, as for wait.
         waited=0
         errors=0
         while :; do
-            if ! state=$(gh api "repos/$repo/actions/runs/$run" --jq .status); then
+            if ! state=$(gh api "repos/$repo/actions/runs/$run" \
+                             --jq '"\(.status) \(.run_attempt) \(.run_started_at)"'); then
                 errors=$((errors + 1))
                 if [ "$waited" -eq 0 ] || [ "$errors" -ge 3 ]; then
                     echo "cannot read workflow run $run of $repo" >&2
@@ -518,7 +531,7 @@ case "${1:-}" in
                 continue
             fi
             errors=0
-            [ "$state" != completed ] || break
+            [ "${state%% *}" != completed ] || break
             if [ "$waited" -ge "${SHIP_CI_TIMEOUT:-2400}" ]; then
                 echo "run $run still not completed after ${waited}s" >&2
                 exit 3
@@ -527,16 +540,27 @@ case "${1:-}" in
             sleep 30
             waited=$((waited + 30))
         done
-        before=$(gh api "repos/$repo/actions/runs/$run" --jq '"\(.run_attempt) \(.run_started_at)"') || exit 4
+        before=${state#* }
         gh run rerun "$run" --failed --repo "$repo"
         # Until the new attempt shows, with its own start time (ship wait drops
         # the check runs that completed before it), the run and its check runs
         # are still the failed ones.  The attempt may have completed already
         # (a job that fails at once): wait reads it.
         tries=0
+        errors=0
         while [ "$tries" -lt 24 ]; do
-            now=$(gh api "repos/$repo/actions/runs/$run" \
-                      --jq '"\(.run_attempt) \(.run_started_at) \(.status)"' 2>/dev/null || true)
+            if ! now=$(gh api "repos/$repo/actions/runs/$run" \
+                           --jq '"\(.run_attempt) \(.run_started_at) \(.status)"' 2>"$tmp"); then
+                errors=$((errors + 1))
+                if [ "$errors" -ge 3 ]; then
+                    echo "cannot read workflow run $run of $repo:" >&2
+                    sed 's/^/  /' "$tmp" >&2
+                    exit 4
+                fi
+                now=
+            else
+                errors=0
+            fi
             if [ -n "$now" ] && [ "${now%% *}" -gt "${before%% *}" ] &&
                    [ "$(echo "$now" | cut -d' ' -f2)" != "${before#* }" ]; then
                 echo "run $run: attempt ${now%% *}, ${now##* }"

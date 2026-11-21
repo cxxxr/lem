@@ -12,7 +12,9 @@ on:
   pull_request:
     # Changes only to the Claude Code skills or to documents need no build.
     # ship wait (.claude/skills/ship/ship) reads this list to pass a PR that
-    # no workflow runs for: keep it a list of globs without "!".
+    # no workflow runs for: keep it a list of globs without "!", or ship
+    # cannot read it and a PR changing only these files waits until it
+    # times out.
     paths-ignore:
       - '.claude/**'
       - '**.md'
