@@ -71,10 +71,11 @@ anything. Keep the list short enough to read before each commit.
   that `(lem:send-event (lambda () (bt2:make-thread ...)))` makes: both must
   fire in the `editor` thread, also after a `with-timer-manager` in the REPL.
   Load `lem-tests` in that REPL, start a repeating timer from the editor
-  (`send-event`), run `lem-tests/timer` with `rove:*report-stream*` bound to a
-  string stream, and see that the timer still fires in the `editor` thread
-  (the editor reads the global manager: a test must not replace it with one
-  that does not reach the editor). On Clysm, nested bindings: its
+  (`send-event`) whose function starts a new one-shot timer that records the
+  thread it runs in (a timer keeps the manager it was started with, so only
+  timers started while the tests run show a replaced global manager), run
+  `lem-tests/timer` with `rove:*report-stream*` bound to a string stream, and
+  see that the one-shot timers ran only in the `editor` thread. On Clysm, nested bindings: its
   bordeaux-threads binds every entry of `bt2:*default-special-bindings*`.
 - **Origin:** cxxxr/lem#83 (a test's manager kept after `with-timer-manager`;
   review rounds found an unbound manager, nested bindings on Clysm, a thread

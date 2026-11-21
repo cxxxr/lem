@@ -47,6 +47,9 @@ sbcl --script tools/build-repl.lisp "$out/lem.wasm" \
 
 # Lem and its libraries, compiled by that image (the first time this takes
 # a few minutes)
+# (no image of an earlier build is left if this one fails: tests/run.sh
+# builds again when there is none)
+rm -f "$out/lem.image"
 echo "compiling Lem"
 node host/run.mjs "$out/lem.wasm" "$here/prepare.lisp" \
   "$lem" "$deps/lem-mailbox" "$deps/micros" "$out" > "$out/prepare.log" 2>&1 ||

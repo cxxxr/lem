@@ -66,9 +66,12 @@ notification, so that a test sees which manager a timer was given."))
   *current-time*)
 
 (defmacro with-testing-timer-manager (() &body body)
+  ;; Both lists of idle timers are bound: stop-idle-timers puts the processed
+  ;; ones back in the list, and the global ones are a running Lem's.
   `(with-timer-manager (make-instance 'testing-timer-manager)
      (let ((*current-time* 0)
-           (lem/common/timer::*idle-timer-list* '()))
+           (lem/common/timer::*idle-timer-list* '())
+           (lem/common/timer::*processed-idle-timer-list* '()))
        ,@body)))
 
 (defun receive (mailbox)

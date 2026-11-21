@@ -102,8 +102,9 @@ elsewhere, call it in no with-timer-manager and in a thread made in none
 
 (defmacro with-timer-manager (timer-manager &body body)
   "Run BODY with TIMER-MANAGER as the timer manager of the timers started in
-it, in this thread and in the threads made in it. The manager before is back
-when BODY returns."
+it, in this thread and in the threads made directly in it (bt2:make-thread;
+not in the threads those make). The manager before is back when BODY
+returns."
   `(call-with-timer-manager ,timer-manager (lambda () ,@body)))
 
 (define-condition timer-error (error)
