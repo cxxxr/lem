@@ -66,7 +66,9 @@ jobs:
       - name: Lint - Check for internal symbol usage
         if: steps.skip.outputs.skip != 'true'
         run: |
-          if [ $(grep -r --include="*.lisp" 'lem::' | wc -l) -ne 0 ]; then
+          # Not .claude/: the Lisp there is Claude Code's tooling, not Lem,
+          # and a PR changing only .claude/ does not run this workflow.
+          if [ $(grep -r --include="*.lisp" --exclude-dir=.claude 'lem::' | wc -l) -ne 0 ]; then
             echo 'using `lem::` internal symbols'
             echo 'https://google.github.io/styleguide/lispguide.xml?showone=Packages#Packages'
             exit 1

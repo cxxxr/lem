@@ -218,9 +218,12 @@ case "${1:-}" in
             # for this.
             if [ "$head" = "$sha" ] && [ -z "$checks" ] && [ -z "$runs" ] &&
                    [ "$waited" -ge "$start" ]; then
-                if files=$(gh pr view "$number" --repo "$repo" --json files \
-                               --jq '.files[].path' 2>"$err") &&
-                       [ -n "$files" ] && ! echo "$files" | grep -qvE "$ignored"; then
+                # Every changed file (gh pr view lists only the first 100), and
+                # not over 300: GitHub's paths filters look at the first 300.
+                if files=$(gh api --paginate "repos/$repo/pulls/$number/files?per_page=100" \
+                               --jq '.[].filename' 2>"$err") &&
+                       [ -n "$files" ] && [ "$(echo "$files" | wc -l)" -le 300 ] &&
+                       ! echo "$files" | grep -qvE "$ignored"; then
                     echo "no CI applies to PR $number: it changes only files the workflows skip"
                     exit 0
                 fi
