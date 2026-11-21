@@ -115,16 +115,17 @@ same event (closing and reopening the PR), replaces an earlier failure. A
 Pull requests build on Linux only; macOS and what was merged into `staging`
 are tested by the daily scheduled runs (step 8). A workflow with its own
 macOS job (`build-terminal-shared-object.yml`, for changes to
-`extensions/terminal/`) still runs on the PR: those are the slow checks
+`extensions/terminal/terminal.c`, `extensions/terminal/ffi.lisp`,
+`scripts/build-terminal.lisp` or the workflow itself) still runs on the PR: those are the slow checks
 (`SHIP_CI_SLOW`).
 
 | Exit | Meaning | Then |
 |------|---------|------|
-| 0 | passed; or only slow (macOS) checks still pending at the timeout, and every run not completed waits for one of them (it names them); or no CI applies: every `pull_request` workflow in `.github/workflows` skips all the changed files by its `paths` or `paths-ignore` (e.g. only `.claude/`, `docs/`, `*.md`) | step 6; note the pending checks for step 8 |
+| 0 | passed; or only slow (macOS) checks still pending at the timeout, and every run not completed waits for one of them (it names them); or no CI applies: every `pull_request` workflow in `.github/workflows` (of the PR's merge with its base, as GitHub runs them) skips all the changed files by its `paths` or `paths-ignore` (e.g. only `.claude/`, `docs/`, `*.md`) | step 6; note the pending checks for step 8 |
 | 1 | a check, status or workflow run failed or was cancelled; each is printed with its URL, whose number after `/runs/` is the run ID (a commit status of another app links to that app instead) | read the log of the failed job (`gh run view --job <job-id> --repo cxxxr/lem --log`, the number after `/job/`; `gh run view <run-id> --repo cxxxr/lem --log-failed` once the whole run completed). Caused by the change: fix it as an Important finding (step 4) and wait again on the new SHA. A failure of the infrastructure (a runner lost, the network, a download): re-run it once (below); a second failure is for the user. A test that fails though the change does not touch it is a flaky test, not something to re-run: add it to Todoist (step 4) and tell the user |
 | 2 | `<SHA>` is neither in this clone nor at the PR's head; or `jq` is not installed (it says `ship wait needs jq`) | give the SHA of `git rev-parse HEAD` after the push; for jq, tell the user |
-| 3 | timed out on other checks, or `<SHA>` never became the PR's head | stop and tell the user |
-| 4 | GitHub could not be read three polls in a row (network, `gh auth`, a wrong PR number), or the fetch of the PR's head failed when `<SHA>` is not in this clone; it prints the error | not a CI failure: fix the cause if it is yours (the PR number), else stop and tell the user |
+| 3 | timed out on other checks, or with no workflow run at all (`no workflow run appeared`), or `<SHA>` never became the PR's head, or the PR conflicts with its base (no workflow runs for it) | stop and tell the user |
+| 4 | GitHub could not be read three polls in a row (network, `gh auth`, a wrong PR number), the PR's merge with its base could not be read or fetched in three polls without a successful read (only without `SHIP_CI_IGNORED`), or the fetch of the PR's head failed when `<SHA>` is not in this clone; it prints the error | not a CI failure: fix the cause if it is yours (the PR number), else stop and tell the user |
 | 5 | the PR's head moved past `<SHA>`, or a later commit replaced it (a rebase pushed over it) | first check that `<SHA>` is `git rev-parse HEAD` (an older SHA of your own, from before an amend, also gives 5); else someone pushed to the branch: stop and tell the user |
 
 To re-run a failure of the infrastructure, once:
