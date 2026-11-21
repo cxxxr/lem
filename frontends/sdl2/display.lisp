@@ -322,18 +322,10 @@ Idempotent."
   (dolist (hook *post-display-change-hooks*)
     (funcall hook display)))
 
-(defun frame-laid-out-p ()
-  "True when the current frame exists and has its window tree.
-Not before setup-first-frame has built it, nor after exit, when teardown has
-unmapped the frame: SDL can pump window events at both times.
-The frame is read once, as the editor thread may unmap it meanwhile."
-  (let ((frame (lem:current-frame)))
-    (and frame (lem:frame-window-tree frame) t)))
-
 (defmethod notify-required-redisplay ((display display))
   (with-renderer (display)
     (when (and (display-redraw-at-least-once-p display)
-               (frame-laid-out-p))
+               (lem:current-frame-ready-p))
       (setf (display-redraw-at-least-once-p display) nil)
       (sdl2:set-render-target (display-renderer display) (display-texture display))
       (set-render-color display (display-background-color display))
@@ -366,7 +358,7 @@ enough: `refresh-all-view-textures' would walk a NIL tree.
 be called outside the `with-renderer' block (matching the `:resized'
 event handler pattern in `on-windowevent')."
   (update-texture display)
-  (when (frame-laid-out-p)
+  (when (lem:current-frame-ready-p)
     (with-renderer (display)
       #+darwin
       (adapt-high-dpi-display-scale display)

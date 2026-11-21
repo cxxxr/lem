@@ -122,7 +122,7 @@
   ;; teardown-frame frees the window tree, the floating, side, attached and
   ;; header windows (a header window with the last frame that has it).
   (let* ((lem-core::*frames* '())
-         (lem-core::*display-frame-map* (make-hash-table))
+         (lem-core::*display-frame-map* (lem-core::make-display-frame-map))
          (lem-core::*last-focused-window* nil)
          (lem/buffer/internal::*current-buffer* (primordial-buffer))
          (bt2:*default-special-bindings*

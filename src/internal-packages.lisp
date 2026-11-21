@@ -231,6 +231,7 @@
    :get-frame
    :all-frames
    :current-frame
+   :current-frame-ready-p
    :*frame-buffer-list-function*
    :frame-buffer-list
    :unmap-frame

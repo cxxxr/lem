@@ -594,3 +594,35 @@
       (lem:teardown-frames)
       (ok (null (lem:all-frames)))
       (ok (null (lem:current-frame))))))
+
+(deftest teardown-frame/unmaps-every-display-also-when-freeing-fails
+  ;; map-frame, frame-floating-windows' contents and *display-frame-map* are
+  ;; used directly: no command maps a frame to a second display.
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let ((frame (lem:current-frame)))
+        (lem-core::map-frame :another-display frame)
+        (push :not-a-window (lem:frame-floating-windows frame))
+        (ok (lem:current-frame-ready-p))
+        (ok (signals (lem:teardown-frame frame)))
+        (ok (null (lem:current-frame)))
+        (ok (null (lem:get-frame :another-display)))
+        (ng (lem:current-frame-ready-p))))))
+
+(deftest teardown-frame/unmaps-before-freeing-the-windows
+  ;; %free-window is internal: replaced to see the state while windows are freed.
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let ((ready-while-freeing '())
+            (original (fdefinition 'lem-core::%free-window)))
+        (#+sbcl sb-ext:without-package-locks #-sbcl progn
+          (unwind-protect
+               (progn
+                 (setf (fdefinition 'lem-core::%free-window)
+                       (lambda (window)
+                         (push (lem:current-frame-ready-p) ready-while-freeing)
+                         (funcall original window)))
+                 (lem:teardown-frame (lem:current-frame)))
+            (setf (fdefinition 'lem-core::%free-window) original)))
+        (ok ready-while-freeing)
+        (ok (notany #'identity ready-while-freeing))))))
