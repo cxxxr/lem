@@ -85,6 +85,7 @@ case "${1:-}" in
     compile)
         shift
         files="$*"
+        scripts=
         if [ -z "$files" ]; then
             base=$(base_branch)
             echo "changed from $base (fetch it if it is behind):" >&2

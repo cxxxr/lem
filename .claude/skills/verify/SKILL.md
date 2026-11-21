@@ -39,7 +39,8 @@ It loads Lem and `lem-tests`, then for each file the system it belongs to
 (found from the `.asd` files above it, e.g. `lem-ncurses` for
 `frontends/ncurses/`), compiles the files again and prints their warnings (not
 redefinitions) and the files that failed to compile or load. Expect
-`0 warnings`; fix any undefined function or variable. A `.lisp` file with a
+`0 warnings` (followed by `N in scripts/ not checked` when scripts changed);
+fix any undefined function or variable. A `.lisp` file with a
 package definition in the directory of a package-inferred system such as
 `lem-ollama`, or below it, that is not one of its components, is in the system
 ASDF finds by its path: `lem-ollama/sub/foo` for `sub/foo.lisp`. Not

@@ -15,6 +15,10 @@
 (defvar *verify-lem-loaded* nil
   "True when lem-fake-interface and lem-tests loaded.")
 
+(defvar *verify-case-note* nil
+  "Why `verify-inferred-system' did not take the file `verify-file-system' looks
+for as a system because of its case, or NIL.  Printed when no system is found.")
+
 (defvar *verify-failed-systems* '()
   "The systems that `verify-load-file-system' could not load.")
 
@@ -61,8 +65,11 @@ the file that signalled it, or the system that was not found, or NIL."
       (typecase condition
         (ql:system-not-found (ql:system-not-found-name condition))
         (asdf:missing-component
-         (let ((name (asdf/find-component:missing-requires condition)))
-           (and name (asdf:coerce-name name)))))))
+         ;; Only a system that does not exist: not one that is too old, nor
+         ;; a missing component of a system.
+         (let ((name (ignore-errors
+                      (asdf:coerce-name (asdf/find-component:missing-requires condition)))))
+           (and name (not (ignore-errors (asdf:find-system name nil))) name))))))
 
 (defun verify-dependency-name (dependency)
   "The system name of the ASDF DEPENDENCY specifier, or NIL for one that
@@ -198,10 +205,6 @@ definition.  SYSTEM must be a primary system: its subsystems have the same
                             (enough-namestring source (uiop:getcwd))
                             (asdf:component-name system) (string-downcase path))))
             nil)))))
-
-(defvar *verify-case-note* nil
-  "Why `verify-inferred-system' did not take the file `verify-file-system' looks
-for as a system because of its case, or NIL.  Printed when no system is found.")
 
 (defun verify-file-system (file)
   "The name of the ASDF system that has FILE as a component or, in a
