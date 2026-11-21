@@ -38,6 +38,17 @@ can delay by much more than the timer's own interval.")
                                     continue)
   (funcall continue))
 
+(defclass named-timer-manager (timer-manager)
+  ((name :initarg :name :reader named-timer-manager-name)
+   (mailbox :initarg :mailbox :reader named-timer-manager-mailbox))
+  (:documentation "A timer manager that sends its name to MAILBOX for each
+notification, so that a test sees which manager a timer was given."))
+
+(defmethod send-timer-notification ((timer-manager named-timer-manager) continue)
+  (lem-mailbox:send-message (named-timer-manager-mailbox timer-manager)
+                            (named-timer-manager-name timer-manager))
+  (funcall continue))
+
 (defvar *current-time* 0)
 
 (defmethod lem/common/timer::get-microsecond-time ((timer-manager testing-timer-manager))
@@ -133,17 +144,6 @@ can delay by much more than the timer's own interval.")
       (testing "its time of the earlier idle time is not counted from"
         (ok (null (get-next-timer-timing-ms)))))))
 
-(defclass named-timer-manager (timer-manager)
-  ((name :initarg :name :reader named-timer-manager-name)
-   (mailbox :initarg :mailbox :reader named-timer-manager-mailbox))
-  (:documentation "A timer manager that sends its name to MAILBOX for each
-notification, so that a test sees which manager a timer was given."))
-
-(defmethod send-timer-notification ((timer-manager named-timer-manager) continue)
-  (lem-mailbox:send-message (named-timer-manager-mailbox timer-manager)
-                            (named-timer-manager-name timer-manager))
-  (funcall continue))
-
 (defun manager-of-a-timer-started-now (mailbox)
   "Start a timer in this thread and return the name of the manager that its
 notification went through."
@@ -170,4 +170,9 @@ notification went through."
         (ok (eq :outer
                 (bt2:join-thread
                  (bt2:make-thread
-                  (lambda () (manager-of-a-timer-started-now mailbox))))))))))
+                  (lambda () (manager-of-a-timer-started-now mailbox))))))
+        (with-timer-manager inner
+          (ok (eq :inner
+                  (bt2:join-thread
+                   (bt2:make-thread
+                    (lambda () (manager-of-a-timer-started-now mailbox)))))))))))

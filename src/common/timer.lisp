@@ -31,9 +31,10 @@
 (defvar *running-timer* nil
   "The timer whose function runs, NIL outside of one.")
 
-(defvar *timer-manager*
-  "The timer manager that start-timer gives a timer: the one of the
-innermost with-timer-manager, else the global one (set-global-timer-manager).")
+;; The timer manager that start-timer gives a timer: the one of the innermost
+;; with-timer-manager, else the global one (set-global-timer-manager).
+;; Unbound until either sets it.
+(defvar *timer-manager*)
 
 (defun running-timer () *running-timer*)
 
@@ -66,20 +67,25 @@ while its own function runs."
   "Make TIMER-MANAGER the timer manager of the threads that are in no
 with-timer-manager: the editor's, for the threads that it does not make,
 such as the REPL of a self connection (micros makes its threads itself, so
-bt2:*default-special-bindings* does not reach them). Call it outside of
-with-timer-manager, which would take the value instead."
-  (setf *timer-manager* timer-manager))
+bt2:*default-special-bindings* does not reach them). On SBCL it sets the
+global value also from inside a binding; elsewhere, call it outside of
+with-timer-manager, whose binding would take the value instead."
+  #+sbcl (setf (sb-ext:symbol-global-value '*timer-manager*) timer-manager)
+  #-sbcl (setf *timer-manager* timer-manager))
 
 (defun call-with-timer-manager (timer-manager function)
-  ;; A binding, not a setf: a manager of a test (one that drops the
-  ;; notifications) must not stay after it, for the later tests and for a
-  ;; running Lem that the tests are run in.  The threads made in FUNCTION
-  ;; start with TIMER-MANAGER bound too, as with-implementation does for the
-  ;; implementation; a timer's own thread needs none, as start-timer gives
-  ;; it the manager.
+  ;; A binding, not a setf: the manager of a test must not stay after it,
+  ;; for the later tests and for a running Lem that the tests are run in.
+  ;; The threads made in FUNCTION start with TIMER-MANAGER bound too, as
+  ;; with-implementation does for the implementation; a timer's own thread
+  ;; needs none, as start-timer gives it the manager.  The entry of an outer
+  ;; with-timer-manager is removed: Clysm's bordeaux-threads binds every
+  ;; entry in order, so the last one would win.
   (let* ((*timer-manager* timer-manager)
          (bt2:*default-special-bindings*
-           (acons '*timer-manager* timer-manager bt2:*default-special-bindings*)))
+           (acons '*timer-manager* timer-manager
+                  (remove '*timer-manager* bt2:*default-special-bindings*
+                          :key #'car))))
     (funcall function)))
 
 (defmacro with-timer-manager (timer-manager &body body)
