@@ -51,6 +51,7 @@ dependency on the TRAMP extension is needed."
   (setf (variable-value 'line-wrap :buffer (current-buffer)) nil)
   (setf (variable-value 'lem/show-paren:enable :buffer (current-buffer)) nil)
   (add-hook (variable-value 'kill-buffer-hook :buffer (current-buffer)) 'on-kill-buffer)
+  (setf (buffer-value (current-buffer) 'scrollback-lines) nil)
   (alexandria:when-let (terminal (get-current-terminal))
     (terminal:copy-mode-off terminal)))
 
@@ -288,9 +289,42 @@ find-file start where the shell is."
     (unless (equal directory (buffer-directory buffer))
       (setf (buffer-directory buffer) directory))))
 
+(defun start-scrolling (terminal buffer)
+  "Freeze TERMINAL with its scrollback shown above the screen in BUFFER, unless
+it already is, so output arriving while one reads the history does not take
+it away.  Returns the number of scrollback lines in BUFFER."
+  (or (buffer-value buffer 'scrollback-lines)
+      (let ((nlines (buffer-nlines buffer)))
+        (terminal:copy-mode-on terminal)
+        (setf (buffer-value buffer 'scrollback-lines)
+              (- (buffer-nlines buffer) nlines)))))
+
+(defun stop-scrolling (terminal buffer)
+  "Undo START-SCROLLING: remove the scrollback and show the whole screen again."
+  (when (buffer-value buffer 'scrollback-lines)
+    (setf (buffer-value buffer 'scrollback-lines) nil)
+    (terminal:copy-mode-off terminal)
+    (terminal:snap-to-bottom terminal)))
+
+(defun call-with-scrollback (terminal window scroll)
+  "Call SCROLL, a scroll of WINDOW, with TERMINAL's scrollback shown; once
+WINDOW is back on the screen, the terminal runs on as before."
+  (let* ((buffer (window-buffer window))
+         (lines (start-scrolling terminal buffer)))
+    (funcall scroll)
+    (when (> (line-number-at-point (window-view-point window)) lines)
+      (stop-scrolling terminal buffer))))
+
 (defmethod execute ((mode terminal-mode) command argment)
   (sync-buffer-directory (current-buffer))
   (cond
+    ;; Before the bypass commands: the mouse wheel scrolls from within
+    ;; <mouse-event>, and scrolls up with SCROLL-DOWN by a negative count.
+    ((and (typep command '(or scroll-up scroll-down))
+          (alexandria:when-let ((terminal (get-current-terminal)))
+            (not (terminal:process-exited-p terminal))))
+     (call-with-scrollback (get-current-terminal) (current-window)
+                           (lambda () (call-next-method))))
     (*running-bypass-command*
      (call-next-method))
     ((member command *bypass-commands* :test #'typep)
@@ -311,6 +345,7 @@ find-file start where the shell is."
     (t
      ;; Any other command (typing, etc.) — remove scrollback from buffer
      (alexandria:when-let ((terminal (get-current-terminal)))
+       (stop-scrolling terminal (current-buffer))
        (terminal:deactivate-scrollback terminal))
      (terminal-input))))
 
