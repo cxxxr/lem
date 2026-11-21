@@ -19,6 +19,8 @@ created again if it was killed, rather than a buffer of another workspace."
         (primordial-buffer))))
 
 (defun strip-buffer-from-frame-windows (buffer frame)
+  "Show another buffer in every window of FRAME that shows BUFFER.
+Return true if there was such a window."
   ;; The replacement is chosen once: switch-to-buffer moves the buffer it leaves,
   ;; BUFFER, to the head of the buffer list, so choosing it again for the next
   ;; window would give another buffer.
@@ -28,13 +30,18 @@ created again if it was killed, rather than a buffer of another workspace."
     (let ((replacement (replacement-buffer buffer frame)))
       (dolist (window windows)
         (with-current-window window
-          (switch-to-buffer replacement))
-        (when (buffer-attached-buffer buffer)
-          (delete-buffer (buffer-attached-buffer buffer)))))))
+          (switch-to-buffer replacement))))
+    t))
 
 (defmethod delete-buffer-using-manager :before
     ((manager buffer-list-manager)
      buffer)
-  (dolist (frame (all-frames))
-    (strip-buffer-from-frame-windows buffer frame))
+  (let ((shown (loop :for frame :in (all-frames)
+                     :count (strip-buffer-from-frame-windows buffer frame))))
+    ;; Once, however many windows showed BUFFER: deleting the attached buffer
+    ;; a second time fails, as it is already freed.
+    (alexandria:when-let ((attached (buffer-attached-buffer buffer)))
+      (when (and (plusp shown)
+                 (not (deleted-buffer-p attached)))
+        (delete-buffer attached))))
   (run-hooks (make-per-buffer-hook :var 'kill-buffer-hook :buffer buffer) buffer))

@@ -285,3 +285,64 @@
         (ok (= (lem-core::max-window-height (lem:current-frame)) (lem:window-height side))
             "and after it shrank")
         (lem-core::delete-leftside-window)))))
+
+(defun side-windows ()
+  (list (lem:frame-leftside-window (lem:current-frame))
+        (lem:frame-rightside-window (lem:current-frame))
+        (lem:frame-bottomside-window (lem:current-frame))))
+
+(defun call-with-side-windows-showing (buffer function)
+  (lem:make-leftside-window buffer)
+  (lem:make-rightside-window buffer)
+  (lem:make-bottomside-window buffer)
+  (unwind-protect (funcall function)
+    (lem:delete-bottomside-window)
+    (lem:delete-rightside-window)
+    (lem:delete-leftside-window)))
+
+(deftest get-buffer-windows/side-windows-once-each
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let ((buffer (lem:make-buffer "side")))
+        (call-with-side-windows-showing
+         buffer
+         (lambda ()
+           (let ((windows (lem:get-buffer-windows buffer :include-floating-windows t)))
+             (ok (= 3 (length windows)))
+             (ok (= 3 (length (remove-duplicates windows))))
+             (ok (every (lambda (side) (member side windows)) (side-windows))))
+           (testing "without floating windows, no side window"
+             (ok (null (lem:get-buffer-windows buffer))))))))))
+
+(deftest kill-buffer/side-windows-show-another-buffer
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let ((other (lem:make-buffer "other"))
+            (killed (lem:make-buffer "killed")))
+        (lem:switch-to-buffer other)
+        (call-with-side-windows-showing
+         killed
+         (lambda ()
+           (lem:kill-buffer killed)
+           (ok (lem:deleted-buffer-p killed))
+           (ok (notany (lambda (side)
+                         (lem:deleted-buffer-p (lem:window-buffer side)))
+                       (side-windows)))))))))
+
+(deftest kill-buffer/attached-buffer-deleted-once
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (make-attached-buffer))
+             (attached (lem-core::buffer-attached-buffer buffer))
+             (count 0))
+        (lem:make-buffer "other")
+        (lem:switch-to-buffer buffer)
+        (lem:split-window-vertically (lem:current-window))
+        (assert (= 2 (length (lem:get-buffer-windows buffer))))
+        (lem:add-hook (lem:variable-value 'lem:kill-buffer-hook :buffer attached)
+                      (lambda (buffer)
+                        (declare (ignore buffer))
+                        (incf count)))
+        (lem:kill-buffer buffer)
+        (ok (lem:deleted-buffer-p attached))
+        (ok (= 1 count))))))
