@@ -324,8 +324,7 @@ Idempotent."
 
 (defmethod notify-required-redisplay ((display display))
   (with-renderer (display)
-    (when (and (display-redraw-at-least-once-p display)
-               (lem:current-frame-ready-p))
+    (when (display-redraw-at-least-once-p display)
       (setf (display-redraw-at-least-once-p display) nil)
       (sdl2:set-render-target (display-renderer display) (display-texture display))
       (set-render-color display (display-background-color display))
@@ -334,8 +333,10 @@ Idempotent."
       (adapt-high-dpi-display-scale display)
       #+darwin
       (adapt-high-dpi-font-size display)
-      (run-post-display-change-hooks display)
-      (lem:update-on-display-resized))))
+      ;; Not after exit, once teardown has unmapped the frame.
+      (when (lem:current-frame-ready-p)
+        (run-post-display-change-hooks display)
+        (lem:update-on-display-resized)))))
 
 (defun handle-display-changed (display)
   "Handle a backing-size or display change for DISPLAY.
@@ -358,12 +359,12 @@ enough: `refresh-all-view-textures' would walk a NIL tree.
 be called outside the `with-renderer' block (matching the `:resized'
 event handler pattern in `on-windowevent')."
   (update-texture display)
-  (when (lem:current-frame-ready-p)
-    (with-renderer (display)
-      #+darwin
-      (adapt-high-dpi-display-scale display)
-      #+darwin
-      (adapt-high-dpi-font-size display)
+  (with-renderer (display)
+    #+darwin
+    (adapt-high-dpi-display-scale display)
+    #+darwin
+    (adapt-high-dpi-font-size display)
+    (when (lem:current-frame-ready-p)
       (run-post-display-change-hooks display)
       (lem:update-on-display-resized))))
 

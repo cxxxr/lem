@@ -610,12 +610,16 @@
         (ng (lem:current-frame-ready-p))))))
 
 (deftest teardown-frame/unmaps-before-freeing-the-windows
-  ;; %free-window is internal: replaced to see the state while windows are freed.
+  ;; %free-window is internal: replaced to see the state while windows are
+  ;; freed.  Only on SBCL, which calls it through its global definition (ECL
+  ;; may call a function of the same file directly).
+  #-sbcl (skip "needs %free-window called through its global definition")
+  #+sbcl
   (lem:with-current-buffers ()
     (with-fake-interface ()
       (let ((ready-while-freeing '())
             (original (fdefinition 'lem-core::%free-window)))
-        (#+sbcl sb-ext:without-package-locks #-sbcl progn
+        (sb-ext:without-package-locks
           (unwind-protect
                (progn
                  (setf (fdefinition 'lem-core::%free-window)

@@ -108,7 +108,9 @@
   ;; delete-buffer switches their windows too, and the current buffer would
   ;; stay a buffer of an earlier use.  Inside a running Lem, binding them also
   ;; keeps the user's frames and current buffer as they were.  lem-core
-  ;; exports no way to reset these variables, so they are bound directly.
+  ;; exports no way to reset these variables, so they are bound directly
+  ;; (the frame map made by lem-core::make-display-frame-map, as the global
+  ;; one is, so that it can be read from another thread too).
   ;;
   ;; A thread made in FUNCTION starts with bindings of its own to the values
   ;; these variables have when it is made (bt2:*default-special-bindings*, as

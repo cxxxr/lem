@@ -1,14 +1,9 @@
 (in-package :lem-core)
 
-(defun make-display-frame-map ()
-  "Return a table for *display-frame-map*: safe to read from one thread while
-another writes it."
-  ;; CCL's and LispWorks' hash tables are thread-safe already.
-  (make-hash-table #+(or sbcl ecl) :synchronized #+(or sbcl ecl) t))
-
-(defvar *display-frame-map* (make-display-frame-map)
+(defvar *display-frame-map* (make-hash-table #+(or sbcl ecl) :synchronized #+(or sbcl ecl) t)
   "The frame shown on each display.  The frontends read it from their own
-threads (SDL's event loop) while the editor thread maps and unmaps frames.")
+threads (SDL's event loop) while the editor thread maps and unmaps frames:
+see make-display-frame-map.")
 (defvar *frames* '())
 
 (defvar *frame-buffer-list-function* nil
@@ -134,6 +129,13 @@ redraw-display関数でキャッシュを捨てて画面全体を再描画しま
       (dolist (window (frame-header-windows old-frame))
         (add-header-window frame window)))
     frame))
+
+(defun make-display-frame-map ()
+  "Return a new table for *display-frame-map*, made as its initial value is.
+It can be read from one thread while another writes it on SBCL and ECL
+(:synchronized), CCL and LispWorks (whose hash tables are thread-safe
+already); on other implementations it is a plain hash table."
+  (make-hash-table #+(or sbcl ecl) :synchronized #+(or sbcl ecl) t))
 
 (defun map-frame (display frame)
   (setf (gethash display *display-frame-map*) frame))
