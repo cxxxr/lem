@@ -289,7 +289,11 @@ abort itself.")
 
 (defun stop-idle-timer (timer)
   (expire-timer timer)
-  (setf *idle-timer-list* (delete timer *idle-timer-list*)))
+  ;; Also out of the processed timers: a repeating timer stopped while it
+  ;; runs (by its handle-function) must not be put back when the idle time
+  ;; ends.
+  (setf *idle-timer-list* (delete timer *idle-timer-list*)
+        *processed-idle-timer-list* (delete timer *processed-idle-timer-list*)))
 
 (defun start-idle-timers ()
   (flet ((update-last-time-in-idle-timers ()
