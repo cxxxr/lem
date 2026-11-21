@@ -39,6 +39,33 @@ editor thread (send-event), then the display is redrawn."))
 (defun teardown ()
   (teardown-frames))
 
+(defun end-editor (report finalize)
+  "Tear the editor down, then call FINALIZE with REPORT, which lets the
+frontend end (invoke returns, and launch with it). By then the editor is
+gone: a launch called next starts an editor rather than giving its
+arguments to this one (*in-the-editor*). A failure of the teardown, any
+serious condition, is logged with its backtrace and not signalled: the
+frontend must end anyway, and a debugger in the editor thread would wait on
+a display that is going away. FINALIZE is not called when the teardown is
+left by a non-local exit (the process quitting)."
+  (handler-case
+      (handler-bind ((serious-condition
+                       (lambda (condition)
+                         ;; (No backtrace after a storage condition: little
+                         ;; stack is left to walk it with.)
+                         (let ((backtrace
+                                 (unless (typep condition 'storage-condition)
+                                   (ignore-errors
+                                    (lem/common/backtrace:safe-backtrace)))))
+                           (handler-case
+                               (log:error "Tearing down the editor failed: ~A~@[~%~A~]"
+                                          condition backtrace)
+                             (serious-condition () nil))))))
+        (teardown))
+    (serious-condition () nil))
+  (setf *in-the-editor* nil)
+  (when finalize (funcall finalize report)))
+
 (defun get-preferred-init-file-path ()
   "Returns the full path to the preferred init file"
   (merge-pathnames *init-file-name* (lem-home)))
@@ -84,16 +111,27 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
     (bt2:make-thread
      (lambda ()
        (when initialize (funcall initialize))
-       (unwind-protect
-            (let (#+lispworks (lw:*default-character-element-type* 'character))
-              (with-editor-stream ()
-                (set-global-timer-manager (make-instance 'lem-timer-manager))
-                (setf *in-the-editor* t)
-                (setup)
-                (let ((report (toplevel-command-loop (lambda () (init args)))))
-                  (when finalize (funcall finalize report))
-                  (teardown))))
-         (setf *in-the-editor* nil)))
+       ;; When the command loop returns, end-editor ends the editor and the
+       ;; frontend; nothing of this thread changes *in-the-editor* after it
+       ;; has finalized, as the next editor may have started.  When the loop
+       ;; or the teardown is left by a non-local exit (the process quitting),
+       ;; only the flag is cleared.
+       (let ((ended nil))
+         (unwind-protect
+              (let (#+lispworks (lw:*default-character-element-type* 'character))
+                (with-editor-stream ()
+                  (set-global-timer-manager (make-instance 'lem-timer-manager))
+                  (setf *in-the-editor* t)
+                  (setup)
+                  (end-editor (toplevel-command-loop (lambda () (init args)))
+                              ;; ENDED once end-editor has cleared the flag:
+                              ;; a teardown left by a non-local exit clears
+                              ;; it below.
+                              (lambda (report)
+                                (setf ended t)
+                                (when finalize (funcall finalize report))))))
+           (unless ended
+             (setf *in-the-editor* nil)))))
      :name "editor")))
 
 (defun find-editor-thread ()

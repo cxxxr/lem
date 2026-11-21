@@ -3,6 +3,29 @@
         :rove))
 (in-package :lem-tests/command-line-arguments)
 
+(defclass failing-interface (lem-fake-interface:fake-interface)
+  ((failed :initform nil :accessor interface-failed-p))
+  (:documentation "A fake interface whose views cannot be deleted, so that
+tearing the editor down fails."))
+
+(defmethod lem-if:delete-view ((implementation failing-interface) view)
+  (declare (ignore view))
+  (setf (interface-failed-p implementation) t)
+  (error "This view cannot be deleted"))
+
+(define-condition teardown-trouble (serious-condition) ()
+  (:documentation "A serious condition that is not an error, as a
+storage-condition."))
+
+(defclass troubled-interface (failing-interface) ()
+  (:documentation "A fake interface whose views cannot be deleted, with a
+serious condition that is not an error."))
+
+(defmethod lem-if:delete-view ((implementation troubled-interface) view)
+  (declare (ignore view))
+  (setf (interface-failed-p implementation) t)
+  (error 'teardown-trouble))
+
 (defun command-line-arguments-equal (arg1 arg2)
   (and (equal (lem-core::command-line-arguments-help arg2)
               (lem-core::command-line-arguments-help arg1))
@@ -134,3 +157,40 @@
     (ok (signals (lem-core::parse-args '("-i")) 'lem-core::command-line-arguments-error)))
   (testing "missing argument for --interface"
     (ok (signals (lem-core::parse-args '("--interface")) 'lem-core::command-line-arguments-error))))
+
+(deftest launch-after-the-editor-ends-starts-another
+  ;; The frontend's finalize lets launch return: a launch called then (from
+  ;; the REPL Lem was run from) must not find the editor still there.
+  ;; (end-editor and *in-the-editor* are internal: run-editor-thread uses
+  ;; them, and no exported function ends an editor without a frontend.)
+  (let ((seen '()))
+    (lem-fake-interface:with-fake-interface ()
+      (let ((lem-core::*in-the-editor* t))
+        (lem-core::end-editor :report
+                              (lambda (report)
+                                (push (list report lem-core::*in-the-editor*
+                                            (lem-core:all-frames))
+                                      seen)))))
+    (ok (equal '((:report nil nil)) seen))))
+
+(defun finalized-after-a-failing-teardown (interface-class)
+  "End an editor whose teardown fails in an INTERFACE-CLASS, and return
+whether the teardown failed and what the finalize saw."
+  (let ((seen '())
+        (interface (make-instance interface-class)))
+    (lem-fake-interface:with-fake-interface ()
+      (let ((lem-core::*in-the-editor* t))
+        (lem:with-implementation interface
+          (lem-core::end-editor :report
+                                (lambda (report)
+                                  (push (list report lem-core::*in-the-editor*)
+                                        seen))))))
+    (list (interface-failed-p interface) seen)))
+
+(deftest the-frontend-ends-also-when-the-teardown-fails
+  (testing "with an error"
+    (ok (equal '(t ((:report nil)))
+               (finalized-after-a-failing-teardown 'failing-interface))))
+  (testing "with a serious condition that is not an error"
+    (ok (equal '(t ((:report nil)))
+               (finalized-after-a-failing-teardown 'troubled-interface)))))
