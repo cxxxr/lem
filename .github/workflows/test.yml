@@ -1,10 +1,21 @@
 name: CI
 
 on:
+  # A push to a PR's branch also triggers pull_request: run on push only for
+  # the long-lived branches, so a PR's commit is tested once.
   push:
-    branches: ["*"]
+    branches: [main, staging]
+    paths-ignore:
+      - '.claude/**'
+      - '**.md'
+      - 'docs/**'
   pull_request:
     branches: ["*"]
+    # Changes only to the Claude Code skills or to documents need no test run.
+    paths-ignore:
+      - '.claude/**'
+      - '**.md'
+      - 'docs/**'
   workflow_dispatch:
 
 env:

@@ -4,7 +4,17 @@ on:
   push:
     branches:
       - main
+      - staging
+    paths-ignore:
+      - '.claude/**'
+      - '**.md'
+      - 'docs/**'
   pull_request:
+    # Changes only to the Claude Code skills or to documents need no build.
+    paths-ignore:
+      - '.claude/**'
+      - '**.md'
+      - 'docs/**'
   # Trigger manually to optionally include heavier/unstable targets
   workflow_dispatch:
     inputs:
@@ -28,6 +38,13 @@ jobs:
           script: |
             // Default configuration (Stable & Lightweight targets)
             let osList = ["ubuntu-24.04", "ubuntu-24.04-arm", "macos-15"];
+
+            // macOS runners are often queued for a long time: pull requests
+            // build on Linux only, and macOS is built on a push to main or
+            // staging and when triggered by hand.
+            if (context.eventName === 'pull_request') {
+              osList = osList.filter((os) => !os.startsWith("macos"));
+            }
             let backendList = ["lem-ncurses", "lem-webview"];
 
             // Check if optional targets should be included
