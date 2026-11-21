@@ -43,18 +43,25 @@ name (cut-frame).")
   "Lines kept of the backtrace.")
 
 (defparameter *fingerprint-frame-count* 6
-  "How many of the topmost frames, after the error machinery, the fingerprint uses.")
+  "How many of the topmost frames below the signal, after the error
+machinery, the fingerprint uses.")
+
+(defparameter *signalling-functions* "ERROR|CERROR|SIGNAL|WARN"
+  "The functions that signal a condition, as regex alternatives, for
+*machinery-frame-regex* and *signal-frame-regex*.")
 
 (defparameter *machinery-frame-regex*
   (ppcre:create-scanner
    (format nil "~{(?:~A)~^|~}"
-           '(;; the Lisp and its debugger, and uiop and asdf, which run
-             ;; the code that failed in a load or a test
-             "^\\(?(?:SB-[A-Z-]+|UIOP[A-Z/-]*|ASDF[A-Z/-]*)::?"
+           (list
+             ;; the Lisp and its debugger, (FLET SB-KERNEL::%WARN ...)
+             ;; included, and uiop and asdf, which run the code that failed
+             ;; in a load or a test
+             "^\\(?(?:(?:FLET|LABELS) )?(?:SB-[A-Z-]+|UIOP[A-Z/-]*|ASDF[A-Z/-]*)::?"
              ;; "foreign function: call_into_lisp" and the like
              "^\""
              ;; signalling functions
-             "^(?:ERROR|CERROR|SIGNAL|WARN|LEM/BUFFER/ERRORS::?EDITOR-ERROR)$"
+             (format nil "^(?:~A|LEM/BUFFER/ERRORS::?EDITOR-ERROR)$" *signalling-functions*)
              ;; the editor's handlers, safe-backtrace (frame 0 of every
              ;; backtrace) and this recorder, by their full names, also as
              ;; the parent of a (LAMBDA ... :IN ...) or (FLET ... :IN ...)
@@ -65,6 +72,13 @@ name (cut-frame).")
              "^\\(LAMBDA \\(CONDITION\\) :IN LEM-CORE::?(?:TOPLEVEL-)?COMMAND-LOOP\\)$"))
    :case-insensitive-mode t)
   "Frames of the error machinery itself, left out of the fingerprint.")
+
+(defparameter *signal-frame-regex*
+  (ppcre:create-scanner (format nil "^(?:SB-KERNEL::%SIGNAL|~A)$" *signalling-functions*)
+                        :case-insensitive-mode t)
+  "Frames that signal a condition: the fingerprint is made of the frames
+below the topmost one. On SBCL that is SB-KERNEL::%SIGNAL, which every
+signal goes through.")
 
 (defvar *recent-commands* '()
   "Newest first: plists (:command name :keys string :count n).
@@ -286,18 +300,27 @@ lambda defined at the top level of a file,
 (defun incident-fingerprint (condition backtrace)
   "Return a short string that is the same for errors of the same type
 signalled from the same place: the condition type and the names of the
-topmost frames below the error machinery. Frame arguments and the error
+topmost frames below the topmost signalling frame (*signal-frame-regex*)
+and the error machinery. The frames above the signal are the handler that
+took the backtrace, not where the error was. Frame arguments and the error
 message are left out, since they change from one occurrence to the next,
 and the names are normalized (normalize-frame-name), since they change from
 one build to the next."
   ;; The lines are read whole, not as sanitize-backtrace cuts them.
-  (let ((names (with-input-from-string (in (or backtrace ""))
-                 (loop :for line := (read-line in nil)
-                       :while line
-                       :for name := (frame-function-name line)
-                       :when (and name
-                                  (not (ppcre:scan *machinery-frame-regex* name)))
-                         :collect (normalize-frame-name name)))))
+  (let* ((frames (with-input-from-string (in (or backtrace ""))
+                   (loop :for line := (read-line in nil)
+                         :while line
+                         :for name := (frame-function-name line)
+                         :when name
+                           :collect name)))
+         ;; The frames above the topmost signal are the handlers that took
+         ;; the backtrace: a timer's handle-function or a mode's handler
+         ;; calling pop-up-backtrace is not where the error was.
+         (signal (position-if (lambda (name) (ppcre:scan *signal-frame-regex* name))
+                              frames))
+         (names (loop :for name :in (if signal (nthcdr (1+ signal) frames) frames)
+                      :unless (ppcre:scan *machinery-frame-regex* name)
+                        :collect (normalize-frame-name name))))
     ;; With *package* bound to KEYWORD every symbol is printed with its
     ;; package, whatever package was current when the error was signalled,
     ;; and the same way whatever the user set the printer to in init.lisp.

@@ -48,7 +48,7 @@ Each of these is filed with `$I resolve <fp> wontfix "<why>"`:
 Look for an existing issue too: `gh issue list -R cxxxr/lem --search
 "<fingerprint>"` and a search by the condition type and function name (the
 fingerprint of an error changes when the recorder's normalization does, as
-in cxxxr/lem#79).
+in cxxxr/lem#79 and cxxxr/lem#81).
 
 ## 3. Reproduce it
 
@@ -65,6 +65,9 @@ written as `"..."`, the signalling functions `ERROR`, `CERROR`, `SIGNAL`,
 `LEM/COMMON/TIMER::CALL-TIMER-FUNCTION` and
 `LEM-INCIDENT-RECORDER:RECORD-INCIDENT`; a function of the same name in
 another package, such as `MY-MODE::BAILOUT`, is where the error was).
+The frames above the topmost `SB-KERNEL::%SIGNAL` (which every signal goes
+through on SBCL) are the handler that took the backtrace (a timer's
+handle-function, a mode's handler) and are left out too.
 `recent_commands` tells what the user did: the commands, their keys, and
 how many times in a row. Keys that type or delete text (characters,
 `Space`, `Return`, `Backspace`, also with shift, `Tab`, `Delete`, and `C-h`
