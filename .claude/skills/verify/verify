@@ -85,6 +85,7 @@ case "${1:-}" in
     compile)
         shift
         files="$*"
+        scripts=
         if [ -z "$files" ]; then
             base=$(base_branch)
             echo "changed from $base (fetch it if it is behind):" >&2
@@ -98,8 +99,21 @@ case "${1:-}" in
             [ -z "$scripts" ] || { echo "not checked (name them to compile them):" >&2
                                    echo "$scripts" | sed 's/^/  /' >&2; }
         fi
-        if [ -z "$files" ]; then echo "no changed .lisp files to compile"; exit 0; fi
-        VERIFY_FILES="$files" VERIFY_FASL_DIR="$dir/fasl/" lisp compile-check.lisp
+        if [ -z "$files" ]; then
+            # The last line says what was left out: exit 0 is not "checked".
+            if [ -n "${scripts:-}" ]; then
+                echo "no changed .lisp files to compile ($(echo "$scripts" | wc -l | tr -d " ") in scripts/ not checked)"
+            else
+                echo "no changed .lisp files to compile"
+            fi
+            exit 0
+        fi
+        status=0
+        VERIFY_FILES="$files" VERIFY_FASL_DIR="$dir/fasl/" lisp compile-check.lisp || status=$?
+        if [ -n "${scripts:-}" ]; then
+            echo "$(echo "$scripts" | wc -l | tr -d " ") in scripts/ not checked"
+        fi
+        exit $status
         ;;
     build)
         VERIFY_BINARY="$dir/lem" lisp build-ncurses.lisp >"$dir/build.log" 2>&1 || {
