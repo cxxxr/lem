@@ -65,7 +65,9 @@ jobs:
             // job's name ("builds ...") is read below.
             let skip = false;
             if (context.eventName === 'schedule') {
-              // On an API error (passed is null), build rather than fail: a failed run would build nothing.
+              // passed is null when the lookup did not finish (an API error, or
+              // maxLookups reached): then build.  An API error must not fail the job,
+              // which would build nothing.
               let passed;
               try {
                 const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
@@ -108,7 +110,8 @@ jobs:
                   duration(y) - duration(x));
                 for (const run of runs) {
                   if (lookups >= maxLookups && run.event === 'schedule' && run.conclusion === 'success') {
-                    console.log(`Looked up the jobs of ${lookups} scheduled runs of ${context.sha}: no more.`);
+                    console.log(`Looked up the jobs of ${lookups} scheduled runs of ${context.sha} with no build, building.`);
+                    passed = null;
                     break;
                   }
                   if (await built(run)) { passed = run; break; }
