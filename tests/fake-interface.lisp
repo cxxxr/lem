@@ -102,14 +102,19 @@
       (testing "every other window is freed: of the failing frame and of the frames after it"
         (ok (= 6 (length windows)))
         (ok (every #'lem-core::window-deleted-p windows)))))
-  (testing "the error of the body is kept, not replaced by the teardown's"
+  (testing "the error of the body is kept, the teardown's is warned about"
     (with-current-buffers ()
-      (ok (equal "the body's error"
-                 (handler-case
-                     (with-fake-interface ()
-                       (push :not-a-window (lem:frame-floating-windows (current-frame)))
-                       (error "the body's error"))
-                   (error (e) (princ-to-string e)))))))
+      (let ((warnings '()))
+        (ok (equal "the body's error"
+                   (handler-case
+                       (handler-bind ((warning (lambda (w)
+                                                 (push w warnings)
+                                                 (muffle-warning w))))
+                         (with-fake-interface ()
+                           (push :not-a-window (lem:frame-floating-windows (current-frame)))
+                           (error "the body's error")))
+                     (error (e) (princ-to-string e)))))
+        (ok (= 1 (length warnings))))))
   (testing "after a return-from, the error of the teardown is still told, as a warning"
     (with-current-buffers ()
       (ok (signals

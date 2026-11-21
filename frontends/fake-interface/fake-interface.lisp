@@ -143,7 +143,10 @@
                (setf returned t))
           ;; teardown-frames tears down every frame, also after one failed.
           ;; When FUNCTION did not return (an error, a throw), its error is
-          ;; only warned about: it would replace FUNCTION's own error.
+          ;; only warned about: it would replace FUNCTION's own error.  This
+          ;; is knowingly the case after a throw or return-from too, as they
+          ;; cannot be told from an error unwinding without a flag that a
+          ;; restart would fool.
           (if returned
               (teardown-frames)
               (handler-case (teardown-frames)

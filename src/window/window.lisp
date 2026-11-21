@@ -348,10 +348,12 @@ All are freed even if freeing one signals an error (see map-protected)."
              ;; freed again.
              (unless (window-deleted-p window)
                (setf (window-deleted-p window) t)
-               (unwind-protect
-                    (alexandria:when-let ((attached (window-attached-window window)))
-                      (free attached))
-                 (%free-window window))))
+               (map-protected (lambda (w)
+                                (if (eq w window)
+                                    (%free-window w)
+                                    (free w)))
+                              (remove nil (list (window-attached-window window)
+                                                window)))))
            (shared-header-p (header)
              (some (lambda (other)
                      (and (not (eq other frame))
