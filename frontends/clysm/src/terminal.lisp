@@ -74,6 +74,7 @@ sends (here they are encoded as xterm does, by KEY-SEQUENCE)."))
            :activate-scrollback
            :deactivate-scrollback
            :snap-to-bottom
+           :frozen-scrollback-lines
            :terminal-render-throttle-ms))
 (in-package :lem-terminal/terminal)
 
@@ -156,6 +157,10 @@ to render only the rows that changed.")
    (scrollback-active :initform nil
                       :accessor terminal-scrollback-active
                       :documentation "T when the lines above the screen are in the buffer.")
+   (scrollback-shown :initform 0
+                     :accessor terminal-scrollback-shown
+                     :documentation "How many lines above the screen are in the
+buffer while SCROLLBACK-ACTIVE (the rows may change meanwhile).")
    (attribute-cache :initform (make-hash-table :test #'equal)
                     :accessor terminal-attribute-cache
                     :documentation "Attributes by their keys (see CELL-KEYS).")
@@ -401,15 +406,19 @@ TERMINAL-RENDER-THROTTLE-MS ago, otherwise when that time has passed."
 
 (defun finish-process (terminal status)
   "The child process has exited: render the final screen, freeze the
-terminal and append an exit notice.  The screen is rendered in copy mode
-too (as Lem's terminal does): RENDER removes the lines above the screen
-first, which COPY-MODE-OFF could not do right once the notice is appended."
+terminal and append an exit notice.  Scrolling through the lines above the
+screen (and copy mode) ends there, as in Lem's terminal: RENDER removes
+them, and the windows show the final output."
   (when (and (live-p terminal)
              (not (deleted-buffer-p (terminal-buffer terminal))))
-    (render terminal)
-    (setf (terminal-exit-status terminal) status)
-    (append-exit-notice terminal status)
-    (redraw-display)))
+    (let ((scrolled (terminal-scrollback-active terminal)))
+      (setf (terminal-copy-mode terminal) nil)
+      (render terminal)
+      (setf (terminal-exit-status terminal) status)
+      (append-exit-notice terminal status)
+      (when scrolled
+        (snap-to-bottom terminal))
+      (redraw-display))))
 
 (defgeneric destroy (terminal)
   (:documentation "Kill TERMINAL's process if it still runs.  Safe to call more than once."))
@@ -424,12 +433,15 @@ first, which COPY-MODE-OFF could not do right once the notice is appended."
 
 (defgeneric copy-mode-on (terminal)
   (:documentation "Freeze rendering and show the scrollback above the screen.
-Returns the number of scrollback lines put in the buffer."))
+Returns the number of scrollback lines in the buffer (also when they were
+shown already)."))
 (defgeneric copy-mode-off (terminal)
   (:documentation "Remove the scrollback and render the screen again."))
 
 (defmethod copy-mode-on ((terminal terminal))
-  "Returns the number of scrollback lines it put in the buffer."
+  "Returns the number of scrollback lines in the buffer (also when they were
+shown already).  In copy mode, the screen stays frozen: lines that left it
+since show twice then."
   ;; Render what xterm.js parsed since the last render first: the lines it
   ;; pushed off the screen are above it already, and would show twice.  Not
   ;; when the scrollback is shown already: RENDER would take it away.
@@ -439,7 +451,9 @@ Returns the number of scrollback lines put in the buffer."))
              (not (deleted-buffer-p (terminal-buffer terminal))))
     (render terminal))
   (setf (terminal-copy-mode terminal) t)
-  (or (activate-scrollback terminal) 0))
+  (if (terminal-scrollback-active terminal)
+      (terminal-scrollback-shown terminal)
+      (or (activate-scrollback terminal) 0)))
 
 (defmethod copy-mode-off ((terminal terminal))
   (setf (terminal-copy-mode terminal) nil)
@@ -668,7 +682,10 @@ the point at the cursor."))
   (:documentation "Move the point of TERMINAL's buffer to the cursor."))
 
 (defmethod adjust-point ((terminal terminal))
-  (unless (terminal-dead terminal)
+  ;; Not once the process has exited: the buffer holds the final text then,
+  ;; maybe with the lines above the screen, and the cursor row is not a line
+  ;; of it.
+  (unless (or (terminal-dead terminal) (process-exited-p terminal))
     (let ((screen (active-screen terminal))
           (buffer (terminal-buffer terminal)))
       (with-buffer-read-only buffer nil
@@ -708,18 +725,20 @@ the point at the cursor."))
             (character-offset point (min charpos (length (line-string point))))))
 
 (defun deactivate-scrollback (terminal)
-  "Remove the lines above the screen from the buffer."
-  (when (terminal-scrollback-active terminal)
+  "Remove the lines above the screen from the buffer.  Not once the process
+has exited: the buffer then holds the final text, and keeps it."
+  (when (and (terminal-scrollback-active terminal)
+             (not (process-exited-p terminal)))
     (setf (terminal-scrollback-active terminal) nil)
-    (let* ((buffer (terminal-buffer terminal))
-           (rows (terminal-rows terminal))
-           (nlines (buffer-nlines buffer)))
-      (when (> nlines rows)
+    (let ((buffer (terminal-buffer terminal))
+          (shown (terminal-scrollback-shown terminal)))
+      (when (plusp shown)
         (with-buffer-read-only buffer nil
+          ;; Counted as they were put in: the rows may have changed since.
           (with-point ((start (buffer-point buffer))
                        (end (buffer-point buffer)))
             (buffer-start start)
-            (move-to-line end (1+ (- nlines rows)))
+            (move-to-line end (1+ shown))
             (line-start end)
             (delete-between-points start end)))))))
 
@@ -731,7 +750,8 @@ none."
               (terminal-dead terminal))
     (let ((text (scrollback-text terminal)))
       (when (plusp (length text))
-        (setf (terminal-scrollback-active terminal) t)
+        (setf (terminal-scrollback-active terminal) t
+              (terminal-scrollback-shown terminal) (count #\Newline text))
         (let* ((buffer (terminal-buffer terminal))
                (points (buffer-view-points buffer))
                (positions (point-positions points)))
@@ -742,6 +762,13 @@ none."
           (let ((count (count #\Newline text)))
             (shift-points-by-lines points positions count)
             count))))))
+
+(defun frozen-scrollback-lines (terminal)
+  "The number of scrollback lines above the screen in the buffer while copy
+mode freezes TERMINAL with them shown, or NIL."
+  (and (terminal-copy-mode terminal)
+       (terminal-scrollback-active terminal)
+       (terminal-scrollback-shown terminal)))
 
 (defun snap-to-bottom (terminal)
   "Show the screen in every window of the terminal's buffer."

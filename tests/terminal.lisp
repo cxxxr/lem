@@ -11,6 +11,24 @@
   "Terminal id that matches no registered terminal, so the Lisp-side vterm
 callbacks ignore events from these tests.")
 
+(defparameter *wheel-test-script*
+  "seq 1 100; while :; do printf x; sleep 0.02; done"
+  "Prints 100 lines, then keeps adding to the last one.")
+
+(defclass manual-timer-manager (lem/common/timer:timer-manager) ()
+  (:documentation "Drops the renders the I/O thread asks for; the test renders
+itself, as the timer would, with RENDER-TICK."))
+
+;; send-timer-notification is not exported: it is what a timer manager
+;; specializes to be told of timers, and there is no other way to keep the
+;; renders of the I/O thread out of the tests.
+(defmethod lem/common/timer::send-timer-notification
+    ((timer-manager manual-timer-manager) continue)
+  (declare (ignore continue)))
+
+(lem:define-major-mode derived-terminal-mode lem-terminal/terminal-mode::terminal-mode
+    (:name "Derived Terminal"))
+
 (defun library-available-p ()
   (not (null (cffi:foreign-symbol-pointer "terminal_new"))))
 
@@ -229,14 +247,6 @@ and return how many scrollback lines it kept."
 
 ;;; Scrolling a terminal buffer with the mouse wheel, while output goes on.
 
-(defclass manual-timer-manager (lem/common/timer:timer-manager) ()
-  (:documentation "Drops the renders the I/O thread asks for; the test renders
-itself, as the timer would, with RENDER-TICK."))
-
-(defmethod lem/common/timer::send-timer-notification
-    ((timer-manager manual-timer-manager) continue)
-  (declare (ignore continue)))
-
 (defun wait-until (predicate &key (timeout-seconds 5))
   (loop :repeat (* timeout-seconds 50)
         :until (funcall predicate)
@@ -251,31 +261,38 @@ itself, as the timer would, with RENDER-TICK."))
   (lem:with-point ((point (lem:buffer-start-point buffer)))
     (lem:search-forward point string)))
 
+(defun run-next-command ()
+  "Read the next command and run it as the command loop does, with command
+flags of its own.  For a wheel it is the bypass command <mouse-event>, which
+scrolls from inside it."
+  (lem:do-command-loop ()
+    (lem:call-command (lem:read-command) nil)
+    (return)))
+
 (defun wheel (window wheel-y)
-  "Turn the mouse wheel over WINDOW as a frontend does (up when WHEEL-Y is 1),
-as a command of its own: the flags of the previous one are not carried on."
-  (let ((lem-core::*last-flags* nil)
-        (lem-core::*curr-flags* nil))
-    (lem-core::handle-mouse-event
-     (make-instance 'lem-core::mouse-wheel
-                    :x (lem:window-x window) :y (lem:window-y window)
-                    :pixel-x 0 :pixel-y 0 :wheel-x 0 :wheel-y wheel-y))))
+  "Turn the mouse wheel over WINDOW as a frontend does (up when WHEEL-Y is 1)."
+  (lem:receive-mouse-wheel (lem:window-x window) (lem:window-y window) 0 0 0 wheel-y)
+  (run-next-command))
 
 (defun buffer-terminal (buffer)
   (lem-terminal/terminal-mode::buffer-terminal buffer))
 
 (defun render (buffer)
-  "Render BUFFER's terminal as the timer the I/O thread arms would."
+  "Render BUFFER's terminal as the timer the I/O thread arms would (its
+internal RENDER-TICK, which MANUAL-TIMER-MANAGER keeps from running)."
   (lem-terminal/terminal::render-tick (buffer-terminal buffer)))
+
+(defun output-pending-p (buffer)
+  "True when output not rendered yet has arrived for BUFFER's terminal."
+  (lem-terminal/terminal::any-rows-dirty-p (buffer-terminal buffer)))
+
+(defun copy-mode-p (buffer)
+  (lem-terminal/terminal::terminal-copy-mode (buffer-terminal buffer)))
 
 (defun wait-for-output (buffer &optional (text (format nil "100~%x")))
   (wait-until (lambda ()
                 (render buffer)
                 (buffer-has-p buffer text))))
-
-(defparameter *wheel-test-script*
-  "seq 1 100; while :; do printf x; sleep 0.02; done"
-  "Prints 100 lines, then keeps adding to the last one.")
 
 (defun call-with-wheel-terminal (function &key (script *wheel-test-script*))
   "Call FUNCTION with a terminal buffer in the current window, running SCRIPT
@@ -308,7 +325,7 @@ as a command of its own: the flags of the previous one are not carried on."
      (ok (equal "1" (first-line buffer)) "the scrollback is shown")
      (let ((view (lem:line-number-at-point (lem:window-view-point window))))
        (ok (< view (- (lem:buffer-nlines buffer) rows)) "the window shows it")
-       (sleep 0.1)
+       (ok (wait-until (lambda () (output-pending-p buffer))) "output arrives")
        (render buffer)
        (ok (equal "1" (first-line buffer)) "output does not take it away")
        (ok (= view (lem:line-number-at-point (lem:window-view-point window)))))
@@ -399,12 +416,156 @@ as a command of its own: the flags of the previous one are not carried on."
   (call-with-wheel-terminal
    (lambda (buffer window rows)
      (declare (ignore window))
-     (ok (wait-for-output buffer))
+     (ok (wait-for-output buffer (format nil "100~%")))
      (lem-terminal/terminal-mode::terminal-copy-mode)
      (let ((nlines (lem:buffer-nlines buffer)))
        (ok (< rows nlines) "copy mode shows the history")
-       (let ((lem-terminal/terminal-mode::*running-bypass-command* t))
-         (lem:call-command 'lem-terminal/terminal-mode::terminal-key-return nil))
+       ;; terminal-copy-mode does not inherit terminal-mode: the command runs
+       ;; as in any other buffer.
+       (lem:call-command 'lem-terminal/terminal-mode::terminal-key-return nil)
        (ok (= nlines (lem:buffer-nlines buffer)) "the history stays")
-       (ok (lem-terminal/terminal::terminal-copy-mode (buffer-terminal buffer))
-           "the terminal stays frozen")))))
+       (ok (copy-mode-p buffer) "the terminal stays frozen")
+       (lem-terminal/terminal-mode::terminal-copy-mode-off)
+       (ok (wait-for-output buffer "got Return") "the process got the key")))
+   :script "seq 1 100; read line; echo got Return; sleep 30"))
+
+(defun view-line (window)
+  (lem:line-number-at-point (lem:window-view-point window)))
+
+(defun shows-history-p (buffer window rows)
+  "True when WINDOW starts above the screen, in the history."
+  (<= (view-line window) (- (lem:buffer-nlines buffer) rows)))
+
+(deftest wheel-up-from-a-view-below-the-first-row-shows-the-history
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (ok (wait-for-output buffer))
+     ;; as moving down the screen in C-x [ and leaving it with Escape does
+     (lem:move-to-line (lem:window-view-point window) 10)
+     (wheel window 1)
+     (ok (copy-mode-p buffer) "the terminal is frozen")
+     (ok (shows-history-p buffer window rows) "the window shows the history"))))
+
+(deftest an-error-in-the-scroll-does-not-leave-the-terminal-frozen
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (ok (wait-for-output buffer))
+     (ok (signals (lem-terminal/terminal-mode::call-with-scrollback
+                   (buffer-terminal buffer) window nil
+                   (lambda () (error "the scroll failed")))))
+     (ok (not (copy-mode-p buffer)) "the terminal renders again")
+     (ok (= rows (lem:buffer-nlines buffer)) "the scrollback is gone"))))
+
+(deftest wheel-down-on-the-screen-leaves-the-other-window-in-the-history
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (lem:split-window-vertically window)
+     (let ((other (lem:get-next-window window))
+           (terminal (buffer-terminal buffer)))
+       (lem-terminal/terminal-mode::resize-terminal terminal window)
+       (ok (wait-for-output buffer))
+       (let ((rows (lem-terminal/terminal::terminal-rows terminal)))
+         (wheel window 1)
+         (ok (shows-history-p buffer window rows) "the first window shows the history")
+         (wheel other -1)
+         (ok (shows-history-p buffer window rows) "it still does")
+         (ok (copy-mode-p buffer) "the terminal stays frozen")
+         (ng (shows-history-p buffer other rows) "the other window stays on the screen")
+         (loop :repeat 50 :do (wheel window -1))
+         (ok (not (copy-mode-p buffer)) "both on the screen, the terminal renders again")
+         (ok (= rows (lem:buffer-nlines buffer))))))))
+
+(deftest the-process-exiting-while-the-history-is-read-shows-the-end
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (ok (wait-for-output buffer))
+     (wheel window 1)
+     (lem-terminal/terminal::finish-process (buffer-terminal buffer) 0)
+     (ok (not (copy-mode-p buffer)) "scrolling ends")
+     (ok (not (lem-terminal/terminal::terminal-scrollback-active (buffer-terminal buffer)))
+         "the scrollback is gone")
+     (ok (<= (lem:buffer-nlines buffer) (+ rows 2)) "the final screen and the notice")
+     (ok (< (- (lem:buffer-nlines buffer) (view-line window)) (lem:window-height window))
+         "the window shows them")
+     (ok (buffer-has-p buffer "[Process exited with code 0]"))
+     ;; C-x [ and Escape after the exit
+     (lem-terminal/terminal-mode::terminal-copy-mode)
+     (let ((text (lem:buffer-text buffer)))
+       (ok (equal "1" (first-line buffer)) "copy mode shows the scrollback")
+       (lem-terminal/terminal-mode::terminal-copy-mode-off)
+       (ok (equal text (lem:buffer-text buffer))
+           "leaving it edits nothing (the point is not put on the cursor row)")))))
+
+(deftest wheel-up-without-history-redraws-nothing
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer (format nil "1~%2~%3")))
+     (wheel window 1)
+     (ok (not (copy-mode-p buffer)))
+     (ok (not (output-pending-p buffer)) "no row is to be drawn again"))
+   :script "printf '1\\n2\\n3'; sleep 30"))
+
+(deftest a-scroll-of-zero-lines-leaves-the-buffer-alone
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore window rows))
+     (ok (wait-for-output buffer))
+     (let ((tick (lem:buffer-modified-tick buffer)))
+       (lem:call-command 'lem:scroll-down 0)
+       (ok (= tick (lem:buffer-modified-tick buffer))
+           "the scrollback is not put in and taken out again")
+       (ok (not (copy-mode-p buffer)))))))
+
+(deftest paste-in-a-mode-made-from-terminal-mode-shows-the-screen
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (ok (wait-for-output buffer))
+     (derived-terminal-mode)
+     (wheel window 1)
+     (ok (copy-mode-p buffer) "the wheel shows the history")
+     (paste "y")
+     (ok (= rows (lem:buffer-nlines buffer)) "the scrollback is gone")
+     (ok (not (copy-mode-p buffer)) "the terminal renders again"))))
+
+(deftest copy-mode-on-again-keeps-the-frozen-screen
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore window rows))
+     (ok (wait-for-output buffer "ready"))
+     (let ((terminal (buffer-terminal buffer)))
+       (ok (= 0 (lem-terminal/terminal:copy-mode-on terminal))
+           "nothing above the screen yet")
+       (let ((screen (lem:buffer-text buffer)))
+         (lem-terminal/terminal:input-key terminal ffi::vterm_key_enter)
+         (ok (wait-until (lambda ()
+                           (plusp (lem-terminal/terminal:scrollback-count terminal))))
+             "lines go above the screen, unrendered")
+         (lem-terminal/terminal:copy-mode-on terminal)
+         (ok (uiop:string-suffix-p (lem:buffer-text buffer) screen)
+             "the screen shown stays as it was"))))
+   :script "printf ready; read line; seq 1 100; sleep 30"))
+
+(deftest copy-mode-on-while-the-history-is-shown-counts-it
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (ok (wait-for-output buffer))
+     (wheel window 1)
+     (ok (= (- (lem:buffer-nlines buffer) rows)
+            (lem-terminal/terminal:copy-mode-on (buffer-terminal buffer)))))))
+
+(deftest wheel-up-after-the-exit-shows-the-scrollback
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (lem-terminal/terminal::finish-process (buffer-terminal buffer) 0)
+     (ng (equal "1" (first-line buffer)) "the exit shows the final screen")
+     ;; as M-v does: the wheel, from within <mouse-event>, the same
+     (wheel window 1)
+     (ok (equal "1" (first-line buffer)) "the scrollback is put above it")
+     (let ((nlines (lem:buffer-nlines buffer)))
+       (wheel window 1)
+       (ok (= nlines (lem:buffer-nlines buffer)) "once")))))
