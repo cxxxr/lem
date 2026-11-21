@@ -134,3 +134,18 @@
     (ok (signals (lem-core::parse-args '("-i")) 'lem-core::command-line-arguments-error)))
   (testing "missing argument for --interface"
     (ok (signals (lem-core::parse-args '("--interface")) 'lem-core::command-line-arguments-error))))
+
+(deftest launch-after-the-editor-ends-starts-another
+  ;; The frontend's finalize lets launch return: a launch called then (from
+  ;; the REPL Lem was run from) must not find the editor still there.
+  ;; (end-editor and *in-the-editor* are internal: run-editor-thread uses
+  ;; them, and no exported function ends an editor without a frontend.)
+  (let ((seen '()))
+    (lem-fake-interface:with-fake-interface ()
+      (let ((lem-core::*in-the-editor* t))
+        (lem-core::end-editor :report
+                              (lambda (report)
+                                (push (list report lem-core::*in-the-editor*
+                                            (lem-core:all-frames))
+                                      seen)))))
+    (ok (equal '((:report nil nil)) seen))))

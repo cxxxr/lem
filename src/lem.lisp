@@ -39,6 +39,15 @@ editor thread (send-event), then the display is redrawn."))
 (defun teardown ()
   (teardown-frames))
 
+(defun end-editor (report finalize)
+  "Tear the editor down, then call FINALIZE with REPORT, which lets the
+frontend end (invoke returns, and launch with it). By then the editor is
+gone: a launch called next starts an editor rather than giving its
+arguments to this one (*in-the-editor*)."
+  (unwind-protect (teardown)
+    (setf *in-the-editor* nil)
+    (when finalize (funcall finalize report))))
+
 (defun get-preferred-init-file-path ()
   "Returns the full path to the preferred init file"
   (merge-pathnames *init-file-name* (lem-home)))
@@ -90,9 +99,8 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
                 (set-global-timer-manager (make-instance 'lem-timer-manager))
                 (setf *in-the-editor* t)
                 (setup)
-                (let ((report (toplevel-command-loop (lambda () (init args)))))
-                  (when finalize (funcall finalize report))
-                  (teardown))))
+                (end-editor (toplevel-command-loop (lambda () (init args)))
+                            finalize)))
          (setf *in-the-editor* nil)))
      :name "editor")))
 
