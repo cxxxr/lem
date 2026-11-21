@@ -28,7 +28,8 @@
                 :components ((:file "ring")
                              (:file "killring")
                              (:file "history")
-                             (:file "timer")))
+                             (:file "timer")
+                             (:file "backtrace")))
                #+sbcl
                (:module "language-server"
                 :components ((:file "utils")
