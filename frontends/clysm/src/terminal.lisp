@@ -354,9 +354,11 @@ unless a terminal ran in it before (M-x terminal-restart keeps its buffer)."
         ;; handlers): kill it and free the screen, as nothing else could.  The
         ;; error that made the start fail goes on.
         (alexandria:when-let ((pty (terminal-pty terminal)))
-          (ignore-errors (kill-process terminal))
-          ;; kill-process hangs up; a program that ignores SIGHUP would stay
-          (ignore-errors (js:call pty "kill" "SIGKILL")))
+          ;; SIGKILL, not kill-process's SIGHUP, which a program can ignore;
+          ;; kill-process then only frees the screen.
+          (ignore-errors (js:call pty "kill" "SIGKILL"))
+          (setf (terminal-closed terminal) t)
+          (ignore-errors (kill-process terminal)))
         (unless (buffer-value buffer 'terminal-started)
           (delete-buffer buffer))))
     (setf (buffer-value buffer 'terminal-started) t)
