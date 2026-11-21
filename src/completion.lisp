@@ -126,7 +126,7 @@
                                       (enough-namestring path input-directory))))))
       strings)))
 
-(defun completion-buffer (str &optional (buffer-list (buffer-list)))
+(defun completion-buffer (str &optional (buffer-list (frame-buffer-list)))
   (let ((candidates1
           (completion str buffer-list
                       :test (lambda (str buffer)

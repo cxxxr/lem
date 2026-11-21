@@ -41,7 +41,7 @@
                                      (list (buffer-attributes buffer)
                                            (buffer-name buffer)
                                            (or (buffer-filename buffer) "")))
-                  :items (buffer-list)
+                  :items (frame-buffer-list)
                   :filter-function #'completion-buffer
                   :select-callback (lambda (component buffer)
                                      (quit component)

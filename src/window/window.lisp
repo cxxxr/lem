@@ -834,13 +834,13 @@ You can pass in the optional argument WINDOW-LIST to replace the default
         :collect window))
 
 (defun other-buffer ()
-  (let ((buffer-list (buffer-list)))
+  (let ((buffer-list (frame-buffer-list)))
     (dolist (win (window-list))
       (setq buffer-list
             (remove (window-buffer win)
                     buffer-list)))
     (if (null buffer-list)
-        (car (buffer-list))
+        (car (frame-buffer-list))
         (car buffer-list))))
 
 (defun change-buffer-p (window)
@@ -998,7 +998,12 @@ You can pass in the optional argument WINDOW-LIST to replace the default
       (t
        (if kill-buffer
            (delete-buffer (window-buffer window))
-           (switch-to-buffer (bury-buffer (window-buffer window)) nil))
+           (progn
+             (bury-buffer (window-buffer window))
+             ;; Take the next buffer from this frame's buffers, not from the
+             ;; whole buffer list, so that a frame used as a workspace keeps
+             ;; showing its own buffers.
+             (switch-to-buffer (car (frame-buffer-list)) nil)))
        (unless (deleted-window-p parent-window)
          (setf (current-window) parent-window))))))
 
