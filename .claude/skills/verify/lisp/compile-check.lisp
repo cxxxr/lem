@@ -71,7 +71,10 @@ frontend whose foreign library is missing, say); T otherwise."
       (let ((system (verify-file-system file)))
         (when (and system (not (asdf:component-loaded-p system)))
           (format t "~&loading ~a for ~a~%" system file)
-          (ql:quickload system :silent t))
+          ;; The system's load compiles FILE too: a warning there must not
+          ;; fail the load, so that the compile below reports it.
+          (let ((uiop:*compile-file-failure-behaviour* :warn))
+            (ql:quickload system :silent t)))
         t)
     (error (condition)
       (format t "~&FAILED to load the system of ~a:~%  ~a~%" file condition)

@@ -167,10 +167,11 @@ case "${1:-}" in
             fi
             # A workflow run completes only after all its jobs, also the ones
             # created late because they need another job.  Only the newest run
-            # of each workflow and event counts: a run started again (reopened
-            # PR, workflow_dispatch) replaces an older failed or stuck one.
+            # of each workflow counts, whatever started it: a run started again
+            # (reopened PR, workflow_dispatch) replaces an older failed or
+            # stuck one.
             runs=$(gh api "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-                --jq '.workflow_runs | group_by([.workflow_id, .event]) | map(max_by(.run_number))[]
+                --jq '.workflow_runs | group_by(.workflow_id) | map(max_by(.run_number))[]
                       | "\(.status)/\(.conclusion)\tworkflow \(.name)"' 2>"$err") || return 1
         }
         while :; do
@@ -198,10 +199,12 @@ case "${1:-}" in
                     exit 5
                 fi
             fi
+            # Also with no check at all: a run that failed to start (a broken
+            # workflow file) creates none.
+            failed=$(printf '%s\n%s\n' "$checks" "$runs" |
+                         grep -E '^completed/(failure|cancelled|timed_out|action_required|startup_failure|stale)' || true)
+            if [ -n "$failed" ]; then echo "$failed" >&2; exit 1; fi
             if [ -n "$checks" ]; then
-                failed=$(printf '%s\n%s\n' "$checks" "$runs" |
-                             grep -E '^completed/(failure|cancelled|timed_out|action_required|startup_failure|stale)' || true)
-                if [ -n "$failed" ]; then echo "$failed" >&2; exit 1; fi
                 pending=$(echo "$checks" | grep -v '^completed/' || true)
                 running=$(echo "$runs" | grep -v '^completed/' || true)
                 # Workflows create some check runs late (jobs that need another
