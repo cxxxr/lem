@@ -132,3 +132,42 @@ can delay by much more than the timer's own interval.")
       (start-timer timer 10)
       (testing "its time of the earlier idle time is not counted from"
         (ok (null (get-next-timer-timing-ms)))))))
+
+(defclass named-timer-manager (timer-manager)
+  ((name :initarg :name :reader named-timer-manager-name)
+   (mailbox :initarg :mailbox :reader named-timer-manager-mailbox))
+  (:documentation "A timer manager that sends its name to MAILBOX for each
+notification, so that a test sees which manager a timer was given."))
+
+(defmethod send-timer-notification ((timer-manager named-timer-manager) continue)
+  (lem-mailbox:send-message (named-timer-manager-mailbox timer-manager)
+                            (named-timer-manager-name timer-manager))
+  (funcall continue))
+
+(defun manager-of-a-timer-started-now (mailbox)
+  "Start a timer in this thread and return the name of the manager that its
+notification went through."
+  (let ((timer (make-timer (lambda ()))))
+    (start-timer timer 1)
+    (multiple-value-prog1 (receive mailbox)
+      (join-timer-thread timer))))
+
+(deftest with-timer-manager-is-a-binding
+  (let* ((mailbox (lem-mailbox:make-mailbox))
+         (outer (make-instance 'named-timer-manager :name :outer :mailbox mailbox))
+         (inner (make-instance 'named-timer-manager :name :inner :mailbox mailbox)))
+    (with-timer-manager outer
+      (with-timer-manager inner
+        (ok (eq :inner (manager-of-a-timer-started-now mailbox))))
+      (testing "the manager before is back after it"
+        (ok (eq :outer (manager-of-a-timer-started-now mailbox))))
+      (testing "also when it is left by a non-local exit"
+        (catch 'out
+          (with-timer-manager inner
+            (throw 'out nil)))
+        (ok (eq :outer (manager-of-a-timer-started-now mailbox))))
+      (testing "a thread made in it starts timers with its manager"
+        (ok (eq :outer
+                (bt2:join-thread
+                 (bt2:make-thread
+                  (lambda () (manager-of-a-timer-started-now mailbox))))))))))

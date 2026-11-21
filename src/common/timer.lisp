@@ -4,6 +4,7 @@
    :timer-manager
    :send-timer-notification
    :with-timer-manager
+   :set-global-timer-manager
    :running-timer
    :running-timer-p
    :call-outside-timer
@@ -30,7 +31,9 @@
 (defvar *running-timer* nil
   "The timer whose function runs, NIL outside of one.")
 
-(defvar *timer-manager*)
+(defvar *timer-manager*
+  "The timer manager that start-timer gives a timer: the one of the
+innermost with-timer-manager, else the global one (set-global-timer-manager).")
 
 (defun running-timer () *running-timer*)
 
@@ -59,11 +62,30 @@ while its own function runs."
    (floor (/ (get-internal-real-time)
              (load-time-value (/ internal-time-units-per-second 1000))))))
 
+(defun set-global-timer-manager (timer-manager)
+  "Make TIMER-MANAGER the timer manager of the threads that are in no
+with-timer-manager: the editor's, for the threads that it does not make,
+such as the REPL of a self connection (micros makes its threads itself, so
+bt2:*default-special-bindings* does not reach them). Call it outside of
+with-timer-manager, which would take the value instead."
+  (setf *timer-manager* timer-manager))
+
 (defun call-with-timer-manager (timer-manager function)
-  (setf *timer-manager* timer-manager)
-  (funcall function))
+  ;; A binding, not a setf: a manager of a test (one that drops the
+  ;; notifications) must not stay after it, for the later tests and for a
+  ;; running Lem that the tests are run in.  The threads made in FUNCTION
+  ;; start with TIMER-MANAGER bound too, as with-implementation does for the
+  ;; implementation; a timer's own thread needs none, as start-timer gives
+  ;; it the manager.
+  (let* ((*timer-manager* timer-manager)
+         (bt2:*default-special-bindings*
+           (acons '*timer-manager* timer-manager bt2:*default-special-bindings*)))
+    (funcall function)))
 
 (defmacro with-timer-manager (timer-manager &body body)
+  "Run BODY with TIMER-MANAGER as the timer manager of the timers started in
+it, in this thread and in the threads made in it. The manager before is back
+when BODY returns."
   `(call-with-timer-manager ,timer-manager (lambda () ,@body)))
 
 (define-condition timer-error (error)

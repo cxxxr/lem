@@ -78,12 +78,17 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
      (unwind-protect
           (let (#+lispworks (lw:*default-character-element-type* 'character))
             (with-editor-stream ()
-              (with-timer-manager (make-instance 'lem-timer-manager)
-                (setf *in-the-editor* t)
-                (setup)
-                (let ((report (toplevel-command-loop (lambda () (init args)))))
-                  (when finalize (funcall finalize report))
-                  (teardown)))))
+              (let ((timer-manager (make-instance 'lem-timer-manager)))
+                ;; Global too, as invoke-frontend sets the implementation:
+                ;; code run in a thread that the editor does not make (the
+                ;; REPL of a self connection) can start timers.
+                (set-global-timer-manager timer-manager)
+                (with-timer-manager timer-manager
+                  (setf *in-the-editor* t)
+                  (setup)
+                  (let ((report (toplevel-command-loop (lambda () (init args)))))
+                    (when finalize (funcall finalize report))
+                    (teardown))))))
        (setf *in-the-editor* nil)))
    :name "editor"))
 
@@ -129,7 +134,8 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
          (let ((implementation (get-default-implementation
                                 :implementation (command-line-arguments-interface args))))
            (unless implementation
-             (error "implementation ~A not found" implementation-keyword))
+             (error "implementation ~A not found"
+                    (command-line-arguments-interface args)))
            
            (invoke-frontend
             (lambda (&optional initialize finalize)
