@@ -47,7 +47,8 @@ Tests run via GitHub Actions (`.github/workflows/test.yml`; the Nix builds in
 - On a pull request, on Linux. A PR that changes only `.claude/`, `docs/` or
   `*.md` files runs no tests (`paths-ignore`). The one macOS job on pull
   requests is `build-terminal-shared-object.yml`, for changes to
-  `extensions/terminal/` (terminal.so, on Linux and macOS).
+  `extensions/terminal/terminal.c`, `extensions/terminal/ffi.lisp` or
+  `scripts/build-terminal.lisp` (terminal.so, on Linux and macOS).
 - Not on a merge into `staging` (cxxxr/lem): its head is tested by the daily
   scheduled runs, which skip a commit that already passed: the tests
   (`test.yml`, Linux) and the Nix builds (`ci.yml`, macOS included).
