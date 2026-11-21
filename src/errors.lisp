@@ -35,3 +35,8 @@
 (define-condition beginning-of-buffer (move-cursor-error)
   ()
   (:default-initargs :message nil))
+
+(defmethod timer-passes-through-p ((condition editor-abort))
+  ;; C-g in a prompt a timer opened cancels it, as in a command's prompt:
+  ;; "Abort" in the echo area, not *EDITOR ERROR*.
+  t)

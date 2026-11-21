@@ -11,6 +11,7 @@
    :timer-error-backtrace
    :timer-error-condition
    :timer-error-outside-timer-p
+   :timer-passes-through-p
    :timer
    :timer-name
    :timer-expired-p
@@ -89,6 +90,16 @@ by a command run in a prompt it opened."))
                        (or (ignore-errors (princ-to-string condition))
                            "#<error printing the condition>"))))))
 
+(defgeneric timer-passes-through-p (condition)
+  (:documentation "Return true if the error CONDITION, signalled in a timer's
+function, is let through as it is: not given to the timer's handle-function
+nor wrapped in a timer-error, so that the code around the timer handles it
+as its own. The editor's methods say so for an abort (C-g in a prompt the
+timer opened).")
+  (:method (condition)
+    (declare (ignore condition))
+    nil))
+
 (defgeneric timer-expired-p (timer))
 (defgeneric expire-timer (timer))
 (defgeneric inspire-timer (timer))
@@ -145,18 +156,24 @@ by a command run in a prompt it opened."))
         ;; The backtrace is taken here: by the time handler-case runs its
         ;; clause, the frames of the failing timer function are gone.
         (handler-bind ((error (lambda (condition)
-                                (declare (ignore condition))
-                                (setf backtrace
-                                      (ignore-errors
-                                       (lem/common/backtrace:safe-backtrace))
-                                      outside-timer-p (not (running-timer-p))))))
+                                (unless (timer-passes-through-p condition)
+                                  (setf backtrace
+                                        (ignore-errors
+                                         (lem/common/backtrace:safe-backtrace))
+                                        outside-timer-p (not (running-timer-p)))))))
           (if (timer-handle-function timer)
-              (handler-bind ((error (timer-handle-function timer)))
+              (handler-bind ((error (lambda (condition)
+                                      (unless (timer-passes-through-p condition)
+                                        (funcall (timer-handle-function timer)
+                                                 condition)))))
                 (funcall (timer-function timer)))
               (funcall (timer-function timer))))
       (error (condition)
-        (error 'timer-error :timer timer :condition condition :backtrace backtrace
-                            :outside-timer-p outside-timer-p)))))
+        (if (timer-passes-through-p condition)
+            ;; Signalled again outside of the timer, whose frames are gone.
+            (error condition)
+            (error 'timer-error :timer timer :condition condition :backtrace backtrace
+                                :outside-timer-p outside-timer-p))))))
 
 
 ;;; timer

@@ -91,12 +91,16 @@
          nil :timer))
       (ok (equal '(:timer) contexts)))))
 
-(defun contexts-of-a-command-failing-in-a-prompt-of-a-timer (handle-function-p)
+(defun contexts-of-a-command-failing-in-a-prompt-of-a-timer
+    (handle-function-p &optional (key (lem:make-key :ctrl t :sym "t")))
+  "Run a timer whose function opens a prompt, in which KEY is typed (C-t runs
+a failing command), and return the contexts reported and the type of the
+condition that left the timer: TIMER-ERROR, EDITOR-ABORT or NIL."
   (lem-fake-interface:with-fake-interface ()
     (lem:with-current-buffers ()
       (with-reported-contexts (contexts)
         (let* ((keymap (lem:make-keymap))
-               (key (lem:make-key :ctrl t :sym "t"))
+               (escaped nil)
                (timer (lem:make-idle-timer
                        (lambda ()
                          (lem:prompt-for-string "in a timer: " :special-keymap keymap))
@@ -114,14 +118,28 @@
                   (make-instance 'lem-core::lem-timer-manager)))
             (handler-case (lem/common/timer::call-timer-function timer)
               (lem/common/timer:timer-error (c)
-                (lem:pop-up-backtrace c))))
-          contexts)))))
+                (setf escaped 'timer-error)
+                (lem:pop-up-backtrace c))
+              (lem:editor-abort ()
+                (setf escaped 'editor-abort))))
+          (values contexts escaped))))))
 
 (deftest a-command-failing-in-a-prompt-of-a-timer-is-a-command-error
   (testing "with a handle-function: reported once, by it"
     (ok (equal '(:command) (contexts-of-a-command-failing-in-a-prompt-of-a-timer t))))
   (testing "without one: reported once, as the timer-error"
     (ok (equal '(:command) (contexts-of-a-command-failing-in-a-prompt-of-a-timer nil)))))
+
+(deftest an-abort-in-a-prompt-of-a-timer-is-not-an-error
+  (dolist (handle-function-p '(t nil))
+    (testing (format nil "~:[without~;with~] a handle-function" handle-function-p)
+      (multiple-value-bind (contexts escaped)
+          (contexts-of-a-command-failing-in-a-prompt-of-a-timer
+           handle-function-p (lem:make-key :ctrl t :sym "g"))
+        (testing "nothing is reported"
+          (ok (null contexts)))
+        (testing "the abort leaves the timer as it is, not as a timer-error"
+          (ok (eq 'editor-abort escaped)))))))
 
 (deftest a-background-job-error-that-cannot-be-printed-is-shown
   (lem-fake-interface:with-fake-interface ()
