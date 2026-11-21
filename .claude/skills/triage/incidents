@@ -1,0 +1,121 @@
+#!/bin/sh
+# List and file the incidents Lem's incident-recorder wrote
+# (extensions/incident-recorder/): <lem-home>/incidents/{new,processed,wontfix}/.
+#
+#   incidents dir                      the incident directory
+#   incidents notice                   one line for the SessionStart hook, or nothing
+#   incidents summary                  new incidents grouped by fingerprint, most frequent first
+#   incidents show FINGERPRINT         the newest new incident of FINGERPRINT, in full
+#   incidents resolve FINGERPRINT processed|wontfix NOTE
+#                                      move FINGERPRINT's new incidents and append NOTE
+#
+# LEM_INCIDENT_DIR overrides the directory. Otherwise it is found as Lem finds
+# its home (src/config.lisp): $LEM_HOME, ~/.lem/ if it exists, then
+# $XDG_CONFIG_HOME/lem/ (~/.config/lem/).
+set -eu
+
+incident_dir() {
+    if [ -n "${LEM_INCIDENT_DIR:-}" ]; then
+        echo "${LEM_INCIDENT_DIR%/}"
+    elif [ -n "${LEM_HOME:-}" ]; then
+        echo "${LEM_HOME%/}/incidents"
+    elif [ -d "$HOME/.lem" ]; then
+        echo "$HOME/.lem/incidents"
+    else
+        echo "${XDG_CONFIG_HOME:-$HOME/.config}/lem/incidents"
+    fi
+}
+
+dir=$(incident_dir)
+
+# The JSON is read with Python in isolated mode (-I): incident files hold
+# text from the user's session and are only data.
+py() {
+    python3 -I - "$dir" "$@"
+}
+
+case "${1:-}" in
+    dir)
+        echo "$dir"
+        ;;
+    notice)
+        # Counts only: the hook output goes into Claude's context, and
+        # messages from the incidents must not.
+        [ -d "$dir/new" ] || exit 0
+        py <<'EOF'
+import glob, json, os, sys
+files = glob.glob(os.path.join(sys.argv[1], "new", "*.json"))
+if files:
+    kinds = set()
+    for f in files:
+        try:
+            kinds.add(json.load(open(f, encoding="utf-8")).get("fingerprint"))
+        except Exception:
+            kinds.add(f)
+    print(f"Lem incident-recorder: {len(files)} new incident(s) of {len(kinds)} kind(s) "
+          f"in {os.path.join(sys.argv[1], 'new')}. Tell the user; /triage handles them.")
+EOF
+        ;;
+    summary)
+        [ -d "$dir/new" ] || { echo "no incidents in $dir/new"; exit 0; }
+        py <<'EOF'
+import glob, json, os, sys
+groups = {}
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "new", "*.json"))):
+    try:
+        d = json.load(open(f, encoding="utf-8"))
+    except Exception as e:
+        print(f"unreadable: {f}: {e}")
+        continue
+    g = groups.setdefault(d.get("fingerprint", "?"), {"n": 0, "files": [], "d": d})
+    g["n"] += 1 + (d.get("suppressed_since_last") or 0)
+    g["files"].append(f)
+    g["d"] = d  # newest last, files are named by time
+if not groups:
+    print(f"no incidents in {os.path.join(sys.argv[1], 'new')}")
+for fp, g in sorted(groups.items(), key=lambda kv: -kv[1]["n"]):
+    d = g["d"]
+    c = d.get("condition", {})
+    first = os.path.basename(g["files"][0])[:16]
+    print(f"{fp}  x{g['n']}  {d.get('context')}  {c.get('type')}: {c.get('message', '')[:100]}")
+    print(f"    files {len(g['files'])}, first {first}, last {d.get('time')}, "
+          f"revision {d.get('lem', {}).get('revision')}, frontend {d.get('lem', {}).get('frontend')}")
+EOF
+        ;;
+    show)
+        [ $# -eq 2 ] || { echo "usage: incidents show FINGERPRINT" >&2; exit 2; }
+        py "$2" <<'EOF'
+import glob, json, os, sys
+files = sorted(glob.glob(os.path.join(sys.argv[1], "new", f"*-{sys.argv[2]}-*.json")))
+if not files:
+    sys.exit(f"no new incident with fingerprint {sys.argv[2]}")
+print("files:")
+for f in files:
+    print("  " + f)
+d = json.load(open(files[-1], encoding="utf-8"))
+backtrace = d.pop("backtrace", "")
+print(json.dumps(d, indent=2, ensure_ascii=False))
+print("backtrace:")
+print(backtrace)
+EOF
+        ;;
+    resolve)
+        [ $# -eq 4 ] || { echo "usage: incidents resolve FINGERPRINT processed|wontfix NOTE" >&2; exit 2; }
+        case "$3" in processed|wontfix) ;; *) echo "status must be processed or wontfix" >&2; exit 2;; esac
+        fp=$2 status=$3 note=$4
+        mkdir -p "$dir/$status"
+        moved=0
+        for f in "$dir/new/"*"-$fp-"*.json; do
+            [ -e "$f" ] || continue
+            mv "$f" "$dir/$status/"
+            moved=$((moved + 1))
+        done
+        [ "$moved" -gt 0 ] || { echo "no new incident with fingerprint $fp" >&2; exit 1; }
+        printf '%s  %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$note" >>"$dir/$status/$fp.note"
+        echo "moved $moved incident(s) of $fp to $dir/$status/"
+        ;;
+    *)
+        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+        exit 2
+        ;;
+esac

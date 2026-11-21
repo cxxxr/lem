@@ -5,7 +5,10 @@
    :send-timer-notification
    :with-timer-manager
    :running-timer
+   :running-timer-p
    :timer-error
+   :timer-error-backtrace
+   :timer-error-condition
    :timer
    :timer-name
    :timer-expired-p
@@ -23,6 +26,10 @@
 
 (defvar *running-timer*)
 (defun running-timer () *running-timer*)
+
+(defun running-timer-p ()
+  "Return true while a timer's function (or its handle-function) runs."
+  (boundp '*running-timer*))
 
 (defvar *timer-manager*)
 
@@ -45,7 +52,14 @@
 
 (define-condition timer-error (error)
   ((timer :initarg :timer)
-   (condition :initarg :condition))
+   (condition :initarg :condition
+              :reader timer-error-condition
+              :documentation "The error the timer's function signalled.")
+   (backtrace :initarg :backtrace
+              :initform nil
+              :reader timer-error-backtrace
+              :documentation "The backtrace of CONDITION, taken before the stack unwound
+(lem/common/backtrace:safe-backtrace)."))
   (:report (lambda (c s)
              (with-slots (timer condition) c
                (format s "Error running timer ~S: ~A" (timer-name timer) condition)))))
@@ -99,14 +113,22 @@
                                     handle-function)))
 
 (defun call-timer-function (timer)
-  (let ((*running-timer* timer))
+  (let ((*running-timer* timer)
+        (backtrace nil))
     (handler-case
-        (if (timer-handle-function timer)
-            (handler-bind ((error (timer-handle-function timer)))
-              (funcall (timer-function timer)))
-            (funcall (timer-function timer)))
+        ;; The backtrace is taken here: by the time handler-case runs its
+        ;; clause, the frames of the failing timer function are gone.
+        (handler-bind ((error (lambda (condition)
+                                (declare (ignore condition))
+                                (setf backtrace
+                                      (ignore-errors
+                                       (lem/common/backtrace:safe-backtrace))))))
+          (if (timer-handle-function timer)
+              (handler-bind ((error (timer-handle-function timer)))
+                (funcall (timer-function timer)))
+              (funcall (timer-function timer))))
       (error (condition)
-        (error 'timer-error :timer timer :condition condition)))))
+        (error 'timer-error :timer timer :condition condition :backtrace backtrace)))))
 
 
 ;;; timer

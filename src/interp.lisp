@@ -3,21 +3,66 @@
 (defvar *editor-abort-hook* '())
 (defvar *exit-editor-hook* '())
 
+(defvar *error-report-hook* '()
+  "Hook (see add-hook) run when an error reaches the editor's own handlers.
+Its functions get (CONDITION BACKTRACE CONTEXT): CONTEXT is :COMMAND (shown
+in *EDITOR ERROR*), :CRASH (the editor exits), :TIMER or :BACKGROUND-JOB,
+and BACKTRACE is a string from lem/common/backtrace:safe-backtrace (one
+line per frame, arguments cut). They must not signal: report-error drops
+what they signal.")
+
+(defun backtrace-string (condition)
+  (with-output-to-string (stream)
+    (uiop:print-backtrace :stream stream
+                          :condition condition
+                          :count 100)))
+
+(defvar *last-reported-condition* nil
+  "The condition report-error reported last. A timer's error is reported by
+the timer's handle-function (as the original error) and again when the
+timer-error wrapping it reaches the command loop; this lets the second one
+be skipped.")
+
+(defun report-error (condition backtrace context)
+  "Run *error-report-hook* with CONDITION, BACKTRACE and CONTEXT, unless
+CONDITION, or the error a timer-error CONDITION wraps, was reported last.
+What a hook function signals is dropped, a stack exhaustion included, so
+that reporting never makes the error it reports worse."
+  (unless (and *last-reported-condition*
+               (or (eq condition *last-reported-condition*)
+                   (and (typep condition 'timer-error)
+                        (eq (timer-error-condition condition)
+                            *last-reported-condition*))))
+    (setf *last-reported-condition* condition)
+    ;; Not run-hooks: it stops at the first hook that signals.
+    (dolist (hook *error-report-hook*)
+      (handler-case (funcall (car hook) condition backtrace context)
+        (serious-condition () nil)))))
+
 (defun bailout (condition)
-  (signal 'exit-editor
-          :report (with-output-to-string (stream)
-                    (princ condition stream)
-                    (uiop:print-backtrace
-                     :stream stream
-                     :condition condition))))
+  (let ((backtrace (ignore-errors (backtrace-string condition))))
+    (report-error condition (ignore-errors (safe-backtrace)) :crash)
+    (signal 'exit-editor
+            :report (with-output-to-string (stream)
+                      (princ condition stream)
+                      (fresh-line stream)
+                      (when backtrace
+                        (write-string backtrace stream))))))
 
 (defun pop-up-backtrace (condition)
-  (let ((o (with-output-to-string (stream)
-             (princ condition stream)
-             (fresh-line stream)
-             (uiop:print-backtrace
-              :stream stream
-              :count 100))))
+  (let* ((timer-backtrace (and (typep condition 'timer-error)
+                               (timer-error-backtrace condition)))
+         (o (with-output-to-string (stream)
+              (princ condition stream)
+              (fresh-line stream)
+              (write-string (or timer-backtrace (backtrace-string condition))
+                            stream))))
+    ;; A timer's handle-function shows the original error, not a timer-error.
+    (report-error condition
+                  (or timer-backtrace (ignore-errors (safe-backtrace)))
+                  (if (or (typep condition 'timer-error) (running-timer-p))
+                      :timer
+                      :command))
     (funcall 'pop-up-typeout-window
              (make-buffer "*EDITOR ERROR*")
              :function (lambda (stream)
@@ -155,9 +200,11 @@
 (defun call-background-job (function cont)
   (bt2:make-thread
    (lambda ()
-     (let ((error-text))
+     (let ((error-text)
+           (backtrace))
        (handler-case
            (handler-bind ((error (lambda (c)
+                                   (setf backtrace (ignore-errors (safe-backtrace)))
                                    (setf error-text
                                          (with-output-to-string (stream)
                                            (princ c stream)
@@ -167,8 +214,9 @@
                                             :count 100))))))
              (let ((result (funcall function)))
                (send-event (lambda () (funcall cont result)))))
-         (error ()
+         (error (condition)
            (send-event (lambda ()
+                         (report-error condition backtrace :background-job)
                          (let ((buffer (make-buffer "*BACKGROUND JOB ERROR*")))
                            (erase-buffer buffer)
                            (insert-string (buffer-point buffer)

@@ -15,6 +15,7 @@
                "lem-clojure-mode"
                "lem-typst-mode"
                "lem-terminal"
+               "lem-incident-recorder"
                "cl-ansi-text"
                "trivial-package-local-nicknames"
                "rove"
@@ -69,6 +70,7 @@
                (:file "isearch")
                (:file "self-insert-command")
                (:file "interp")
+               (:file "incident-recorder")
                (:file "input")
                (:file "file")
                (:file "scala-mode")

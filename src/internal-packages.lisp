@@ -33,6 +33,7 @@
   (:use :cl
         :lem/common/killring
         :lem/common/timer
+        :lem/common/backtrace
         :lem/common/command
         :lem/common/color
         :lem/common/queue
@@ -564,6 +565,7 @@
   (:export
    :*editor-abort-hook*
    :*exit-editor-hook*
+   :*error-report-hook*
    :exit-editor
    :interactive-p
    :continue-flag
