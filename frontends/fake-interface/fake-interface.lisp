@@ -139,9 +139,12 @@
              (setf (current-buffer) (window-buffer (current-window)))
              (funcall function))
         ;; teardown-frame removes the frame from *frames*.  A frame never
-        ;; set up (make-frame alone) has no windows to tear down.
-        (dolist (frame (copy-list (all-frames)))
-          (when (frame-window-tree frame)
+        ;; set up (make-frame alone) has no windows to tear down; it is
+        ;; dropped first, as it may hold the header windows of the others,
+        ;; which are freed with the last frame that has them.
+        (let ((frames (copy-list (all-frames))))
+          (setf lem-core::*frames* (remove-if-not #'frame-window-tree frames))
+          (dolist (frame (copy-list (all-frames)))
             (teardown-frame frame)))))))
 
 (defmacro with-fake-interface (() &body body)

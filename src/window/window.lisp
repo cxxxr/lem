@@ -338,27 +338,29 @@ to the frame again (balance-windows, a resize of the display)."
     (setf (frame-window-tree frame) window)))
 
 (defun teardown-windows (frame)
-  "Free the windows of FRAME: the window tree, the floating windows, the side
-windows and the header windows that no other frame has."
-  ;; A side window is a floating window too: free it once.
-  (mapc #'%free-window
-        (remove-duplicates (append (window-list frame)
-                                   (frame-floating-windows frame)
-                                   (remove nil
-                                           (list (frame-leftside-window frame)
-                                                 (frame-rightside-window frame)
-                                                 (frame-bottomside-window frame))))))
-  ;; make-frame gives each new frame the header windows of the current one
-  ;; (each frame-multiplexer tab has the tab bar): free a header window with
-  ;; the last frame that has it.
-  (dolist (header (frame-header-windows frame))
-    (unless (or (window-deleted-p header)
-                (some (lambda (other)
-                        (and (not (eq other frame))
-                             (member header (frame-header-windows other))))
-                      (all-frames)))
-      (%free-window header)
-      (setf (window-deleted-p header) t)))
+  "Free the windows of FRAME: the window tree, the floating windows (side
+windows among them) and the header windows that no other frame has.
+Each is freed once and marked deleted, so that a later delete-window does
+nothing.  Attached windows are not freed."
+  (flet ((free (window)
+           (unless (window-deleted-p window)
+             (%free-window window)
+             (setf (window-deleted-p window) t))))
+    ;; A side window is a floating window too: FREE skips it the second time.
+    (mapc #'free (window-list frame))
+    (mapc #'free (frame-floating-windows frame))
+    (mapc #'free (remove nil (list (frame-leftside-window frame)
+                                   (frame-rightside-window frame)
+                                   (frame-bottomside-window frame))))
+    ;; make-frame gives each new frame the header windows of the current one
+    ;; (each frame-multiplexer tab has the tab bar): free a header window with
+    ;; the last frame that has it.
+    (dolist (header (frame-header-windows frame))
+      (unless (some (lambda (other)
+                      (and (not (eq other frame))
+                           (member header (frame-header-windows other))))
+                    (all-frames))
+        (free header))))
   (values))
 
 (defun adjust-view-point (window)

@@ -423,26 +423,51 @@
 (defun window-points (window)
   (list (lem:window-view-point window) (lem-core::%window-point window)))
 
-(deftest teardown-frame/frees-bottom-side-and-header-windows
+(defun call-recording-freed-windows (function)
+  "Call FUNCTION with the windows freed during it recorded, and return them."
+  (let ((freed '())
+        (original (fdefinition 'lem-core::%free-window)))
+    ;; lem-core is a locked package on SBCL.
+    (#+sbcl sb-ext:without-package-locks #-sbcl progn
+      (unwind-protect
+           (progn
+             (setf (fdefinition 'lem-core::%free-window)
+                   (lambda (window)
+                     (push window freed)
+                     (funcall original window)))
+             (funcall function))
+        (setf (fdefinition 'lem-core::%free-window) original)))
+    freed))
+
+(deftest teardown-frame/frees-side-and-header-windows-once
   (lem:with-current-buffers ()
-    (let ((shown (lem:make-buffer "shown"))
-          (bottom-points '())
-          (header-points '()))
-      (with-fake-interface ()
-        (let* ((bottom (lem:make-bottomside-window shown))
-               (header (make-instance 'lem:header-window :buffer shown))
-               ;; As frame-multiplexer's new tabs: the new frame gets the header windows.
-               (other (lem:make-frame (lem:current-frame))))
-          (lem:setup-frame other (lem:make-buffer "other"))
-          (setf bottom-points (window-points bottom)
-                header-points (window-points header))
-          (ok (every (lambda (point) (buffer-has-point-p shown point))
-                     (append bottom-points header-points)))
-          (testing "a header window another frame still has is kept"
-            (lem:teardown-frame other)
-            (ng (lem-core::window-deleted-p header))
-            (ok (every (lambda (point) (buffer-has-point-p shown point))
-                       header-points)))))
-      (testing "the points of the bottom side and header windows are deleted"
+    (let* ((shown (lem:make-buffer "shown"))
+           (windows '())
+           (header-points '())
+           (freed
+             (call-recording-freed-windows
+              (lambda ()
+                (with-fake-interface ()
+                  (lem:make-leftside-window shown)
+                  (lem:make-bottomside-window shown)
+                  (let* ((header (make-instance 'lem:header-window :buffer shown))
+                         ;; As frame-multiplexer's new tabs: the new frames get
+                         ;; the header windows; one is never set up.
+                         (other (lem:make-frame (lem:current-frame))))
+                    (lem:make-frame (lem:current-frame))
+                    (lem:setup-frame other (lem:make-buffer "other"))
+                    (setf windows (list header
+                                        (lem:frame-leftside-window (lem:current-frame))
+                                        (lem:frame-bottomside-window (lem:current-frame)))
+                          header-points (window-points header))
+                    (testing "a header window another frame still has is kept"
+                      (lem:teardown-frame other)
+                      (ng (lem-core::window-deleted-p header))
+                      (ok (every (lambda (point) (buffer-has-point-p shown point))
+                                 header-points)))))))))
+      (testing "the side and header windows are freed, each once"
+        (ok (every (lambda (window) (= 1 (count window freed))) windows))
+        (ok (= (length freed) (length (remove-duplicates freed)))))
+      (testing "the points of the header window are deleted"
         (ok (notany (lambda (point) (buffer-has-point-p shown point))
-                    (append bottom-points header-points)))))))
+                    header-points))))))
