@@ -51,10 +51,14 @@ Look for an existing issue too: `gh issue list -R cxxxr/lem --search
 ## 3. Reproduce it
 
 Find the failing function from the backtrace (skip the frames of the error
-machinery: `SB-*`, `UIOP`, `BACKTRACE-STRING`, `POP-UP-BACKTRACE`,
-`BAILOUT`). `recent_commands` tells what the user did: the commands, their
-keys, and how many times in a row (`SELF-INSERT` keeps no keys, so the typed
-text is unknown). `buffer` gives the major mode, the minor modes, the file
+machinery: `SB-*`, `SAFE-BACKTRACE` (frame 0 of every incident),
+`REPORT-ERROR`, `POP-UP-BACKTRACE`, `BAILOUT`, `CALL-TIMER-FUNCTION`,
+`CALL-BACKGROUND-JOB`, `RECORD-INCIDENT`). `recent_commands` tells what the
+user did: the commands, their keys, and how many times in a row. Keys that
+type or delete text (characters, `Space`, `Return`, `Tab`, `Backspace`) are
+not kept, whatever the command, so `keys` is null for them and the typed
+text is unknown. A timer's error is recorded as the error the timer
+function signalled, not as `TIMER-ERROR`. `buffer` gives the major mode, the minor modes, the file
 type and the line count.
 
 - Write a Rove test that fails the same way (same condition type at the same
