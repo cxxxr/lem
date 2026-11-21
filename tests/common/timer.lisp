@@ -292,5 +292,6 @@ editor reads the global manager) goes on as before."
            (not (null (compute-applicable-methods
                        #'send-timer-notification
                        (list timer-manager (lambda ())))))))
+    ;; (lem-timer-manager is internal to lem-core: only the editor makes one.)
     (ok (has-a-method-p (make-instance 'lem-core::lem-timer-manager)))
     (ok (not (has-a-method-p (make-instance 'timer-manager))))))

@@ -17,6 +17,8 @@
     (with-implementation outer
       (with-implementation inner
         (ok (eq inner (bt2:join-thread (bt2:make-thread #'implementation))))
+        ;; (*implementation* is internal to lem-core; its entry is what the
+        ;; shim binds, which (implementation) on SBCL does not show.)
         (testing "one entry, so that a shim that binds every entry agrees"
           (ok (equal (list inner)
                      (mapcar #'cdr
