@@ -22,11 +22,15 @@
 #include <sys/resource.h>
 #ifdef __linux__
   #include <sys/syscall.h>
+  /* Headers older than Linux 5.9 (the Dockerfile's) lack it; the number is
+     the same on every architecture, and an older kernel gives ENOSYS. */
+  #ifndef SYS_close_range
+    #define SYS_close_range 436
+  #endif
 #endif
 #include <termios.h>
 
 #ifdef __APPLE__
-  #include <util.h>
   #include <libproc.h>
   #include <crt_externs.h>
 #elif __FreeBSD__
@@ -35,9 +39,6 @@
   #include <sys/sysctl.h>
   #include <sys/user.h>
   #include <termios.h>
-  #include <libutil.h>
-#else
-  #include <pty.h>
 #endif
 
 ///
@@ -94,21 +95,27 @@ static int open_pty(int *master_out, int *slave_out, int rows, int cols)
 }
 
 /* The path execvp would run for PROGRAM, looked up in the parent so the child
-   only has to call execve.  NULL when it is not found. */
-static char *find_program(const char *program)
+   only has to call execve.  NULL when it is not found, with *ERR telling why:
+   EACCES when a file was found but cannot be executed (as execvp reports),
+   ENOENT when there is none, ENOMEM. */
+static char *find_program(const char *program, int *err)
 {
+  *err = ENOMEM;
   if (strchr(program, '/'))
     return strdup(program);
   const char *path = getenv("PATH");
   if (path == NULL)
     path = "/bin:/usr/bin";
   size_t len = strlen(program);
+  *err = ENOENT;
   for (const char *dir = path; ; ) {
     const char *end = strchr(dir, ':');
     size_t dlen = end ? (size_t)(end - dir) : strlen(dir);
     char *candidate = malloc(dlen + len + 3);
-    if (candidate == NULL)
+    if (candidate == NULL) {
+      *err = ENOMEM;
       return NULL;
+    }
     if (dlen == 0) {
       strcpy(candidate, "./");
     } else {
@@ -118,9 +125,11 @@ static char *find_program(const char *program)
     }
     strcat(candidate, program);
     struct stat st;
-    if (access(candidate, X_OK) == 0 && stat(candidate, &st) == 0
-        && S_ISREG(st.st_mode))
-      return candidate;
+    if (stat(candidate, &st) == 0 && S_ISREG(st.st_mode)) {
+      if (access(candidate, X_OK) == 0)
+        return candidate;
+      *err = EACCES;
+    }
     free(candidate);
     if (end == NULL)
       return NULL;
@@ -154,14 +163,15 @@ static char **make_sh_argv(char *path, char *const argv[])
   size_t n = 0;
   while (argv[n] != NULL)
     n++;
-  char **sh_argv = malloc((n + 2) * sizeof(char *));
+  char **sh_argv = malloc((n + 3) * sizeof(char *));
   if (sh_argv == NULL)
     return NULL;
   static char sh[] = "/bin/sh";
   sh_argv[0] = sh;
   sh_argv[1] = path;
-  for (size_t i = 1; i <= n; i++)
+  for (size_t i = 1; i < n; i++)
     sh_argv[i + 1] = argv[i];
+  sh_argv[n > 0 ? n + 1 : 2] = NULL;
   return sh_argv;
 }
 
@@ -171,7 +181,7 @@ static char **make_sh_argv(char *path, char *const argv[])
    parent, as getrlimit is not async-signal-safe. */
 static void close_other_fds(int max_fd)
 {
-#if defined(__linux__) && defined(SYS_close_range)
+#if defined(__linux__)
   if (syscall(SYS_close_range, 3U, ~0U, 0U) == 0)
     return;
 #elif defined(__FreeBSD__)
@@ -182,7 +192,9 @@ static void close_other_fds(int max_fd)
     close(fd);
 }
 
-/* The highest descriptor number the child may have to close. */
+/* The highest descriptor number the child may have to close where it closes
+   them one by one (macOS, Linux before 5.9).  Capped, as the soft limit can
+   be a million: descriptors above the cap are left open there. */
 static int fd_limit(void)
 {
   struct rlimit rl;
@@ -236,7 +248,8 @@ static run_shell_result run_shell(int rows, int cols, const char *program, char*
   if (open_pty(&master, &slave, rows, cols) != 0)
     return result;
 
-  char *path = find_program(program);
+  int lookup_error;
+  char *path = find_program(program, &lookup_error);
   char **envp = make_child_environment();
   char **sh_argv = path ? make_sh_argv(path, argv) : NULL;
   if (envp == NULL || (path != NULL && sh_argv == NULL)) {
@@ -258,8 +271,20 @@ static run_shell_result run_shell(int rows, int cols, const char *program, char*
     dup2(slave, 0);
     dup2(slave, 1);
     dup2(slave, 2);
+    /* dup2 onto itself keeps close-on-exec: clear it when the slave is one
+       of 0-2 already. */
+    if (slave <= 2)
+      fcntl(slave, F_SETFD, 0);
+    /* Exec resets caught signals but keeps ignored ones (SBCL ignores
+       SIGPIPE) and the mask of the thread that forked. */
+    for (int sig = 1; sig < NSIG; sig++)
+      if (sig != SIGKILL && sig != SIGSTOP)
+        signal(sig, SIG_DFL);
+    sigset_t none;
+    sigemptyset(&none);
+    sigprocmask(SIG_SETMASK, &none, NULL);
     close_other_fds(max_fd);
-    int err = ENOENT;
+    int err = lookup_error;
     if (path != NULL) {
       execve(path, argv, envp);
       err = errno;
@@ -684,7 +709,7 @@ void terminal_wake(struct terminal *terminal)
 void terminal_delete(struct terminal *terminal)
 {
   if (!try_reap(terminal)) {
-    /* forkpty made the child a session leader, so -pid addresses its whole
+    /* run_shell made the child a session leader, so -pid addresses its whole
        process group (the shell and its foreground job). */
     kill(-terminal->pid, SIGHUP);
     kill(terminal->pid, SIGHUP);
