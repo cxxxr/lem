@@ -404,19 +404,27 @@ of every frame, including their floating and side windows, to another buffer."
     (frame-multiplexer-init)
     (setf *frame-buffer-list-function* 'workspace-buffer-list)))
 
+(defun free-hidden-frames (virtual-frame)
+  "Tear down the frames of VIRTUAL-FRAME's tabs but the one shown: once its
+table is forgotten they cannot be reached again, and would stay in
+all-frames.  An error freeing one is logged and the others are freed still:
+turning frame-multiplexer off (at exit too) must not stop halfway for frames
+nobody can see."
+  (dolist (frame (virtual-frame-frames virtual-frame))
+    (unless (eq frame (virtual-frame-current virtual-frame))
+      (handler-case (teardown-frame frame)
+        (error (condition)
+          (log:error "freeing a frame of a hidden tab: ~A" condition))))))
+
 (defun frame-multiplexer-off ()
   (when (enabled-frame-multiplexer-p)
-    (maphash (lambda (k v)
-               (declare (ignore k))
-               ;; The other tabs cannot be reached again once the table is
-               ;; cleared: free their frames, which would stay in all-frames.
-               (dolist (frame (virtual-frame-frames v))
-                 (unless (eq frame (virtual-frame-current v))
-                   (teardown-frame frame)))
-               (delete-window v))
-             *virtual-frame-map*)
-    (clrhash *virtual-frame-map*)
-    (setf *frame-buffer-list-function* nil)))
+    (let ((virtual-frames (alexandria:hash-table-values *virtual-frame-map*)))
+      (unwind-protect
+           (dolist (virtual-frame virtual-frames)
+             (unwind-protect (free-hidden-frames virtual-frame)
+               (delete-window virtual-frame)))
+        (clrhash *virtual-frame-map*)
+        (setf *frame-buffer-list-function* nil)))))
 
 (defclass frame-multiplexer-advice () ())
 

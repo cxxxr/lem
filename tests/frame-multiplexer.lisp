@@ -308,3 +308,21 @@ counts, in the order of NAMES."
         (ok (equal (list shown) (all-frames))
             "the tabs that cannot be reached again are torn down")
         (ok (eq shown (current-frame)) "the frame shown stays")))))
+
+(deftest turning-it-off-completes-when-a-tab-cannot-be-freed
+  (with-frame-multiplexer ()
+    (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+    (let ((hidden (current-frame)))
+      (lem/frame-multiplexer:frame-multiplexer-prev)
+      (let ((shown (current-frame)))
+        ;; freeing the hidden tab's windows signals
+        (setf (frame-window-tree hidden) :not-a-window)
+        (lem/frame-multiplexer::disable-frame-multiplexer)
+        (ng (variable-value 'lem/frame-multiplexer::frame-multiplexer :global)
+            "frame-multiplexer is off")
+        (ok (equal (list shown) (all-frames)) "the hidden tab is forgotten")
+        (ok (eq shown (current-frame)))
+        (ng (some (lambda (window)
+                    (typep window 'lem/frame-multiplexer::virtual-frame))
+                  (frame-header-windows shown))
+            "the tab bar is gone")))))

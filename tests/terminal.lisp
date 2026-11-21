@@ -647,3 +647,41 @@ tests/frame-multiplexer.lisp does)."
          (ok (equal text (lem:line-string (lem:window-point other)))
              "the other window's point is still on its line"))))
    :script "seq 1 100; sleep 30"))
+
+(defun call-with-history-read-in-another-tab (function)
+  "Call FUNCTION with BUFFER, its terminal shown on the screen in the first
+tab's WINDOW, while a second tab, the current one, reads its history."
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (call-with-frame-multiplexer
+      (lambda ()
+        (lem-terminal/terminal-mode::resize-terminal (buffer-terminal buffer) window)
+        (ok (wait-for-output buffer))
+        (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+        (lem:switch-to-buffer buffer)
+        (let ((reader (lem:current-window)))
+          (lem-terminal/terminal-mode::show-screen-top
+           reader (- (lem:buffer-nlines buffer)
+                     (lem-terminal/terminal::terminal-rows (buffer-terminal buffer))))
+          (wheel reader 1)
+          (ok (copy-mode-p buffer) "the second tab reads the history"))
+        (funcall function buffer window))))))
+
+(deftest deleting-the-tab-reading-the-history-lets-the-terminal-run-on
+  (call-with-history-read-in-another-tab
+   (lambda (buffer window)
+     (declare (ignore window))
+     (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-delete nil)
+     (ok (not (copy-mode-p buffer)) "the first tab shows the screen: the terminal runs on"))))
+
+(deftest turning-the-tabs-off-lets-the-terminal-run-on
+  (call-with-history-read-in-another-tab
+   (lambda (buffer window)
+     (declare (ignore window))
+     (lem/frame-multiplexer:frame-multiplexer-prev)
+     (ok (copy-mode-p buffer) "the second tab, hidden, still reads the history")
+     ;; turning the tabs off keeps the first tab, the one shown
+     (lem:call-command 'lem/frame-multiplexer:toggle-frame-multiplexer nil)
+     (ok (not (copy-mode-p buffer)) "the terminal runs on"))))
