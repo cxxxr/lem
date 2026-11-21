@@ -51,11 +51,16 @@ left by a non-local exit (the process quitting)."
   (handler-case
       (handler-bind ((serious-condition
                        (lambda (condition)
-                         (handler-case
-                             (log:error "Tearing down the editor failed: ~A~%~A"
-                                        condition
-                                        (lem/common/backtrace:safe-backtrace))
-                           (serious-condition () nil)))))
+                         ;; (No backtrace after a storage condition: little
+                         ;; stack is left to walk it with.)
+                         (let ((backtrace
+                                 (unless (typep condition 'storage-condition)
+                                   (ignore-errors
+                                    (lem/common/backtrace:safe-backtrace)))))
+                           (handler-case
+                               (log:error "Tearing down the editor failed: ~A~@[~%~A~]"
+                                          condition backtrace)
+                             (serious-condition () nil))))))
         (teardown))
     (serious-condition () nil))
   (setf *in-the-editor* nil)
@@ -107,9 +112,10 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
      (lambda ()
        (when initialize (funcall initialize))
        ;; When the command loop returns, end-editor ends the editor and the
-       ;; frontend; nothing of this thread changes *in-the-editor* after it,
-       ;; as the next editor may have started.  When the loop is left by a
-       ;; non-local exit (the process quitting), only the flag is cleared.
+       ;; frontend; nothing of this thread changes *in-the-editor* after it
+       ;; has finalized, as the next editor may have started.  When the loop
+       ;; or the teardown is left by a non-local exit (the process quitting),
+       ;; only the flag is cleared.
        (let ((ended nil))
          (unwind-protect
               (let (#+lispworks (lw:*default-character-element-type* 'character))
@@ -117,9 +123,13 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
                   (set-global-timer-manager (make-instance 'lem-timer-manager))
                   (setf *in-the-editor* t)
                   (setup)
-                  (let ((report (toplevel-command-loop (lambda () (init args)))))
-                    (setf ended t)
-                    (end-editor report finalize))))
+                  (end-editor (toplevel-command-loop (lambda () (init args)))
+                              ;; ENDED once end-editor has cleared the flag:
+                              ;; a teardown left by a non-local exit clears
+                              ;; it below.
+                              (lambda (report)
+                                (setf ended t)
+                                (when finalize (funcall finalize report))))))
            (unless ended
              (setf *in-the-editor* nil)))))
      :name "editor")))
