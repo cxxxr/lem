@@ -1,0 +1,150 @@
+#!/bin/sh
+# Verify a change to Lem: run tests, recompile changed files, and drive a real
+# ncurses Lem in tmux.  See SKILL.md next to this script.
+#
+#   verify base                 print the branch the change is compared with
+#   verify diff                 the change: git diff from that branch, and uncommitted changes
+#   verify tests [--fresh] [PACKAGE...]
+#                               Rove packages of lem-tests (all of lem-tests if none);
+#                               --fresh compiles the tests again (after switching code versions)
+#   verify compile [FILE...]    recompile files (changed .lisp files if none), report warnings
+#   verify build                build the ncurses Lem into $LEM_VERIFY_DIR/lem
+#   verify start [ARG...]       start that Lem in tmux, in $LEM_VERIFY_DIR/work
+#   verify keys KEY...          send keys (tmux send-keys syntax: C-x, M-x, Enter, "text")
+#   verify screen               print the screen
+#   verify tmux ARG...          tmux on this Lem's socket (e.g. resize-window -x 80 -y 24)
+#   verify stop                 quit Lem and tmux
+#   verify worktree REV         a git worktree of REV (e.g. the code before a fix) with
+#                               .qlot and this skill, in $LEM_VERIFY_DIR/worktree-REV;
+#                               run its own verify there with another LEM_VERIFY_DIR
+#
+# Exit status: 0 when the check passed, 1 when it failed, 2 for a usage error.
+#
+# Environment:
+#   LEM_VERIFY_DIR   working directory (default: ${TMPDIR:-/tmp}/lem-verify-$(id -u))
+#   LEM_VERIFY_BASE  branch changed files are compared with (default: cxxxr/staging,
+#                    origin/staging, staging, origin/main, main: the first that exists)
+#   LEM_VERIFY_SIZE  terminal size for start (default: 100x30)
+set -eu
+
+repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+here="$repo/.claude/skills/verify"
+dir=${LEM_VERIFY_DIR:-${TMPDIR:-/tmp}/lem-verify-$(id -u)}
+# One tmux server and one compile cache per LEM_VERIFY_DIR, so that runs
+# with different directories do not disturb each other.
+socket=lem-verify-$(printf %s "$dir" | cksum | cut -d' ' -f1)
+mkdir -p "$dir/work" "$dir/home"
+
+lisp() {
+    # Run SBCL in the repository with Quicklisp from qlot and the verify helpers.
+    (cd "$repo" && VERIFY_REPO="$repo/" VERIFY_CACHE="$dir/cache/" \
+        sbcl --noinform --non-interactive \
+        --load .qlot/setup.lisp \
+        --load "$here/lisp/common.lisp" \
+        --load "$here/lisp/$1")
+}
+
+base_branch() {
+    # Remote branches first: a local staging or main is often behind.
+    if [ -n "${LEM_VERIFY_BASE:-}" ]; then echo "$LEM_VERIFY_BASE"; return; fi
+    for ref in cxxxr/staging origin/staging staging origin/main main; do
+        if git -C "$repo" rev-parse -q --verify "$ref" >/dev/null; then echo "$ref"; return; fi
+    done
+    echo HEAD
+}
+
+changed_lisp_files() {
+    base=$1
+    {
+        git -C "$repo" diff --name-only --diff-filter=d "$base"...HEAD
+        git -C "$repo" diff --name-only --diff-filter=d HEAD
+        git -C "$repo" ls-files --others --exclude-standard
+    } | grep '\.lisp$' | grep -v '^frontends/clysm/' | grep -v '^\.claude/' | sort -u
+}
+
+case "${1:-}" in
+    base)
+        base_branch
+        ;;
+    diff)
+        base=$(base_branch)
+        echo "# git diff $base...HEAD, then uncommitted changes" >&2
+        git -C "$repo" diff "$base"...HEAD
+        git -C "$repo" diff HEAD
+        ;;
+    tests)
+        shift
+        fresh=
+        if [ "${1:-}" = --fresh ]; then fresh=1; shift; fi
+        VERIFY_FRESH=$fresh VERIFY_SUITES="$*" lisp run-tests.lisp
+        ;;
+    compile)
+        shift
+        files="$*"
+        if [ -z "$files" ]; then
+            base=$(base_branch)
+            echo "changed from $base (fetch it if it is behind):" >&2
+            files=$(changed_lisp_files "$base")
+            [ -z "$files" ] || echo "$files" | sed 's/^/  /' >&2
+        fi
+        if [ -z "$files" ]; then echo "no changed .lisp files"; exit 0; fi
+        mkdir -p "$dir/fasl"
+        VERIFY_FILES="$files" VERIFY_FASL_DIR="$dir/fasl/" lisp compile-check.lisp
+        ;;
+    build)
+        VERIFY_BINARY="$dir/lem" lisp build-ncurses.lisp >"$dir/build.log" 2>&1 || {
+            tail -40 "$dir/build.log"; exit 1; }
+        [ -x "$dir/lem" ] || { tail -40 "$dir/build.log"; exit 1; }
+        echo "built $dir/lem (log: $dir/build.log)"
+        ;;
+    start)
+        shift
+        [ -x "$dir/lem" ] || { echo "run 'verify build' first" >&2; exit 1; }
+        tmux -L "$socket" kill-server 2>/dev/null || true
+        size=${LEM_VERIFY_SIZE:-100x30}
+        # No DISPLAY/WAYLAND_DISPLAY: copy and paste must not touch the user's
+        # clipboard.  LEM_HOME must end with "/".
+        (cd "$dir/work" && env -u DISPLAY -u WAYLAND_DISPLAY LEM_HOME="$dir/home/" \
+            tmux -L "$socket" new-session -d -x "${size%x*}" -y "${size#*x}" \
+            "$dir/lem" "$@")
+        sleep 2
+        tmux -L "$socket" capture-pane -p
+        ;;
+    keys)
+        shift
+        for key in "$@"; do
+            tmux -L "$socket" send-keys "$key"
+            sleep 0.3
+        done
+        sleep 0.5
+        ;;
+    screen)
+        tmux -L "$socket" capture-pane -p
+        ;;
+    tmux)
+        shift
+        tmux -L "$socket" "$@"
+        ;;
+    stop)
+        tmux -L "$socket" kill-server 2>/dev/null || true
+        ;;
+    worktree)
+        rev=${2:?usage: verify worktree REV}
+        path="$dir/worktree-$(git -C "$repo" rev-parse --short "$rev")"
+        if [ ! -d "$path" ]; then
+            git -C "$repo" worktree add -q --detach "$path" "$rev"
+            # A copy, not a symlink: qlot finds the project from .qlot's location.
+            cp -r "$repo/.qlot" "$path/"
+            mkdir -p "$path/.claude/skills"
+            rm -rf "$path/.claude/skills/verify"
+            cp -r "$here" "$path/.claude/skills/"
+        fi
+        echo "$path"
+        echo "use: LEM_VERIFY_DIR=$path-verify $path/.claude/skills/verify/verify ..." >&2
+        echo "remove: git worktree remove --force $path; rm -rf $path-verify" >&2
+        ;;
+    *)
+        sed -n '2,/^[^#]/{/^#/p}' "$0" | sed 's/^# \{0,1\}//'
+        exit 2
+        ;;
+esac

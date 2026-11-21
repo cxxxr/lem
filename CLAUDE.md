@@ -74,6 +74,18 @@ This project uses code-contractor for automated PR review. code-contractor is a 
 - Modes register via `define-major-mode` / `define-minor-mode`
 - Commands register via `define-command` with argument descriptors
 
+## Verification
+
+- Verification means running the change: before committing Lisp code, use the
+  `verify` skill (`.claude/skills/verify/`) to recompile the changed files, run
+  the relevant tests, and use the change in a real Lem through tmux.
+- Run the items of `.claude/skills/verify/checklist.md` whose trigger matches
+  the diff. When a bug gets past verification or review, add an item there.
+- A check that still fails after three rounds of fixes goes back to the user.
+- Do not make a flaky test pass with sleeps, retries or skips; find out why it
+  depends on timing or on other tests.
+- Reviews follow `REVIEW.md`.
+
 ## Configuration
 
 User config locations (in order):
