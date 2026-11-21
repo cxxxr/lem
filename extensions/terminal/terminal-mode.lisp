@@ -421,7 +421,25 @@ from the screen does nothing: there is nothing below it."
      (terminal-input))))
 
 (defun window-text-rows (window)
-  (- (window-height window) (if (window-use-modeline-p window) 1 0)))
+  (max 1 (- (window-height window) (if (window-use-modeline-p window) 1 0))))
+
+(defun frame-shown-windows ()
+  "The windows of the current frame: the tiled ones, the floating ones and the
+side windows (a side window is usually, not always, floating too)."
+  (let ((frame (current-frame)))
+    (remove-duplicates
+     (append (window-list)
+             (frame-floating-windows frame)
+             (remove nil (list (frame-leftside-window frame)
+                               (frame-rightside-window frame)
+                               (frame-bottomside-window frame)))))))
+
+(defun reading-history-p (buffer terminal)
+  "True while BUFFER's TERMINAL is frozen for its history to be read: by the
+wheel, or in terminal-copy-mode.  It is not resized then: a resize reflows
+the screen under the copy being read."
+  (or (terminal:frozen-scrollback-lines terminal)
+      (eq (buffer-major-mode buffer) 'terminal-copy-mode)))
 
 (defun resize-terminal (terminal window)
   "Fit TERMINAL to the smallest window of the current frame showing WINDOW's
@@ -439,14 +457,17 @@ FIT-SHOWN-TERMINALS)."
 (defun fit-shown-terminals ()
   "Fit each terminal shown in the current frame to its windows there, after
 every command: the command may have shown another tab, or split or closed a
-window, without the current buffer being the terminal."
+window, without the current buffer being the terminal.  A terminal whose
+history is being read is left as it is (see READING-HISTORY-P), until a
+command after it runs on."
   (let ((seen '()))
-    (dolist (window (append (window-list) (frame-floating-windows (current-frame))))
+    (dolist (window (frame-shown-windows))
       (let ((buffer (window-buffer window)))
         (unless (member buffer seen)
           (push buffer seen)
           (alexandria:when-let ((terminal (buffer-terminal buffer)))
-            (resize-terminal terminal window)))))))
+            (unless (reading-history-p buffer terminal)
+              (resize-terminal terminal window))))))))
 
 (define-command terminal-resize () ()
   (alexandria:when-let ((terminal (get-current-terminal))
@@ -467,7 +488,10 @@ window, without the current buffer being the terminal."
     (paste string)))
 
 (defun on-window-size-change (window)
-  (alexandria:when-let (terminal (buffer-terminal (window-buffer window)))
+  ;; Not for a window of a hidden frame (a display resize resizes every
+  ;; tab's windows): the terminal fits the windows shown.
+  (alexandria:when-let (terminal (and (member window (frame-shown-windows))
+                                      (buffer-terminal (window-buffer window))))
     (resize-terminal terminal window)))
 
 (add-hook *window-size-change-functions*

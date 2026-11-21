@@ -728,7 +728,13 @@ tab's WINDOW, while a second tab, the current one, reads its history."
             ;; any command fits the terminals shown
             (lem:call-command 'lem:recenter nil)
             (ok (= (lem:window-width side) (lem-terminal/terminal::terminal-cols terminal))
-                "as narrow as the side window"))
+                "as narrow as the side window")
+            (ok (= (min (if (lem:window-use-modeline-p side)
+                            (1- (lem:window-height side))
+                            (lem:window-height side))
+                        (1- (lem:window-height (lem:current-window))))
+                   (lem-terminal/terminal::terminal-rows terminal))
+                "as tall as the shorter window, mode lines left out"))
        (lem:delete-rightside-window)))))
 
 (deftest the-terminal-fits-the-windows-of-the-tab-shown
@@ -794,3 +800,28 @@ tab's WINDOW, while a second tab, the current one, reads its history."
               (- (lem:buffer-nlines buffer) (lem-terminal/terminal::terminal-rows terminal)))
            "the other window comes back to the screen, not to the oldest line")))
    :script "seq 1 100; sleep 30"))
+
+(deftest a-terminal-whose-history-is-read-is-not-resized-by-another-tab
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (call-with-frame-multiplexer
+      (lambda ()
+        (let ((terminal (buffer-terminal buffer)))
+          (lem-terminal/terminal-mode::resize-terminal terminal window)
+          (ok (wait-for-output buffer))
+          ;; the second tab shows the terminal in a smaller window
+          (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+          (lem:split-window-vertically (lem:current-window))
+          (lem:with-current-window (lem:get-next-window (lem:current-window))
+            (lem:switch-to-buffer buffer))
+          (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-prev nil)
+          (let ((tall (lem-terminal/terminal::terminal-rows terminal)))
+            (wheel window 1)
+            (ok (copy-mode-p buffer) "the first tab reads the history")
+            (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-next nil)
+            (ok (= tall (lem-terminal/terminal::terminal-rows terminal))
+                "the second tab shown, the terminal keeps its size")
+            (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-prev nil)
+            (ok (= tall (lem-terminal/terminal::terminal-rows terminal))))))))))
