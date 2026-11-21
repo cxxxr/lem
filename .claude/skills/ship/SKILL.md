@@ -113,6 +113,12 @@ completed, so jobs created late (`needs:`) are waited for too.
 | 4 | GitHub could not be read three polls in a row (network, `gh auth`, a wrong PR number); it prints gh's error | not a CI failure: fix the cause if it is yours (the PR number), else stop and tell the user |
 | 5 | the PR's head moved past `<SHA>` to a newer commit | someone pushed to the branch: stop and tell the user |
 
+A run that failed for a reason outside the change (a flaky runner) is retried
+with GitHub's "Re-run jobs" (`gh run rerun <run-id> --failed --repo cxxxr/lem`),
+which makes a new attempt of the same run. A new run of the workflow
+(`workflow_dispatch`, closing and reopening the PR) does not replace the
+failed one: `$S wait` keeps reading the failed run and exits 1 again.
+
 ## 6. Record the evidence
 
 After CI passed and just before the merge, so that it describes the SHA that
