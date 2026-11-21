@@ -83,11 +83,22 @@ dependency on the TRAMP extension is needed."
 (defun (setf buffer-terminal) (terminal buffer)
   (setf (buffer-value buffer 'terminal) terminal))
 
+(defun create-in-new-buffer (buffer &rest args)
+  "Start a terminal in BUFFER, just made for it, with ARGS for `terminal:create'.
+When `terminal:create' does not return (an editor-error when the terminal
+cannot start), BUFFER is deleted: no empty terminal buffer is left behind."
+  (let ((started nil))
+    (unwind-protect
+         (prog1 (apply #'terminal:create :cols 80 :rows 24 :buffer buffer args)
+           (setf started t))
+      ;; Lem on Clysm's create deletes a fresh buffer itself.
+      (unless (or started (deleted-buffer-p buffer))
+        (delete-buffer buffer)))))
+
 (defun make-terminal-buffer (buffer-directory)
   (declare (type (string) buffer-directory))
   (let* ((buffer (make-buffer (unique-buffer-name "*Terminal*") :enable-undo-p nil))
-         (terminal (terminal:create :cols 80 :rows 24 :buffer buffer
-                                    :directory buffer-directory)))
+         (terminal (create-in-new-buffer buffer :directory buffer-directory)))
     (setf (buffer-terminal buffer) terminal)
     ;; A local shell: its working directory is the buffer's directory.
     ;; Terminals running other commands (e.g. TRAMP's ssh) are not tracked.
@@ -113,9 +124,8 @@ Unlike `create-terminal', this launches an arbitrary command instead of the
 user's shell started in a directory."
   (declare (type (string) program))
   (let* ((buffer (make-buffer (unique-buffer-name name) :enable-undo-p nil))
-         (terminal (terminal:create :cols 80 :rows 24 :buffer buffer
-                                    :directory ""
-                                    :program program :argv argv)))
+         (terminal (create-in-new-buffer buffer :directory ""
+                                                :program program :argv argv)))
     (setf (buffer-terminal buffer) terminal)
     ;; Remembered so `terminal-restart' runs the same command again.
     (setf (buffer-value buffer 'terminal-command) (list program argv))
@@ -144,57 +154,51 @@ and returning to the same terminal would do nothing."
          (create-terminal-with-command program argv))
         ;; Local: reuse or create
         ((or always-create-terminal-p
-             (buffer-terminal buf)
-             (restart-failed-p buf))
+             (buffer-terminal buf))
          (create-terminal (buffer-directory buf)))
         (t
          (alexandria:if-let (buffer (terminal:find-terminal-buffer))
            (setf (current-window) (pop-to-buffer buffer))
            (create-terminal (buffer-directory buf))))))))
 
-(defun restart-failed-p (buffer)
-  "True when BUFFER's terminal was destroyed by a `terminal-restart' that then
-could not start a new one, and BUFFER is still a terminal buffer."
-  (and (buffer-value buffer 'restart-failed)
-       (member (buffer-major-mode buffer) '(terminal-mode terminal-copy-mode))))
-
 (define-command terminal-restart () ()
   "Start the terminal's command again in the current terminal buffer, after
-its process has exited.  The old output is discarded."
+its process has exited.  The old output is discarded once the new process has
+started; when it cannot start, the buffer is left as it was.  The old terminal
+is freed only then, so the restart needs room for a second PTY."
   (let* ((buffer (current-buffer))
          (old (buffer-terminal buffer)))
-    (unless (or old (restart-failed-p buffer))
+    (unless old
       (editor-error "Not a terminal buffer"))
-    (when (and old (not (terminal:process-exited-p old)))
+    (unless (terminal:process-exited-p old)
       (editor-error "Terminal process is still running"))
-    (when old
-      (terminal:destroy old))
-    ;; Its native state is freed: keep no reference to it if create fails.
-    (setf (buffer-terminal buffer) nil
-          (buffer-value buffer 'restart-failed) t)
-    (with-buffer-read-only buffer nil
-      (erase-buffer buffer))
-    (destructuring-bind (&optional program argv)
-        (buffer-value buffer 'terminal-command)
-      (setf (buffer-terminal buffer)
-            (terminal:create :cols 80 :rows 24 :buffer buffer
-                             :directory (if program "" (buffer-directory buffer))
-                             :program program :argv argv)
-            (buffer-value buffer 'restart-failed) nil))
-    (resize-terminal (buffer-terminal buffer) (current-window))))
+    (let ((new (destructuring-bind (&optional program argv)
+                   (buffer-value buffer 'terminal-command)
+                 (terminal:create :cols 80 :rows 24 :buffer buffer
+                                  :directory (if program "" (buffer-directory buffer))
+                                  :program program :argv argv))))
+      ;; The buffer owns the new terminal before the old one goes.  The old
+      ;; process has exited, so its I/O thread no longer renders.
+      (setf (buffer-terminal buffer) new)
+      (terminal:destroy old)
+      ;; The new terminal renders all its rows into the emptied buffer.
+      (with-buffer-read-only buffer nil
+        (erase-buffer buffer))
+      ;; From copy mode (C-x [), back to the mode that sends keys to it.
+      (unless (eq (buffer-major-mode buffer) 'terminal-mode)
+        (change-buffer-mode buffer 'terminal-mode))
+      (resize-terminal new (current-window)))))
 
 (defun get-current-terminal ()
   (buffer-terminal (current-buffer)))
 
 (defun get-current-live-terminal ()
-  "Return the current buffer's terminal, signalling `editor-error' when its
-process has already exited, or did not start (a failed `terminal-restart'),
-so there is nothing to send input to."
+  "Return the current buffer's terminal, signalling `editor-error' when it has
+none (a buffer put in terminal-mode by hand) or its process has already
+exited, so there is nothing to send input to."
   (let ((terminal (get-current-terminal)))
     (unless terminal
-      (if (restart-failed-p (current-buffer))
-          (editor-error "Terminal did not start (M-x terminal-restart to try again)")
-          (editor-error "Not a terminal buffer")))
+      (editor-error "Not a terminal buffer"))
     (when (terminal:process-exited-p terminal)
       (editor-error "Terminal process has exited"))
     terminal))
@@ -398,7 +402,7 @@ it."
      (call-next-method))
     ;; Once the process has exited the buffer is plain read-only text holding
     ;; the final screen, so let every other command behave as in any other buffer.
-    ;; The same holds when there is no terminal (its restart failed).
+    ;; The same holds when there is no terminal (terminal-mode set by hand).
     ((let ((terminal (get-current-terminal)))
        (or (null terminal) (terminal:process-exited-p terminal)))
      (call-next-method))

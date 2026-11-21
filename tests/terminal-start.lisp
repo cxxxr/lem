@@ -87,7 +87,7 @@ it in a test process, not in a Lem in use."
             "no I/O thread is started"))
       (skip "terminal.so is not built or is older than its failure handling")))
 
-(deftest a-failed-terminal-restart-keeps-no-freed-terminal
+(deftest a-failed-terminal-restart-leaves-the-buffer-as-it-was
   #-(and linux (or x86-64 arm64)) (skip "needs Linux on x86-64 or arm64")
   #+(and linux (or x86-64 arm64))
   (if (library-available-p)
@@ -98,36 +98,70 @@ it in a test process, not in a Lem in use."
                  (old (lem-terminal/terminal:create
                        :rows 24 :cols 80 :buffer buffer :directory ""
                        :program "/bin/sh" :argv (list "/bin/sh" "-c" "sleep 10")))
-                 (condition nil))
+                 (condition nil)
+                 (text nil))
             (lem:switch-to-buffer buffer)
             (lem-terminal/terminal-mode::terminal-mode)
             (setf (lem-terminal/terminal-mode::buffer-terminal buffer) old
                   ;; as when the process has exited, which terminal-restart needs
                   (lem-terminal/terminal::terminal-exit-status old) 0)
+            (lem:with-buffer-read-only buffer nil
+              (lem:insert-string (lem:buffer-point buffer) "the old output"))
+            (setf text (lem:buffer-text buffer))
+            ;; restarted from copy mode, as after C-x [
+            (lem-terminal/terminal-mode::terminal-copy-mode)
             (unwind-protect
-                 (call-with-no-free-fd
-                  (lambda ()
-                    (handler-case (lem-terminal/terminal-mode::terminal-restart)
-                      (lem:editor-error (c) (setf condition c)))))
+                 (progn
+                   (call-with-no-free-fd
+                    (lambda ()
+                      (handler-case (lem-terminal/terminal-mode::terminal-restart)
+                        (lem:editor-error (c) (setf condition c)))))
+                   (ok condition "terminal-restart signals editor-error")
+                   (ok (eq old (lem-terminal/terminal-mode::buffer-terminal buffer))
+                       "the buffer keeps its terminal")
+                   (ok (not (lem-terminal/terminal::terminal-dead old))
+                       "which is not destroyed")
+                   (ok (equal text (lem:buffer-text buffer)) "the old output stays")
+                   (lem-terminal/terminal-mode::terminal-restart)
+                   (let ((new (lem-terminal/terminal-mode::buffer-terminal buffer)))
+                     (ok (and new (not (eq new old))
+                              (not (lem-terminal/terminal:process-exited-p new)))
+                         "terminal-restart starts it once descriptors are free")
+                     (ok (lem-terminal/terminal::terminal-dead old)
+                         "and destroys the old terminal")
+                     (ok (eq 'lem-terminal/terminal-mode::terminal-mode
+                             (lem:buffer-major-mode buffer))
+                         "the buffer leaves copy mode, so keys go to the shell")))
               (lem-terminal/terminal:destroy old)
               (alexandria:when-let
                   ((new (lem-terminal/terminal-mode::buffer-terminal buffer)))
-                (unless (eq new old)
-                  (lem-terminal/terminal:destroy new))))
-            (ok condition "terminal-restart signals editor-error")
-            (ok (null (lem-terminal/terminal-mode::buffer-terminal buffer))
-                "the buffer keeps no reference to the destroyed terminal")
-            (ok (search "did not start"
-                        (handler-case (progn (lem-terminal/terminal-mode::terminal-input) "")
-                          (lem:editor-error (c) (princ-to-string c))))
-                "typing says the terminal did not start instead of failing on NIL")
-            (lem-terminal/terminal-mode::terminal-restart)
-            (let ((new (lem-terminal/terminal-mode::buffer-terminal buffer)))
-              (unwind-protect
-                   (ok (and new (not (lem-terminal/terminal:process-exited-p new)))
-                       "terminal-restart starts it once descriptors are free")
-                (when new
-                  (lem-terminal/terminal:destroy new))))))))
+                (lem-terminal/terminal:destroy new)))))))
+      (skip "terminal.so is not built or is older than its failure handling")))
+
+(deftest a-terminal-that-cannot-start-leaves-no-buffer
+  #-(and linux (or x86-64 arm64)) (skip "needs Linux on x86-64 or arm64")
+  #+(and linux (or x86-64 arm64))
+  (if (library-available-p)
+      (lem:with-current-buffers ()
+        (lem-fake-interface:with-fake-interface ()
+         (lem/common/timer:with-timer-manager (make-instance 'quiet-timer-manager)
+          (let ((buffers (lem:buffer-list))
+                (terminals lem-terminal/terminal::*terminals*)
+                (errors 0))
+            (unwind-protect
+                 (call-with-no-free-fd
+                  (lambda ()
+                    (handler-case (lem-terminal/terminal-mode::terminal t)
+                      (lem:editor-error () (incf errors)))
+                    (handler-case (lem-terminal/terminal-mode::create-terminal-with-command
+                                   "/bin/sh" (list "/bin/sh"))
+                      (lem:editor-error () (incf errors)))))
+              ;; terminals that started after all are not left running
+              (dolist (terminal (set-difference lem-terminal/terminal::*terminals*
+                                                terminals))
+                (lem-terminal/terminal:destroy terminal)))
+            (ok (= 2 errors) "M-x terminal and a command terminal signal editor-error")
+            (ok (equal buffers (lem:buffer-list)) "no *Terminal* buffer is left")))))
       (skip "terminal.so is not built or is older than its failure handling")))
 
 (deftest terminal-restart-leaves-a-buffer-that-never-had-a-terminal
