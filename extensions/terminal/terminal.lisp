@@ -125,7 +125,10 @@ opens a fresh shell instead of reusing a dead one."
        :reader terminal-id)
    (viscus :initarg :viscus
            :reader terminal-viscus)
+   ;; NIL until the I/O thread is made: DESTROY runs before that when
+   ;; CREATE fails.
    (thread :initarg :thread
+           :initform nil
            :accessor terminal-thread)
    (buffer :initarg :buffer
            :reader terminal-buffer)

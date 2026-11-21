@@ -174,48 +174,49 @@ it in a test process, not in a Lem in use."
         (ok (signals (lem-terminal/terminal-mode::terminal-restart) 'lem:editor-error))
         (ok (equal "unsaved text" (lem:buffer-text buffer)) "its text is kept")))))
 
-(defun shell-running-p (marker)
-  "True when a child of this process (a shell a terminal started, running or
-not yet reaped) has MARKER in its command line.  Children only: another
-process may carry the same text."
-  (let ((self (cffi:foreign-funcall "getpid" :int)))
-    (dolist (dir (directory #p"/proc/*/") nil)
-      (let* ((pid (car (last (pathname-directory dir))))
-             (stat (ignore-errors
-                    (uiop:read-file-string (merge-pathnames "stat" dir))))
-             (cmdline (ignore-errors
-                       (uiop:read-file-string (merge-pathnames "cmdline" dir)))))
-        (when (and stat cmdline (every #'digit-char-p pid))
+(defun child-pids ()
+  "The pids of this process's children (running or not yet reaped).  A shell
+a terminal starts is one of them from the fork on, before it execs."
+  (let ((self (cffi:foreign-funcall "getpid" :int))
+        (pids '()))
+    (dolist (dir (directory #p"/proc/*/") pids)
+      (let ((pid (car (last (pathname-directory dir))))
+            (stat (ignore-errors
+                   (uiop:read-file-string (merge-pathnames "stat" dir)))))
+        (when (and stat (every #'digit-char-p pid))
           ;; stat is "pid (comm) state ppid ...": the comm may hold spaces
           (let* ((after-comm (subseq stat (1+ (position #\) stat :from-end t))))
                  (ppid (parse-integer (second (uiop:split-string
                                                (string-trim " " after-comm)))
                                       :junk-allowed t)))
-            (when (and (eql ppid self)
-                       (search marker (substitute #\Space (code-char 0) cmdline)))
-              (return t))))))))
+            (when (eql ppid self)
+              (push (parse-integer pid) pids))))))))
 
-(defun wait-until-gone (marker)
-  (loop :repeat 100
-        :while (shell-running-p marker)
-        :do (sleep 0.02))
-  (not (shell-running-p marker)))
+(defun new-children (before)
+  "Children of this process that were not in BEFORE.  Asked once: the
+terminal is freed, its child reaped, before the failed start returns."
+  (set-difference (child-pids) before))
 
 (deftest a-start-that-fails-after-the-fork-leaves-no-shell
   (if (library-available-p)
-      (let* ((marker "sleep 31.4159")
-             (buffer (lem:make-buffer "*terminal orphan test*" :temporary t))
-             (terminals lem-terminal/terminal::*terminals*)
-             (failed nil))
+      (let ((buffer (lem:make-buffer "*terminal orphan test*" :temporary t))
+            (terminals lem-terminal/terminal::*terminals*)
+            (children (child-pids))
+            (terminal nil)
+            (condition nil))
         ;; fails in create after terminal_new has started the shell
         (let ((lem-terminal/terminal::*scrollback-limit* -1))
           (handler-case
-              (lem-terminal/terminal:create :rows 24 :cols 80 :buffer buffer
-                                            :directory "" :program "/bin/sh"
-                                            :argv (list "/bin/sh" "-c" marker))
-            (error () (setf failed t))))
-        (ok failed "create signals")
-        (ok (wait-until-gone marker) "the shell is killed")
+              (setf terminal
+                    (lem-terminal/terminal:create :rows 24 :cols 80 :buffer buffer
+                                                  :directory "" :program "/bin/sh"
+                                                  :argv (list "/bin/sh" "-c" "sleep 30")))
+            (error (c) (setf condition c))))
+        (when terminal
+          (lem-terminal/terminal:destroy terminal))
+        (ok (typep condition 'type-error)
+            (format nil "the error of the failed step goes on: ~A" condition))
+        (ok (null (new-children children)) "the shell is killed and reaped")
         (ok (eq terminals lem-terminal/terminal::*terminals*) "no terminal is registered"))
       (skip "terminal.so is not built or is older than its failure handling")))
 
@@ -224,20 +225,21 @@ process may carry the same text."
       (lem:with-current-buffers ()
         (lem-fake-interface:with-fake-interface ()
          (lem/common/timer:with-timer-manager (make-instance 'quiet-timer-manager)
-          (let ((marker "sleep 27.1828")
-                (buffers (lem:buffer-list))
+          (let ((buffers (lem:buffer-list))
                 (terminals lem-terminal/terminal::*terminals*)
-                (failed nil))
+                (children (child-pids))
+                (condition nil))
             (handler-case
                 (lem-terminal/terminal-mode::call-with-new-terminal-buffer
                  "*Terminal*" (list :directory "" :program "/bin/sh"
-                                    :argv (list "/bin/sh" "-c" marker))
+                                    :argv (list "/bin/sh" "-c" "sleep 30"))
                  (lambda (buffer)
                    (declare (ignore buffer))
                    (error "setting the buffer up failed")))
-              (error () (setf failed t)))
-            (ok failed "the error goes on")
-            (ok (wait-until-gone marker) "the shell is killed")
+              (error (c) (setf condition c)))
+            (ok (search "setting the buffer up failed" (princ-to-string condition))
+                "the error goes on")
+            (ok (null (new-children children)) "the shell is killed and reaped")
             (ok (equal terminals lem-terminal/terminal::*terminals*)
                 "the terminal is not registered")
             (ok (equal buffers (lem:buffer-list)) "the buffer is deleted")))))
