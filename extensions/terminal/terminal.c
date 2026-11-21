@@ -16,15 +16,19 @@
 #include <sys/time.h>
 #include <vterm.h>
 #include <signal.h>
+#include <pthread.h>
 
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
 #ifdef __linux__
   #include <sys/syscall.h>
-  /* Headers older than Linux 5.9 (the Dockerfile's) lack it; the number is
-     the same on every architecture, and an older kernel gives ENOSYS. */
-  #ifndef SYS_close_range
+  /* Headers older than Linux 5.9 (the Dockerfile's) lack it.  436 is its
+     number in the generic syscall table these architectures use (not on
+     alpha, ia64 or MIPS, which close one by one); an older kernel gives
+     ENOSYS. */
+  #if !defined(SYS_close_range) && (defined(__x86_64__) || defined(__i386__) \
+      || defined(__aarch64__) || defined(__arm__) || defined(__riscv))
     #define SYS_close_range 436
   #endif
 #endif
@@ -137,12 +141,15 @@ static char *find_program(const char *program, int *err)
   }
 }
 
-/* The environment of the shell: ours with TERM=xterm-256color. */
+/* The environment of the shell: ours with TERM=xterm-256color.  It reads
+   environ without the lock setenv takes, as getenv does: a thread adding a
+   variable at the same time could move it. */
 static char **make_child_environment(void)
 {
   static char term[] = "TERM=xterm-256color";
   size_t n = 0;
-  while (ENVIRON[n] != NULL)
+  /* clearenv leaves it NULL */
+  while (ENVIRON != NULL && ENVIRON[n] != NULL)
     n++;
   char **envp = malloc((n + 2) * sizeof(char *));
   if (envp == NULL)
@@ -181,7 +188,7 @@ static char **make_sh_argv(char *path, char *const argv[])
    parent, as getrlimit is not async-signal-safe. */
 static void close_other_fds(int max_fd)
 {
-#if defined(__linux__)
+#if defined(__linux__) && defined(SYS_close_range)
   if (syscall(SYS_close_range, 3U, ~0U, 0U) == 0)
     return;
 #elif defined(__FreeBSD__)
@@ -252,7 +259,8 @@ static run_shell_result run_shell(int rows, int cols, const char *program, char*
   char *path = find_program(program, &lookup_error);
   char **envp = make_child_environment();
   char **sh_argv = path ? make_sh_argv(path, argv) : NULL;
-  if (envp == NULL || (path != NULL && sh_argv == NULL)) {
+  if (envp == NULL || (path != NULL && sh_argv == NULL)
+      || (path == NULL && lookup_error == ENOMEM)) {
     free(envp);
     free(sh_argv);
     free(path);
@@ -263,11 +271,20 @@ static run_shell_result run_shell(int rows, int cols, const char *program, char*
   }
 
   int max_fd = fd_limit();
+  /* No handler of the editor may run in the child before its signals are
+     reset: block them all across the fork. */
+  sigset_t all, old_mask;
+  sigfillset(&all);
+  pthread_sigmask(SIG_SETMASK, &all, &old_mask);
   pid_t pid = fork();
   if (pid == 0) {
     /* The child: only async-signal-safe calls from here on. */
     setsid();
-    ioctl(slave, TIOCSCTTY, 0);
+    if (ioctl(slave, TIOCSCTTY, 0) != 0) {
+      /* Without a controlling terminal there is no job control (C-c). */
+      write_all(slave, "lem-terminal: cannot make the PTY the controlling terminal\n");
+      _exit(1);
+    }
     dup2(slave, 0);
     dup2(slave, 1);
     dup2(slave, 2);
@@ -276,7 +293,7 @@ static run_shell_result run_shell(int rows, int cols, const char *program, char*
     if (slave <= 2)
       fcntl(slave, F_SETFD, 0);
     /* Exec resets caught signals but keeps ignored ones (SBCL ignores
-       SIGPIPE) and the mask of the thread that forked. */
+       SIGPIPE) and the mask: reset both, the mask last. */
     for (int sig = 1; sig < NSIG; sig++)
       if (sig != SIGKILL && sig != SIGSTOP)
         signal(sig, SIG_DFL);
@@ -288,8 +305,10 @@ static run_shell_result run_shell(int rows, int cols, const char *program, char*
     if (path != NULL) {
       execve(path, argv, envp);
       err = errno;
-      if (err == ENOEXEC)
+      if (err == ENOEXEC) {
         execve(sh_argv[0], sh_argv, envp);
+        err = errno;
+      }
     }
     /* Only reached when exec failed.  Report it on the PTY so the user sees
        why the terminal died, and exit with the shell convention for
@@ -303,6 +322,7 @@ static run_shell_result run_shell(int rows, int cols, const char *program, char*
   }
 
   int saved = errno;
+  pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
   free(path);
   free(envp);
   free(sh_argv);
