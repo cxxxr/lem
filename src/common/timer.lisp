@@ -160,7 +160,8 @@ called again from a read loop its own function entered (a prompt it opened).")))
 (defun call-timer-function (timer)
   (let ((*running-timer* timer)
         (backtrace nil)
-        (outside-timer-p nil))
+        (outside-timer-p nil)
+        (was-running-p (timer-running-p timer)))
     (setf (timer-running-p timer) t)
     (unwind-protect
          (handler-case
@@ -184,7 +185,8 @@ called again from a read loop its own function entered (a prompt it opened).")))
              (unless (cancels-timer-function-p condition)
                (error 'timer-error :timer timer :condition condition :backtrace backtrace
                                    :outside-timer-p outside-timer-p))))
-      (setf (timer-running-p timer) nil))))
+      ;; A thread timer can run again inside its own prompt.
+      (setf (timer-running-p timer) was-running-p))))
 
 
 ;;; timer
@@ -317,10 +319,19 @@ called again from a read loop its own function entered (a prompt it opened).")))
 
 (defun stop-idle-timers ()
   ;; A repeating timer stopped while it was processed (by its own function
-  ;; or handle-function) is expired: it does not come back.
-  (setf *idle-timer-list* (nconc (remove-if #'timer-expired-p *processed-idle-timer-list*)
-                                 *idle-timer-list*))
-  (setf *processed-idle-timer-list* '()))
+  ;; or handle-function) is expired: it does not come back. One still running
+  ;; (this is the read loop of a prompt it opened) stays processed until the
+  ;; idle time it fired in ends.
+  (let ((processed *processed-idle-timer-list*))
+    (setf *idle-timer-list*
+          (nconc (remove-if (lambda (timer)
+                              (or (timer-expired-p timer) (timer-running-p timer)))
+                            processed)
+                 *idle-timer-list*))
+    (setf *processed-idle-timer-list*
+          (remove-if-not (lambda (timer)
+                           (and (timer-running-p timer) (not (timer-expired-p timer))))
+                         processed))))
 
 (defun call-with-idle-timers (function)
   ;; unwind-protect: a timer-error leaving FUNCTION must not leave the
@@ -340,42 +351,43 @@ a command started in a prompt a timer opened, seen by the read loop the
 timer ran in before that loop enters with-idle-timers again."
   (not (null (timer-last-time timer))))
 
+(defun take-due-timer (timer tick-time)
+  "Take the due idle TIMER out of the idle timers just before it is called:
+a repeating one to the processed timers (back when the idle time ends),
+another one expired."
+  (setf *idle-timer-list* (delete timer *idle-timer-list*))
+  (if (timer-repeat-p timer)
+      (push timer *processed-idle-timer-list*)
+      (progn
+        (expire-timer timer)
+        (set-timer-last-time tick-time timer))))
+
 (defun update-idle-timers ()
+  "Call the idle timers that are due, and return true if there were any.
+They are taken and called one at a time: if one fails or leaves non-locally,
+the ones after it are still in the idle timers, for a later idle time, and
+none of their failures is lost. One that a timer called before stopped is
+not called."
   (let* ((tick-time (get-microsecond-time *timer-manager*))
-         (updating-timers (remove-if-not (lambda (timer)
-                                           (and (timer-started-p timer)
-                                                ;; Not again from a prompt it opened.
-                                                (not (timer-running-p timer))
-                                                (< (timer-next-time timer) tick-time)))
-                                         *idle-timer-list*))
-         (deleting-timers (remove-if #'timer-repeat-p
-                                     updating-timers))
-         (updating-idle-timers (remove-if-not #'timer-repeat-p
-                                              updating-timers)))
-    (mapc #'expire-timer deleting-timers)
-
-    (setf *idle-timer-list* (set-difference *idle-timer-list* deleting-timers))
-    (setf *idle-timer-list* (set-difference *idle-timer-list* updating-idle-timers))
-    (setf *processed-idle-timer-list* (nconc updating-idle-timers *processed-idle-timer-list*))
-
-    (dolist (timer updating-timers)
-      (unless (timer-repeat-p timer)
-        (set-timer-last-time tick-time timer)))
-    ;; Every due timer runs, also after one failed; then the first failure is
-    ;; signalled (the others' handle-functions have run; their timer-errors
-    ;; are dropped).
-    (let ((first-error nil))
-      (dolist (timer updating-timers)
-        (handler-case (call-timer-function timer)
-          (timer-error (condition)
-            (unless first-error
-              (setf first-error condition)))))
-      (when first-error
-        (error first-error)))
-    (not (null updating-timers))))
+         (due-timers (remove-if-not (lambda (timer)
+                                      (and (timer-started-p timer)
+                                           ;; Not again from a prompt it opened.
+                                           (not (timer-running-p timer))
+                                           (< (timer-next-time timer) tick-time)))
+                                    *idle-timer-list*)))
+    (dolist (timer due-timers)
+      (when (member timer *idle-timer-list*)
+        (take-due-timer timer tick-time)
+        (call-timer-function timer)))
+    (not (null due-timers))))
 
 (defun get-next-timer-timing-ms ()
-  (when-let (timers (remove-if-not #'timer-started-p *idle-timer-list*))
+  ;; Not a running one: update-idle-timers does not call it, so it would be
+  ;; due forever and the read loop would not wait for input.
+  (when-let (timers (remove-if (lambda (timer)
+                                 (or (not (timer-started-p timer))
+                                     (timer-running-p timer)))
+                               *idle-timer-list*))
     (- (loop :for timer :in timers
              :minimize (timer-next-time timer))
        (get-microsecond-time *timer-manager*))))
