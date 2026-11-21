@@ -216,11 +216,16 @@ chrome. The default method is a no-op for frontends that do not support it.")
   *implementation*)
 
 (defmacro with-implementation (implementation &body body)
+  "Run BODY with IMPLEMENTATION as the implementation, in this thread and in
+the threads made directly in it."
+  ;; The entry of an outer with-implementation is removed: Clysm's
+  ;; bordeaux-threads binds every entry in order, so the last one would win.
   `(let* ((*implementation* ,implementation)
           (bt2:*default-special-bindings*
             (acons '*implementation*
                    *implementation*
-                   bt2:*default-special-bindings*)))
+                   (remove '*implementation* bt2:*default-special-bindings*
+                           :key #'car))))
      ,@body))
 
 (defun display-background-mode ()

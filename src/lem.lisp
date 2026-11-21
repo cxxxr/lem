@@ -15,8 +15,11 @@
     (map-frame (implementation) frame)
     (setup-frame frame (primordial-buffer))))
 
-(defclass lem-timer-manager (timer-manager) ())
-(defmethod send-timer-notification ((lem-timer-manager timer-manager) continue)
+(defclass lem-timer-manager (timer-manager) ()
+  (:documentation "The editor's timer manager: a timer's function runs in the
+editor thread (send-event), then the display is redrawn."))
+
+(defmethod send-timer-notification ((timer-manager lem-timer-manager) continue)
   (send-event (lambda ()
                 (funcall continue)
                 (redraw-display))))

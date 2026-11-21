@@ -54,10 +54,18 @@ while its own function runs."
   (let ((*running-timer* nil))
     (funcall function)))
 
-(defgeneric send-timer-notification (timer-manager continue))
+(defgeneric send-timer-notification (timer-manager continue)
+  (:documentation "Have CONTINUE, which runs a timer's function, called where
+TIMER-MANAGER runs its timers (the editor's: in the editor thread)."))
 
 (defclass timer-manager ()
-  ())
+  ()
+  (:documentation "A timer manager that drops the notifications: the functions
+of its timers (not of idle timers, which the editor loop runs itself) do not
+run. Subclasses say where they run (lem-timer-manager)."))
+
+(defmethod send-timer-notification ((timer-manager timer-manager) continue)
+  (declare (ignore continue)))
 
 (defmethod get-microsecond-time ((timer-manager timer-manager))
   (values
