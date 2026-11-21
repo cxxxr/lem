@@ -4,9 +4,7 @@
 
 (ql:quickload '(:lem-fake-interface :lem-tests) :silent t)
 
-(let ((count 0)
-      (output-directory (uiop:ensure-directory-pathname
-                         (uiop:getenv "VERIFY_FASL_DIR"))))
+(let ((count 0))
   (dolist (file (verify-env-list "VERIFY_FILES"))
     (handler-bind ((warning
                      (lambda (condition)
@@ -14,10 +12,12 @@
                          (incf count)
                          (format t "~&WARNING in ~a:~%  ~a~%" file condition))
                        (muffle-warning condition))))
+      ;; Write the fasl where ASDF would (VERIFY_CACHE): Rove maps a test
+      ;; file's fasl back to its source only there, and warns otherwise.
       (let ((fasl (compile-file file
-                                :output-file (merge-pathnames
-                                              (format nil "~a.fasl" (pathname-name file))
-                                              output-directory))))
+                                :output-file (uiop:compile-file-pathname*
+                                              (uiop:ensure-absolute-pathname
+                                               file (uiop:getcwd))))))
         (if fasl
             (load fasl)
             (progn (incf count)
