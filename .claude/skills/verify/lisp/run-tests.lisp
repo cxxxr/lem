@@ -7,7 +7,17 @@
   ;; Compile the files of lem-tests again even if their fasls look newer.
   (asdf:load-system :lem-tests :force '(:lem-tests)))
 
-(let* ((suites (verify-env-list "VERIFY_SUITES"))
+(let ((suites (verify-env-list "VERIFY_SUITES")))
+  ;; rove:run of the whole system finds its test packages from the fasls; if
+  ;; it finds none it runs nothing and passes.  Refuse that.  (The function is
+  ;; internal to Rove: it is what rove:run uses.)
+  (unless (or suites
+              (rove/core/suite/file::system-packages (asdf:find-system :lem-tests)))
+    (format t "~&VERIFY: no test package of lem-tests found~%VERIFY: tests failed~%")
+    (uiop:quit 1))
+  (defparameter *verify-suites* suites))
+
+(let* ((suites *verify-suites*)
        (passed (if suites
                    (every (lambda (name)
                             (rove:run-suite (intern (string-upcase name) :keyword)))

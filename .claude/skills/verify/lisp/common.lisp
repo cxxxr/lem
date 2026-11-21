@@ -10,11 +10,25 @@
 ;; not the shared ~/.cache/common-lisp, so that other builds and other verify
 ;; runs do not leave fasls of another version of the code here.  ASDF compares
 ;; whole seconds: after switching code versions in place, use `tests --fresh`.
-(asdf:initialize-output-translations
- `(:output-translations
-   (,(merge-pathnames "**/*.*" (uiop:getenv "VERIFY_REPO"))
-    ,(merge-pathnames "**/*.*" (uiop:getenv "VERIFY_CACHE")))
-   :inherit-configuration))
+;;
+;; A file is put under VERIFY_CACHE at its full path, the way ASDF's own cache
+;; does it, because Rove maps a fasl back to its source by removing a cache
+;; root that it finds by translating /rove--fasl-probe/probe.lisp.  That probe
+;; is translated into VERIFY_CACHE too.  Without both, Rove finds no package of
+;; lem-tests and `rove:run :lem-tests` runs 0 tests.
+(let ((repo (uiop:ensure-directory-pathname (uiop:getenv "VERIFY_REPO")))
+      (cache (uiop:ensure-directory-pathname (uiop:getenv "VERIFY_CACHE"))))
+  (flet ((under-cache (directory)
+           ;; CACHE/ followed by the components of the absolute DIRECTORY.
+           (merge-pathnames "**/*.*"
+                            (make-pathname :directory (append (pathname-directory cache)
+                                                              (cdr (pathname-directory directory)))
+                                           :defaults cache))))
+    (asdf:initialize-output-translations
+     `(:output-translations
+       (,(merge-pathnames "**/*.*" repo) ,(under-cache repo))
+       (,(merge-pathnames "**/*.*" #p"/rove--fasl-probe/") ,(under-cache #p"/rove--fasl-probe/"))
+       :inherit-configuration))))
 
 (defun verify-env-list (name)
   "The words of the environment variable NAME, or NIL."
