@@ -219,6 +219,22 @@
                                                       (values nil t))))
         (ok (null (frame-buffer-list)))))))
 
+(deftest killing-tmp-when-it-is-the-only-buffer-of-a-frame
+  (with-frame-multiplexer ()
+    (let ((a (visit-new-buffer "a")))
+      (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+      (let ((tmp (get-buffer "*tmp*")))
+        (ok (eq tmp (current-buffer)))
+        (kill-buffer tmp)
+        (ok (deleted-buffer-p tmp))
+        (testing "the frame shows a live buffer, not the killed *tmp* nor the other frame's buffer"
+          (ng (deleted-buffer-p (current-buffer)))
+          (ng (deleted-buffer-p (window-buffer (current-window))))
+          (ng (eq a (current-buffer))))
+        (testing "the other frame still has its buffer"
+          (lem/frame-multiplexer:frame-multiplexer-prev)
+          (ok (eq a (current-buffer))))))))
+
 (deftest the-test-helper-leaves-a-running-frame-multiplexer-as-it-was
   ;; As in a Lem that uses frame-multiplexer: the variable is on and the
   ;; workspace functions are set.
