@@ -158,6 +158,26 @@ notification, so that a test sees which manager a timer was given."))
       (testing "its time of the earlier idle time is not counted from"
         (ok (null (get-next-timer-timing-ms)))))))
 
+(deftest a-repeating-idle-timer-stopped-by-its-handle-function-stays-stopped
+  ;; The idle timer lists are internal: the timer package exports no way to
+  ;; list the idle timers.
+  (with-testing-timer-manager ()
+    (let ((timer nil))
+      (setf timer (make-idle-timer (lambda () (error "An idle timer failed"))
+                                   :name "stopping on failure"
+                                   :handle-function (lambda (condition)
+                                                      (declare (ignore condition))
+                                                      (stop-timer timer))))
+      (start-timer timer 10 :repeat t)
+      (ignore-errors
+       (with-idle-timers ()
+         (setf *current-time* 100)
+         (update-idle-timers)))
+      (with-idle-timers ())
+      (ok (not (member timer lem/common/timer::*idle-timer-list*)))
+      (ok (not (member timer lem/common/timer::*processed-idle-timer-list*)))
+      (ok (timer-expired-p timer)))))
+
 (defun manager-of-a-timer-started-now (mailbox)
   "Start a timer in this thread and return the name of the manager that its
 notification went through."

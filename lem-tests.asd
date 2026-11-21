@@ -56,7 +56,8 @@
                              (:file "defstruct-to-defclass")))
                (:module "lisp-mode"
                 :components ((:file "package-inferred-system")
-                             (:file "file-conversion")))
+                             (:file "file-conversion")
+                             (:file "highlight")))
                (:module "tree-sitter"
                 :components ((:file "main")))
                (:file "language-mode")
@@ -93,6 +94,7 @@
                (:file "visual-line")
                (:file "fold-region")
                (:file "terminal")
+               (:file "terminal-start")
                (:file "frame-multiplexer"))
   :perform (test-op (o c)
                     (symbol-call :rove :run c)))
