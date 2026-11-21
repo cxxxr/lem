@@ -14,10 +14,11 @@ The fixed steps go through `.claude/skills/ship/ship` (run it without
 arguments for the list). Checks come from the `verify` skill, and the review
 from `/code-review`.
 
-```sh
-S=.claude/skills/ship/ship
-SCRATCH=...                 # a directory outside the repository (the session scratchpad)
-```
+Each Bash call starts a new shell: no variable survives from one command to
+the next. Write the script path, the PR number, the SHA and the scratchpad
+path out in every command. Below, `$S` stands for `.claude/skills/ship/ship`,
+`<PR>` for the PR number, `<SHA>` for the commit, and `<scratch>` for a
+directory outside the repository (the session scratchpad).
 
 ## 1. Preflight
 
@@ -49,18 +50,18 @@ checklist items that applied, what was not verified), and the attribution line.
 Then:
 
 ```sh
-N=$($S pr "$SCRATCH/body.md")      # title: the first commit's subject, or give one
+$S pr <scratch>/body.md     # prints <PR>; title: the first commit's subject, or give one
 ```
 
 ## 4. Review
 
-Run `/code-review high https://github.com/cxxxr/lem/pull/$N` (the full URL: a
+Run `/code-review high https://github.com/cxxxr/lem/pull/<PR>` (the full URL: a
 bare number resolves to lem-project/lem). It runs in the background; wait for
 its findings. Then, by severity:
 
 - **Important**: fix it, verify the fix (the checks it touches, plus a
   regression test that fails before the fix, see `verify worktree`), commit,
-  push (`$S pr "$SCRATCH/body.md"` again pushes and finds the same PR), and
+  push (`$S pr <scratch>/body.md` again pushes and finds the same PR), and
   review again. A
   later round starts from the earlier findings: check they were fixed, then
   look at what the fixes changed.
@@ -77,7 +78,7 @@ and bring them to the user.
 Post what the PR was judged on, for the reader of the PR:
 
 ```sh
-$S comment $N "$SCRATCH/evidence.md"
+$S comment <PR> <scratch>/evidence.md
 ```
 
 The comment lists the commit SHA (`git rev-parse HEAD`), the checks run on it and
@@ -87,11 +88,11 @@ added.
 ## 6. CI
 
 ```sh
-SHA=$(git rev-parse HEAD)   # the commit you verified and pushed, not $S head
-$S wait $N "$SHA"
+git rev-parse HEAD          # <SHA>: the commit you verified and pushed, not $S head
+$S wait <PR> <SHA>
 ```
 
-It waits until `SHA` is the PR's head and reads the checks of that commit
+It waits until `<SHA>` is the PR's head and reads the checks of that commit
 (right after a push, the PR may still show the previous commit and its
 checks). 0: passed (or only the slow macOS runners still queued at the timeout; say
 so). 1: a check failed or was cancelled: read its log (`gh run view --repo cxxxr/lem --log-failed`),
@@ -103,7 +104,7 @@ checks: stop and tell the user.
 Merge only the commit that was verified, reviewed and passed CI:
 
 ```sh
-$S merge $N "$SHA"          # the SHA that was verified, reviewed and waited for
+$S merge <PR> <SHA>         # the SHA that was verified, reviewed and waited for
 ```
 
 It refuses if the PR's head moved since. Then report to the user: the PR

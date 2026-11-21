@@ -123,15 +123,21 @@ case "${1:-}" in
                 failed=$(echo "$checks" | grep -E '^completed/(failure|cancelled|timed_out|action_required|startup_failure|stale)' || true)
                 if [ -n "$failed" ]; then echo "$failed" >&2; exit 1; fi
                 pending=$(echo "$checks" | grep -v '^completed/' || true)
-                # Workflows can create their check runs late: done only when
-                # nothing is pending and the same checks were seen one poll before.
+                # Workflows create some check runs late (jobs that need another
+                # job): done only when two polls in a row found every check
+                # completed, with the same checks.
                 names=$(echo "$checks" | cut -f2 | sort)
-                if [ -z "$pending" ] && [ "$names" = "$previous" ]; then
-                    echo "CI passed for $sha"; exit 0
+                if [ -z "$pending" ]; then
+                    if [ "$names" = "$previous" ]; then echo "CI passed for $sha"; exit 0; fi
+                    previous=$names
+                else
+                    previous=
                 fi
-                previous=$names
             fi
             if [ "$waited" -ge "$timeout" ]; then
+                if [ -n "$checks" ] && [ -z "$pending" ]; then
+                    echo "CI passed for $sha (all completed at the timeout)"; exit 0
+                fi
                 if [ -n "$checks" ] && ! echo "$pending" | cut -f2 | grep -qvE "$slow"; then
                     echo "CI passed for $sha except checks still pending:" >&2
                     echo "$pending" | cut -f2 | sed 's/^/  /' >&2
