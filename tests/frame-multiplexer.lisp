@@ -294,3 +294,17 @@ counts, in the order of NAMES."
           (ok (eq t (variable-value 'lem/frame-multiplexer::frame-multiplexer :global)))
           (ok (eq list-function *frame-buffer-list-function*))
           (ok (eq recent-list lem/frame-multiplexer::*recent-list*)))))))
+
+(deftest turning-it-off-frees-the-other-tabs
+  (with-frame-multiplexer ()
+    (let ((first (current-frame)))
+      (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+      (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+      (lem/frame-multiplexer:frame-multiplexer-prev)
+      (let ((shown (current-frame)))
+        (ok (not (eq first shown)))
+        (ok (= 3 (length (all-frames))))
+        (lem/frame-multiplexer::disable-frame-multiplexer)
+        (ok (equal (list shown) (all-frames))
+            "the tabs that cannot be reached again are torn down")
+        (ok (eq shown (current-frame)) "the frame shown stays")))))

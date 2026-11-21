@@ -408,6 +408,11 @@ of every frame, including their floating and side windows, to another buffer."
   (when (enabled-frame-multiplexer-p)
     (maphash (lambda (k v)
                (declare (ignore k))
+               ;; The other tabs cannot be reached again once the table is
+               ;; cleared: free their frames, which would stay in all-frames.
+               (dolist (frame (virtual-frame-frames v))
+                 (unless (eq frame (virtual-frame-current v))
+                   (teardown-frame frame)))
                (delete-window v))
              *virtual-frame-map*)
     (clrhash *virtual-frame-map*)

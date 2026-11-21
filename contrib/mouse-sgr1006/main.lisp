@@ -192,24 +192,22 @@
 (defvar *enable-hook* '())
 (defvar *disable-hook* '())
 
-(defun enable-hook ()
-  (format lem-ncurses:*terminal-io-saved* "~A[?1000h~A[?1002h~A[?1006h~%" #\esc #\esc #\esc)
-  ;; The escape sequence above was written behind the display's back: draw
-  ;; every window again (the tab bar too: :force).  (IGNORE-ERRORS: when loaded before the display
-  ;; exists, there is nothing to draw.)
+(defun redraw-everything ()
+  "Draw every window again, the tab bar too: the escape sequences that turn
+the mouse reporting on and off are written behind the display's back.
+Nothing is drawn when this is loaded before the display exists."
   (ignore-errors
     (lem:clear-screens-of-window-list)
-    (lem:redraw-display :force t))
+    (lem:redraw-display :force t)))
+
+(defun enable-hook ()
+  (format lem-ncurses:*terminal-io-saved* "~A[?1000h~A[?1002h~A[?1006h~%" #\esc #\esc #\esc)
+  (redraw-everything)
   (lem:run-hooks *enable-hook*))
 
 (defun disable-hook ()
   (format lem-ncurses:*terminal-io-saved* "~A[?1006l~A[?1002l~A[?1000l~%" #\esc #\esc #\esc)
-  ;; The escape sequence above was written behind the display's back: draw
-  ;; every window again (the tab bar too: :force).  (IGNORE-ERRORS: when loaded before the display
-  ;; exists, there is nothing to draw.)
-  (ignore-errors
-    (lem:clear-screens-of-window-list)
-    (lem:redraw-display :force t))
+  (redraw-everything)
   (run-hooks *disable-hook*))
 
 (define-minor-mode mouse-sgr-1006-mode
