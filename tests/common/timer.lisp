@@ -28,6 +28,17 @@ notification, so that a test sees which manager a timer was given."))
                             (named-timer-manager-name timer-manager))
   (funcall continue))
 
+(defclass forwarding-timer-manager (timer-manager)
+  ((target :initarg :target :reader forwarding-timer-manager-target))
+  (:documentation "A timer manager that sends its notifications through TARGET
+(the editor's, when the tests run in a Lem), or runs them if TARGET is nil."))
+
+(defmethod send-timer-notification ((timer-manager forwarding-timer-manager) continue)
+  (let ((target (forwarding-timer-manager-target timer-manager)))
+    (if target
+        (send-timer-notification target continue)
+        (funcall continue))))
+
 (defun testing-timer ())
 
 ;;TODO: These tests do work indeed with CCL but for some reason when launching the tests
@@ -192,48 +203,61 @@ notification went through."
     (unbound-variable () (values nil nil))))
 
 #+sbcl
-(deftest set-global-timer-manager-sets-the-global-value
+(defun call-with-saved-global-timer-manager (function)
+  "Call FUNCTION with a function that makes a manager to set globally, and
+put the global manager back afterwards. The managers made forward to the
+global one before, so that a running Lem that the tests are run in (whose
+editor reads the global manager) goes on as before."
   (multiple-value-bind (saved boundp) (global-timer-manager)
-    (let ((global (make-instance 'testing-timer-manager))
-          (bound (make-instance 'testing-timer-manager)))
-      (unwind-protect
-           (with-timer-manager bound
-             (testing "also when called in with-timer-manager"
-               (set-global-timer-manager global)
-               (ok (eq bound lem/common/timer::*timer-manager*))
-               (ok (eq global
-                       (bt2:join-thread
-                        (bt2:make-thread
-                         (lambda () lem/common/timer::*timer-manager*)
-                         :initial-bindings nil))))))
-        (if boundp
-            (set-global-timer-manager saved)
-            (bt2:join-thread
-             (bt2:make-thread
-              (lambda ()
-                (sb-ext:without-package-locks
-                  (makunbound 'lem/common/timer::*timer-manager*)))
-              :initial-bindings nil)))))))
+    (unwind-protect
+         (funcall function
+                  (lambda ()
+                    (make-instance 'forwarding-timer-manager :target saved)))
+      (if boundp
+          (set-global-timer-manager saved)
+          (bt2:join-thread
+           (bt2:make-thread
+            (lambda ()
+              (sb-ext:without-package-locks
+                (makunbound 'lem/common/timer::*timer-manager*)))
+            :initial-bindings nil))))))
+
+(defun timer-manager-of-a-new-thread (&rest make-thread-arguments)
+  "Return the timer manager that a thread made now reads."
+  (bt2:join-thread
+   (apply #'bt2:make-thread
+          (lambda () lem/common/timer::*timer-manager*)
+          make-thread-arguments)))
+
+#+sbcl
+(deftest set-global-timer-manager-sets-the-global-value
+  (call-with-saved-global-timer-manager
+   (lambda (make-manager)
+     (let ((global (funcall make-manager))
+           (bound (make-instance 'testing-timer-manager)))
+       (with-timer-manager bound
+         (testing "also when called in with-timer-manager"
+           (set-global-timer-manager global)
+           (ok (eq bound lem/common/timer::*timer-manager*))
+           (ok (eq global (timer-manager-of-a-new-thread :initial-bindings nil)))))))))
 
 #+sbcl
 (deftest without-timer-manager-binding-gives-threads-the-global-manager
-  (multiple-value-bind (saved boundp) (global-timer-manager)
-    (let ((global (make-instance 'testing-timer-manager))
-          (bound (make-instance 'testing-timer-manager)))
-      (unwind-protect
-           (progn
-             (set-global-timer-manager global)
-             (with-timer-manager bound
-               (without-timer-manager-binding ()
-                 (ok (eq global
-                         (bt2:join-thread
-                          (bt2:make-thread
-                           (lambda () lem/common/timer::*timer-manager*))))))))
-        (if boundp
-            (set-global-timer-manager saved)
-            (bt2:join-thread
-             (bt2:make-thread
-              (lambda ()
-                (sb-ext:without-package-locks
-                  (makunbound 'lem/common/timer::*timer-manager*)))
-              :initial-bindings nil)))))))
+  (call-with-saved-global-timer-manager
+   (lambda (make-manager)
+     (let ((global (funcall make-manager))
+           (next-global (funcall make-manager))
+           (bound (make-instance 'testing-timer-manager)))
+       (set-global-timer-manager global)
+       (with-timer-manager bound
+         (without-timer-manager-binding ()
+           (ok (eq global (timer-manager-of-a-new-thread)))
+           (testing "a thread made by such a thread reads the global manager of now"
+             ;; As a thread that the editor makes, after the editor is
+             ;; started again.
+             (ok (eq next-global
+                     (bt2:join-thread
+                      (bt2:make-thread
+                       (lambda ()
+                         (set-global-timer-manager next-global)
+                         (timer-manager-of-a-new-thread)))))))))))))

@@ -60,6 +60,26 @@ anything. Keep the list short enough to read before each commit.
   bug, then pass with the fix.
 - **Origin:** cxxxr/lem#55 (follow-up fix commit).
 
+## Timers
+
+### The timer manager
+- **Trigger:** changes to `*timer-manager*`, `with-timer-manager`,
+  `set-global-timer-manager`, `run-editor-thread`, or a test that sets the
+  global timer manager.
+- **Check:** in the ncurses Lem, `M-x start-lisp-repl` (a self connection, its
+  threads made by micros) and start a timer from the REPL, and from a thread
+  that `(lem:send-event (lambda () (bt2:make-thread ...)))` makes: both must
+  fire in the `editor` thread, also after a `with-timer-manager` in the REPL.
+  Load `lem-tests` in that REPL, start a repeating timer from the editor
+  (`send-event`), run `lem-tests/timer` with `rove:*report-stream*` bound to a
+  string stream, and see that the timer still fires in the `editor` thread
+  (the editor reads the global manager: a test must not replace it with one
+  that does not reach the editor). On Clysm, nested bindings: its
+  bordeaux-threads binds every entry of `bt2:*default-special-bindings*`.
+- **Origin:** cxxxr/lem#83 (a test's manager kept after `with-timer-manager`;
+  review rounds found an unbound manager, nested bindings on Clysm, a thread
+  of the editor keeping an old editor's manager, tests replacing the global).
+
 ## Errors and backtraces
 
 ### Backtraces and messages that are stored
