@@ -207,6 +207,17 @@ VTermScreenCallbacks screen_callbacks = {
   cb_sb_clear,
 };
 
+/* errno of this thread's last failed terminal_new.  Kept apart from errno,
+   which the FFI's own frees and the Lisp runtime can change before the
+   caller reads it. */
+static _Thread_local int last_error;
+
+/* Why the last terminal_new of this thread returned NULL (an errno value). */
+int terminal_last_error(void)
+{
+  return last_error;
+}
+
 struct terminal *terminal_new(int id,
                               int rows,
                               int cols,
@@ -224,20 +235,20 @@ struct terminal *terminal_new(int id,
 {
   /* Everything that can fail is done before the shell is started, so a
      failure has no child to kill and reap and no PTY to close.  On failure
-     NULL is returned with errno telling why. */
-  int saved_errno;
+     NULL is returned, and terminal_last_error tells why. */
   VTerm *vterm = NULL;
 
   /* Zeroed: the cursor is read at the first render, which can come before
      libvterm reports where the cursor is. */
   struct terminal *terminal = calloc(1, sizeof(struct terminal));
-  if (terminal == NULL)
+  if (terminal == NULL) {
+    last_error = ENOMEM;
     return NULL;
+  }
   /* Without the wake pipe the I/O thread could not be woken to exit. */
   if (pipe(terminal->wake_pipe) != 0) {
-    saved_errno = errno;
+    last_error = errno;
     free(terminal);
-    errno = saved_errno;
     return NULL;
   }
   fcntl(terminal->wake_pipe[0], F_SETFD, FD_CLOEXEC);
@@ -245,14 +256,14 @@ struct terminal *terminal_new(int id,
 
   vterm = vterm_new(rows, cols);
   if (vterm == NULL) {
-    errno = ENOMEM;
+    last_error = ENOMEM;
     goto fail;
   }
   vterm_set_utf8(vterm, 1);
 
   VTermScreen *screen = vterm_obtain_screen(vterm);
   if (screen == NULL) {
-    errno = ENOMEM;
+    last_error = ENOMEM;
     goto fail;
   }
   /* Full-screen programs (less, vi, top, ...) switch to the alternate screen
@@ -261,8 +272,10 @@ struct terminal *terminal_new(int id,
   vterm_screen_enable_altscreen(screen, 1);
 
   run_shell_result result = run_shell(rows, cols, program, argv);
-  if (result.pid < 0)
+  if (result.pid < 0) {
+    last_error = errno;
     goto fail;
+  }
 
   terminal->id = id;
   terminal->screen = screen;
@@ -296,13 +309,11 @@ struct terminal *terminal_new(int id,
   return terminal;
 
  fail:
-  saved_errno = errno;
   if (vterm != NULL)
     vterm_free(vterm);
   close(terminal->wake_pipe[0]);
   close(terminal->wake_pipe[1]);
   free(terminal);
-  errno = saved_errno;
   return NULL;
 }
 

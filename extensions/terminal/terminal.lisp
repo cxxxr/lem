@@ -310,15 +310,15 @@ point is kept for manual/REPL use and tests."
            (let ((viscus (ffi::terminal-new directory id rows cols
                                             :program program
                                             :argv argv)))
-             ;; NULL, with errno telling why, when terminal_new is out of
-             ;; memory, file descriptors, processes or PTYs.  Nothing is made
-             ;; for it then: no instance, no I/O thread.
+             ;; NULL when terminal_new is out of memory, file descriptors,
+             ;; processes or PTYs.  Nothing is made for it then: no
+             ;; instance, no I/O thread.
              (when (cffi:null-pointer-p viscus)
-               (let ((errno #+sbcl (sb-alien:get-errno) #-sbcl nil))
-                 (editor-error "Cannot start the terminal: ~A"
-                               (if errno
-                                   (cffi:foreign-funcall "strerror" :int errno :string)
-                                   "unknown error"))))
+               (editor-error "Cannot start the terminal: ~A"
+                             (cffi:foreign-funcall
+                              "strerror"
+                              :int (cffi:foreign-funcall "terminal_last_error" :int)
+                              :string)))
              viscus))
          (terminal
            (make-instance 'terminal
