@@ -3,7 +3,6 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <assert.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -41,7 +40,12 @@ static run_shell_result run_shell(int rows, int cols, const char *program, char*
   int fd;
   struct winsize win = { rows, cols, 0, 0 };
   pid_t pid = forkpty(&fd, NULL, NULL, &win);
-  assert(pid >= 0);
+  if (pid < 0) {
+    /* No child and no PTY (out of processes or PTYs): let terminal_new
+       fail instead of aborting the editor. */
+    run_shell_result failed = { -1, -1 };
+    return failed;
+  }
   if (pid == 0) {
     setenv("TERM", "xterm-256color", 1);
     execvp(program, argv);
@@ -218,23 +222,41 @@ struct terminal *terminal_new(int id,
                               void *cb_sb_popline,
                               void *cb_sb_clear)
 {
-  run_shell_result result = run_shell(rows, cols, program, argv);
+  /* Everything that can fail is done before the shell is started, so a
+     failure has only memory to free: no child to kill and reap, no PTY to
+     close. */
+
+  /* Zeroed: the cursor is read at the first render, which can come before
+     libvterm reports where the cursor is. */
+  struct terminal *terminal = calloc(1, sizeof(struct terminal));
+  if (terminal == NULL)
+    return NULL;
 
   VTerm *vterm = vterm_new(rows, cols);
+  if (vterm == NULL) {
+    free(terminal);
+    return NULL;
+  }
   vterm_set_utf8(vterm, 1);
 
   VTermScreen *screen = vterm_obtain_screen(vterm);
+  if (screen == NULL) {
+    vterm_free(vterm);
+    free(terminal);
+    return NULL;
+  }
   /* Full-screen programs (less, vi, top, ...) switch to the alternate screen
      and expect the original one back on exit; without this their last frame
      overwrote the shell output and leaked into the scrollback. */
   vterm_screen_enable_altscreen(screen, 1);
 
-  /* Zeroed: the cursor is read at the first render, which can come before
-     libvterm reports where the cursor is. */
-  struct terminal *terminal = calloc(1, sizeof(struct terminal));
-  if (terminal == NULL) {
+  run_shell_result result = run_shell(rows, cols, program, argv);
+  if (result.pid < 0) {
+    vterm_free(vterm);
+    free(terminal);
     return NULL;
   }
+
   terminal->id = id;
   terminal->screen = screen;
   terminal->vterm = vterm;
