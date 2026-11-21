@@ -8,7 +8,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 lem="$(cd "$here/../.." && pwd)"
 desktop=$lem/build/clysm/desktop
 web=$lem/build/clysm/web
-[ -x "$desktop/node_modules/electron/dist/electron" ] || "$here/build.sh" > /dev/null || exit 1
+[ -x "$desktop/node_modules/electron/dist/electron" ] || "$here/build.sh" || exit 1
 # (the page embeds the image and the fasls of build.sh: it is made again
 # when build.sh has run since it was made; lem.image is written after the
 # fasls, at each build.sh)

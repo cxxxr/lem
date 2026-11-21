@@ -69,7 +69,8 @@ with-timer-manager: the editor's, for the threads that it does not make,
 such as the REPL of a self connection (micros makes its threads itself, so
 bt2:*default-special-bindings* does not reach them). On SBCL it sets the
 global value also from inside a binding; elsewhere, call it outside of
-with-timer-manager, whose binding would take the value instead."
+with-timer-manager and from a thread not made in one (such a thread starts
+with a binding of its own), as a binding would take the value instead."
   #+sbcl (setf (sb-ext:symbol-global-value '*timer-manager*) timer-manager)
   #-sbcl (setf *timer-manager* timer-manager))
 
