@@ -56,7 +56,8 @@
                              (:file "defstruct-to-defclass")))
                (:module "lisp-mode"
                 :components ((:file "package-inferred-system")
-                             (:file "file-conversion")))
+                             (:file "file-conversion")
+                             (:file "highlight")))
                (:module "tree-sitter"
                 :components ((:file "main")))
                (:file "language-mode")
