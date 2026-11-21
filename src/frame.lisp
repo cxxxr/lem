@@ -1,6 +1,9 @@
 (in-package :lem-core)
 
-(defvar *display-frame-map* (make-hash-table))
+(defvar *display-frame-map* (make-hash-table #+(or sbcl ecl) :synchronized #+(or sbcl ecl) t)
+  "The frame shown on each display.  The frontends read it from their own
+threads (SDL's event loop) while the editor thread maps and unmaps frames:
+see make-display-frame-map.")
 (defvar *frames* '())
 
 (defvar *frame-buffer-list-function* nil
@@ -127,6 +130,13 @@ redraw-display関数でキャッシュを捨てて画面全体を再描画しま
         (add-header-window frame window)))
     frame))
 
+(defun make-display-frame-map ()
+  "Return a new table for *display-frame-map*, made as its initial value is.
+It can be read from one thread while another writes it on SBCL and ECL
+(:synchronized), CCL and LispWorks (whose hash tables are thread-safe
+already); on other implementations it is a plain hash table."
+  (make-hash-table #+(or sbcl ecl) :synchronized #+(or sbcl ecl) t))
+
 (defun map-frame (display frame)
   (setf (gethash display *display-frame-map*) frame))
 
@@ -138,6 +148,15 @@ redraw-display関数でキャッシュを捨てて画面全体を再描画しま
 
 (defun current-frame ()
   (get-frame (implementation)))
+
+(defun current-frame-ready-p ()
+  "True when there is a current frame and it has its window tree.
+Not before setup-first-frame has built it, nor after exit, once teardown has
+unmapped the frame: frontends that handle window events on a thread of their
+own (SDL2, SDL3) check this before laying out the windows.
+The frame is read once, as the editor thread may unmap it meanwhile."
+  (let ((frame (current-frame)))
+    (and frame (frame-window-tree frame) t)))
 
 (defun frame-buffer-list (&optional (frame (current-frame)))
   "Return the buffers to offer for selection in FRAME, most recently used first.
@@ -163,7 +182,18 @@ is left; callers that need a buffer must handle that."
   (setup-frame-windows frame buffer))
 
 (defun teardown-frame (frame)
+  "Forget FRAME and free its windows: it leaves all-frames, and a display it is
+mapped to has no frame afterwards (current-frame is NIL there) rather than a
+frame whose windows were freed.  It is unmapped first, so that a frontend
+thread that checks current-frame-ready-p does not lay out windows being freed."
   (alexandria:deletef *frames* frame)
+  (let ((displays '()))
+    (maphash (lambda (display mapped)
+               (when (eq mapped frame)
+                 (push display displays)))
+             *display-frame-map*)
+    (dolist (display displays)
+      (remhash display *display-frame-map*)))
   (teardown-windows frame))
 
 (defun map-protected (function list)

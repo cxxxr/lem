@@ -573,3 +573,60 @@
              '(0 1 2))
           (error () nil))))
     (ok (equal '(0 1 2) (reverse called)))))
+
+(deftest teardown-frame/unmaps-the-frame
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let ((hidden (lem:make-frame (lem:current-frame)))
+            (shown (lem:current-frame)))
+        (lem:setup-frame hidden (lem:make-buffer "hidden"))
+        (testing "a frame not mapped leaves the mapped one alone"
+          (lem:teardown-frame hidden)
+          (ok (eq shown (lem:current-frame))))
+        (testing "the mapped frame leaves its display"
+          (lem:teardown-frame (lem:current-frame))
+          (ok (null (lem:current-frame)))
+          (ok (null (lem:get-frame (lem:implementation)))))))))
+
+(deftest teardown-frames/no-display-keeps-a-torn-down-frame
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (lem:teardown-frames)
+      (ok (null (lem:all-frames)))
+      (ok (null (lem:current-frame))))))
+
+(deftest teardown-frame/unmaps-every-display-also-when-freeing-fails
+  ;; map-frame, frame-floating-windows' contents and *display-frame-map* are
+  ;; used directly: no command maps a frame to a second display.
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let ((frame (lem:current-frame)))
+        (lem-core::map-frame :another-display frame)
+        (push :not-a-window (lem:frame-floating-windows frame))
+        (ok (lem:current-frame-ready-p))
+        (ok (signals (lem:teardown-frame frame)))
+        (ok (null (lem:current-frame)))
+        (ok (null (lem:get-frame :another-display)))
+        (ng (lem:current-frame-ready-p))))))
+
+(deftest teardown-frame/unmaps-before-freeing-the-windows
+  ;; %free-window is internal: replaced to see the state while windows are
+  ;; freed.  Only on SBCL, which calls it through its global definition (ECL
+  ;; may call a function of the same file directly).
+  #-sbcl (skip "needs %free-window called through its global definition")
+  #+sbcl
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let ((ready-while-freeing '())
+            (original (fdefinition 'lem-core::%free-window)))
+        (sb-ext:without-package-locks
+          (unwind-protect
+               (progn
+                 (setf (fdefinition 'lem-core::%free-window)
+                       (lambda (window)
+                         (push (lem:current-frame-ready-p) ready-while-freeing)
+                         (funcall original window)))
+                 (lem:teardown-frame (lem:current-frame)))
+            (setf (fdefinition 'lem-core::%free-window) original)))
+        (ok ready-while-freeing)
+        (ok (notany #'identity ready-while-freeing))))))

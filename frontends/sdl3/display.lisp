@@ -328,8 +328,10 @@ Idempotent."
       (adapt-high-dpi-display-scale display)
       #+darwin
       (adapt-high-dpi-font-size display)
-      (run-post-display-change-hooks display)
-      (lem:update-on-display-resized))))
+      ;; Not after exit, once teardown has unmapped the frame.
+      (when (lem:current-frame-ready-p)
+        (run-post-display-change-hooks display)
+        (lem:update-on-display-resized)))))
 
 (defun handle-display-changed (display)
   "Handle a backing-size or display change for DISPLAY.
@@ -352,13 +354,12 @@ event handler pattern in `on-windowevent')."
   (update-texture display)
   ;; SDL3 also fires these events at startup, after the frame exists but
   ;; before setup-first-frame has built its window tree.
-  (when (and (lem:current-frame)
-             (lem:frame-window-tree (lem:current-frame)))
-    (with-renderer (display)
-      #+darwin
-      (adapt-high-dpi-display-scale display)
-      #+darwin
-      (adapt-high-dpi-font-size display)
+  (with-renderer (display)
+    #+darwin
+    (adapt-high-dpi-display-scale display)
+    #+darwin
+    (adapt-high-dpi-font-size display)
+    (when (lem:current-frame-ready-p)
       (run-post-display-change-hooks display)
       (lem:update-on-display-resized))))
 
