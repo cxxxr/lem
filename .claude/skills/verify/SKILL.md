@@ -112,7 +112,8 @@ Other frontends, when the change is theirs:
   source change, then `make test-clysm` (expect `lem: ok` and
   `lem (browser): ok`). `make test-clysm` builds the desktop application only
   when there is none: without `build.sh` it tests the old image. It runs
-  `build-web.sh` itself when the page is older than the last `build.sh`.
+  `build-web.sh` itself when the page is older than the last `build.sh`; run
+  `build-web.sh` after changing only `frontends/clysm/web/`.
   `frontends/clysm/tools/lem-remote` looks at a running one.
 - **SDL2:** there is no tool to drive it here; say that it was not run.
 

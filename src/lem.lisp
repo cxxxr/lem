@@ -72,25 +72,26 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
   (apply-args args))
 
 (defun run-editor-thread (initialize args finalize)
-  (bt2:make-thread
-   (lambda ()
-     (when initialize (funcall initialize))
-     (unwind-protect
-          (let (#+lispworks (lw:*default-character-element-type* 'character))
-            (with-editor-stream ()
-              (let ((timer-manager (make-instance 'lem-timer-manager)))
-                ;; Global too, as invoke-frontend sets the implementation:
-                ;; code run in a thread that the editor does not make (the
-                ;; REPL of a self connection) can start timers.
-                (set-global-timer-manager timer-manager)
-                (with-timer-manager timer-manager
-                  (setf *in-the-editor* t)
-                  (setup)
-                  (let ((report (toplevel-command-loop (lambda () (init args)))))
-                    (when finalize (funcall finalize report))
-                    (teardown))))))
-       (setf *in-the-editor* nil)))
-   :name "editor"))
+  ;; The editor's timer manager is the global one, as invoke-frontend sets
+  ;; the implementation: code run in a thread that the editor does not make
+  ;; (the REPL of a self connection) can start timers, and a thread that the
+  ;; editor makes and that outlives it uses the manager of the next editor.
+  ;; So the editor thread starts with no binding of its own.
+  (without-timer-manager-binding ()
+    (bt2:make-thread
+     (lambda ()
+       (when initialize (funcall initialize))
+       (unwind-protect
+            (let (#+lispworks (lw:*default-character-element-type* 'character))
+              (with-editor-stream ()
+                (set-global-timer-manager (make-instance 'lem-timer-manager))
+                (setf *in-the-editor* t)
+                (setup)
+                (let ((report (toplevel-command-loop (lambda () (init args)))))
+                  (when finalize (funcall finalize report))
+                  (teardown))))
+         (setf *in-the-editor* nil)))
+     :name "editor")))
 
 (defun find-editor-thread ()
   (find "editor" (bt2:all-threads)

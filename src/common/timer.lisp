@@ -5,6 +5,7 @@
    :send-timer-notification
    :with-timer-manager
    :set-global-timer-manager
+   :without-timer-manager-binding
    :running-timer
    :running-timer-p
    :call-outside-timer
@@ -65,14 +66,24 @@ while its own function runs."
 
 (defun set-global-timer-manager (timer-manager)
   "Make TIMER-MANAGER the timer manager of the threads that are in no
-with-timer-manager: the editor's, for the threads that it does not make,
-such as the REPL of a self connection (micros makes its threads itself, so
-bt2:*default-special-bindings* does not reach them). On SBCL it sets the
-global value also from inside a binding; elsewhere, call it outside of
-with-timer-manager and from a thread not made in one (such a thread starts
-with a binding of its own), as a binding would take the value instead."
+with-timer-manager: the editor's, which every thread reads unless a
+with-timer-manager binds another, also the threads that the editor does not
+make, such as the REPL of a self connection (micros makes its threads
+itself). On SBCL it sets the global value also from inside a binding;
+elsewhere, call it in no with-timer-manager and in a thread made in none
+(see without-timer-manager-binding), as a binding would take the value."
   #+sbcl (setf (sb-ext:symbol-global-value '*timer-manager*) timer-manager)
   #-sbcl (setf *timer-manager* timer-manager))
+
+(defun call-without-timer-manager-binding (function)
+  (let ((bt2:*default-special-bindings*
+          (remove '*timer-manager* bt2:*default-special-bindings* :key #'car)))
+    (funcall function)))
+
+(defmacro without-timer-manager-binding (() &body body)
+  "Run BODY so that the threads made in it read the global timer manager
+(set-global-timer-manager), not the one of a with-timer-manager around it."
+  `(call-without-timer-manager-binding (lambda () ,@body)))
 
 (defun call-with-timer-manager (timer-manager function)
   ;; A binding, not a setf: the manager of a test must not stay after it,

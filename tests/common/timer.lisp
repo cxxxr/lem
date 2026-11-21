@@ -181,6 +181,9 @@ notification went through."
                    (bt2:make-thread
                     (lambda () (manager-of-a-timer-started-now mailbox)))))))))))
 
+;; The global value of the manager is read and restored through the internal
+;; *timer-manager*: nothing exported reads it, as start-timer only hands it to
+;; a timer.
 #+sbcl
 (defun global-timer-manager ()
   "Return the global value of the timer manager and whether it has one."
@@ -203,6 +206,29 @@ notification went through."
                         (bt2:make-thread
                          (lambda () lem/common/timer::*timer-manager*)
                          :initial-bindings nil))))))
+        (if boundp
+            (set-global-timer-manager saved)
+            (bt2:join-thread
+             (bt2:make-thread
+              (lambda ()
+                (sb-ext:without-package-locks
+                  (makunbound 'lem/common/timer::*timer-manager*)))
+              :initial-bindings nil)))))))
+
+#+sbcl
+(deftest without-timer-manager-binding-gives-threads-the-global-manager
+  (multiple-value-bind (saved boundp) (global-timer-manager)
+    (let ((global (make-instance 'testing-timer-manager))
+          (bound (make-instance 'testing-timer-manager)))
+      (unwind-protect
+           (progn
+             (set-global-timer-manager global)
+             (with-timer-manager bound
+               (without-timer-manager-binding ()
+                 (ok (eq global
+                         (bt2:join-thread
+                          (bt2:make-thread
+                           (lambda () lem/common/timer::*timer-manager*))))))))
         (if boundp
             (set-global-timer-manager saved)
             (bt2:join-thread
