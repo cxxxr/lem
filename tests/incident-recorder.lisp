@@ -346,7 +346,8 @@ backtrace taken where it was signalled, as the editor's handlers do."
                   "LEM/BUFFER/ERRORS:EDITOR-ERROR"
                   "(LAMBDA (C) :IN LEM-CORE::CALL-BACKGROUND-JOB)"
                   "(LAMBDA (CONDITION) :IN LEM/COMMON/TIMER::CALL-TIMER-FUNCTION)"
-                  "(LAMBDA () :IN (LAMBDA (C) :IN LEM-CORE::CALL-BACKGROUND-JOB))"))
+                  "(LAMBDA () :IN (LAMBDA (C) :IN LEM-CORE::CALL-BACKGROUND-JOB))"
+                  "(FLET SB-KERNEL::%WARN :IN \"SYS:SRC;CODE;WARM-ERROR.LISP\")"))
     (ok (ppcre:scan ir::*machinery-frame-regex* name) name))
   ;; other functions whose names end the same way are where the error is
   (dolist (name '("CLYSM-UI::REPORT-ERROR"
@@ -533,7 +534,8 @@ a mode's own handler that calls pop-up-backtrace."
         (signal-and-capture-elsewhere (lambda () (fail-in-place-a "two")))
       ;; the handlers' frames are above the signal
       (ok (search "SIGNAL-AND-CAPTURE-ELSEWHERE) " backtrace-2))
-      ;; FAIL-IN-PLACE-A is called by the two capture functions, which differ
+      ;; the frames below FAIL-IN-PLACE-A lead to the two capture functions,
+      ;; which differ, so only the top frame is compared
       (let ((ir::*fingerprint-frame-count* 1))
         (ok (equal (ir:incident-fingerprint condition-1 backtrace-1)
                    (ir:incident-fingerprint condition-2 backtrace-2)))))))
