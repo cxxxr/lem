@@ -294,14 +294,17 @@ internal RENDER-TICK, which MANUAL-TIMER-MANAGER keeps from running)."
                 (render buffer)
                 (buffer-has-p buffer text))))
 
-(defun call-with-wheel-terminal (function &key (script *wheel-test-script*))
+(defun call-with-wheel-terminal (function &key (script *wheel-test-script*)
+                                                (scrollback-limit 5000))
   "Call FUNCTION with a terminal buffer in the current window, running SCRIPT
-(which starts by printing 100 lines), and the screen's rows."
+(which starts by printing 100 lines), and the screen's rows.  The ring keeps
+SCROLLBACK-LIMIT lines."
   (if (library-available-p)
       (lem:with-current-buffers ()
         (lem-fake-interface:with-fake-interface ()
           (lem/common/timer:with-timer-manager (make-instance 'manual-timer-manager)
-            (let* ((buffer (lem:make-buffer "*terminal wheel test*"))
+            (let* ((lem-terminal/terminal::*scrollback-limit* scrollback-limit)
+                   (buffer (lem:make-buffer "*terminal wheel test*"))
                    (window (lem:current-window))
                    (rows (1- (lem:window-height window)))
                    (argv (list "/bin/sh" "-c" script)))
@@ -429,6 +432,14 @@ internal RENDER-TICK, which MANUAL-TIMER-MANAGER keeps from running)."
        (ok (wait-for-output buffer "got Return") "the process got the key")))
    :script "seq 1 100; read line; echo got Return; sleep 30"))
 
+(defun line-text (point)
+  (lem:line-string point))
+
+(defun count-lines (buffer text)
+  "How many lines of BUFFER are TEXT."
+  (count text (uiop:split-string (lem:buffer-text buffer) :separator '(#\Newline))
+         :test #'equal))
+
 (defun view-line (window)
   (lem:line-number-at-point (lem:window-view-point window)))
 
@@ -540,7 +551,9 @@ internal RENDER-TICK, which MANUAL-TIMER-MANAGER keeps from running)."
              "lines go above the screen, unrendered")
          (lem-terminal/terminal:copy-mode-on terminal)
          (ok (uiop:string-suffix-p (lem:buffer-text buffer) screen)
-             "the screen shown stays as it was"))))
+             "the screen shown stays as it was")
+         (ok (= 1 (count-lines buffer "ready"))
+             "the lines pushed since it froze are not shown twice"))))
    :script "printf ready; read line; seq 1 100; sleep 30"))
 
 (deftest copy-mode-on-while-the-history-is-shown-counts-it
@@ -550,3 +563,27 @@ internal RENDER-TICK, which MANUAL-TIMER-MANAGER keeps from running)."
      (wheel window 1)
      (ok (= (- (lem:buffer-nlines buffer) rows)
             (lem-terminal/terminal:copy-mode-on (buffer-terminal buffer)))))))
+
+(deftest the-place-in-a-full-history-stays-when-the-process-exits
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer (format nil "100~%")))
+     (loop :repeat 5 :do (wheel window 1))
+     (let* ((terminal (buffer-terminal buffer))
+            (shown (line-text (lem:window-view-point window))))
+       (lem:set-current-mark (lem:window-view-point window))
+       ;; the ring is full: the lines pushed now drop its oldest ones
+       (lem-terminal/terminal:input-key terminal ffi::vterm_key_enter)
+       (ok (wait-until (lambda ()
+                         (find "102" (lem-terminal/terminal::terminal-scrollback-ring terminal)
+                               :test #'equal)))
+           "lines go into the ring")
+       (lem-terminal/terminal::finish-process terminal 0)
+       (ok (equal shown (line-text (lem:window-view-point window)))
+           "the window shows the same line")
+       (ok (equal shown (line-text (lem:buffer-mark (lem:current-buffer))))
+           "the mark stays on it")
+       (ok (= 1 (count-lines buffer "102")) "the lines pushed since are shown, once")))
+   :script "seq 1 100; read line; seq 101 130; sleep 30"
+   :scrollback-limit 50))

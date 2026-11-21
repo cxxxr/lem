@@ -156,6 +156,16 @@ to render only the rows that changed.")
    (scrollback-active :initform nil
                       :accessor terminal-scrollback-active
                       :documentation "T when the lines above the screen are in the buffer.")
+   (scrollback-shown :initform 0
+                     :accessor terminal-scrollback-shown
+                     :documentation "How many lines above the screen are in the
+buffer while SCROLLBACK-ACTIVE (the rows may change meanwhile).")
+   (frozen-base-y :initform 0
+                  :accessor terminal-frozen-base-y
+                  :documentation "The lines above the screen when copy mode
+froze it.  Those added since are not rendered: the frozen screen in the
+buffer still shows some of them.  (Once xterm.js's scrollback is full, the
+lines added are not counted.)")
    (attribute-cache :initform (make-hash-table :test #'equal)
                     :accessor terminal-attribute-cache
                     :documentation "Attributes by their keys (see CELL-KEYS).")
@@ -404,23 +414,28 @@ TERMINAL-RENDER-THROTTLE-MS ago, otherwise when that time has passed."
 terminal and append an exit notice.  The screen is rendered in copy mode
 too (as Lem's terminal does): RENDER removes the lines above the screen
 first, which COPY-MODE-OFF could not do right once the notice is appended.
-When the lines above the screen are shown, one is reading them: they are put
-back above the final screen, and the windows and the cursor stay where they
+When the lines above the screen are shown, one is reading them: they stay
+above the final screen as they were, followed by the lines added since the
+screen was frozen, and the windows, the cursor and the mark stay where they
 were."
   (when (and (live-p terminal)
              (not (deleted-buffer-p (terminal-buffer terminal))))
     (let* ((buffer (terminal-buffer terminal))
            (history (and (terminal-scrollback-active terminal)
-                         (- (buffer-nlines buffer) (terminal-rows terminal))))
-           (points (buffer-view-points buffer))
+                         (terminal-scrollback-shown terminal)))
+           (history-text (and history (first-lines-text buffer history)))
+           (unrendered (if history (unrendered-scrollback-text terminal) ""))
+           (points (buffer-points-to-keep buffer))
            (positions (point-positions points)))
       (render terminal)
       (setf (terminal-exit-status terminal) status)
       (append-exit-notice terminal status)
-      ;; After the notice, which moves the cursor to its end.
       (when history
+        (insert-scrollback terminal (concatenate 'string history-text unrendered))
+        ;; After the notice, which moves the cursor to its end.
         (keep-points-in-history points positions history
-                                (or (activate-scrollback terminal) 0)))
+                                (count #\Newline unrendered))
+        (keep-cursors-in-windows buffer))
       (redraw-display))))
 
 (defgeneric destroy (terminal)
@@ -445,14 +460,15 @@ Returns the number of scrollback lines put in the buffer."))
   ;; Render what xterm.js parsed since the last render first: the lines it
   ;; pushed off the screen are above it already, and would show twice.  Not
   ;; when the scrollback is shown already: RENDER would take it away.
-  (when (and (live-p terminal)
-             (not (terminal-copy-mode terminal))
-             (not (terminal-scrollback-active terminal))
-             (not (deleted-buffer-p (terminal-buffer terminal))))
-    (render terminal))
+  (unless (terminal-copy-mode terminal)
+    (when (and (live-p terminal)
+               (not (terminal-scrollback-active terminal))
+               (not (deleted-buffer-p (terminal-buffer terminal))))
+      (render terminal))
+    (setf (terminal-frozen-base-y terminal) (scrollback-count terminal)))
   (setf (terminal-copy-mode terminal) t)
   (if (terminal-scrollback-active terminal)
-      (- (buffer-nlines (terminal-buffer terminal)) (terminal-rows terminal))
+      (terminal-scrollback-shown terminal)
       (or (activate-scrollback terminal) 0)))
 
 (defmethod copy-mode-off ((terminal terminal))
@@ -698,12 +714,44 @@ the point at the cursor."))
       0
       (js:get (active-screen terminal) "baseY")))
 
-(defun scrollback-text (terminal)
-  "The lines above the screen, each ended by a newline."
+(defun scrollback-text (terminal start end)
+  "The lines above the screen from START below END, each ended by a newline."
   (let ((screen (active-screen terminal)))
     (with-output-to-string (out)
-      (dotimes (y (js:get screen "baseY"))
-        (write-line (js:call (js:call screen "getLine" y) "translateToString" t) out)))))
+      (loop :for y :from start :below end
+            :do (write-line (js:call (js:call screen "getLine" y) "translateToString" t)
+                            out)))))
+
+(defun unrendered-count (terminal)
+  "How many of the lines above the screen were added since copy mode froze
+it (none out of copy mode)."
+  (if (terminal-copy-mode terminal)
+      (let ((count (scrollback-count terminal)))
+        (max 0 (min count (- count (terminal-frozen-base-y terminal)))))
+      0))
+
+(defun unrendered-scrollback-text (terminal)
+  "The lines above the screen added since copy mode froze it."
+  (let ((count (scrollback-count terminal)))
+    (scrollback-text terminal (- count (unrendered-count terminal)) count)))
+
+(defun first-lines-text (buffer n)
+  "The first N lines of BUFFER, each ended by a newline."
+  (with-point ((start (buffer-point buffer))
+               (end (buffer-point buffer)))
+    (buffer-start start)
+    (move-to-line end (1+ n))
+    (line-start end)
+    (points-to-string start end)))
+
+(defun buffer-points-to-keep (buffer)
+  "The points of BUFFER that are to stay on their text when the lines above
+the screen are put back: those of BUFFER-VIEW-POINTS, the mark and the other
+windows' points."
+  (remove-duplicates
+   (remove nil (append (buffer-view-points buffer)
+                       (list (buffer-mark buffer))
+                       (mapcar #'window-point (get-buffer-windows buffer))))))
 
 (defun buffer-view-points (buffer)
   (cons (buffer-point buffer)
@@ -721,17 +769,47 @@ the point at the cursor."))
             (line-start point)
             (character-offset point (min charpos (length (line-string point))))))
 
-(defun keep-points-in-history (points positions old-count new-count)
-  "Move each of POINTS back to its entry of POSITIONS, taken when OLD-COUNT
-lines were above the screen, now that NEW-COUNT are: a line of the history
-keeps its number, and a row of the screen moves down with the screen."
+(defun keep-cursors-in-windows (buffer)
+  "Move the point of each window showing BUFFER into what the window shows,
+if lines put above it moved it below: redisplay would move the window to it."
+  (dolist (window (get-buffer-windows buffer))
+    (let ((point (window-point window))
+          (last (+ (line-number-at-point (window-view-point window))
+                   (window-height window)
+                   -2)))
+      (when (> (line-number-at-point point) last)
+        (move-to-line point last)
+        (line-start point)))))
+
+(defun keep-points-in-history (points positions history unrendered)
+  "Move each of POINTS back to its entry of POSITIONS, taken when HISTORY
+lines were above the screen, now that UNRENDERED more lines follow them: a
+line of the history keeps its number, and a row of the screen moves down
+with the screen (to the last line, when the buffer got shorter)."
   (loop :for point :in points
         :for (line-number . charpos) :in positions
-        :do (move-to-line point (if (<= line-number old-count)
-                                    line-number
-                                    (+ line-number (- new-count old-count))))
+        :do (move-to-line point (min (buffer-nlines (point-buffer point))
+                                     (if (<= line-number history)
+                                         line-number
+                                         (+ line-number unrendered))))
             (line-start point)
             (character-offset point (min charpos (length (line-string point))))))
+
+(defun insert-scrollback (terminal text)
+  "Put TEXT, lines above the screen, into the buffer, keeping the cursor and
+the windows on what they showed.  Returns the number of lines."
+  (let* ((buffer (terminal-buffer terminal))
+         (points (buffer-view-points buffer))
+         (positions (point-positions points))
+         (count (count #\Newline text)))
+    (with-buffer-read-only buffer nil
+      (with-point ((start (buffer-point buffer)))
+        (buffer-start start)
+        (insert-string start text)))
+    (setf (terminal-scrollback-active terminal) t
+          (terminal-scrollback-shown terminal) count)
+    (shift-points-by-lines points positions count)
+    count))
 
 (defun deactivate-scrollback (terminal)
   "Remove the lines above the screen from the buffer.  Not once the process
@@ -739,37 +817,29 @@ has exited: the buffer then holds the final text, and keeps it."
   (when (and (terminal-scrollback-active terminal)
              (not (process-exited-p terminal)))
     (setf (terminal-scrollback-active terminal) nil)
-    (let* ((buffer (terminal-buffer terminal))
-           (rows (terminal-rows terminal))
-           (nlines (buffer-nlines buffer)))
-      (when (> nlines rows)
+    (let ((buffer (terminal-buffer terminal))
+          (shown (terminal-scrollback-shown terminal)))
+      (when (plusp shown)
         (with-buffer-read-only buffer nil
+          ;; Counted as they were put in: the rows may have changed since.
           (with-point ((start (buffer-point buffer))
                        (end (buffer-point buffer)))
             (buffer-start start)
-            (move-to-line end (1+ (- nlines rows)))
+            (move-to-line end (1+ shown))
             (line-start end)
             (delete-between-points start end)))))))
 
 (defun activate-scrollback (terminal)
   "Insert the lines above the screen into the buffer, keeping the cursor and
 the windows on what they showed.  Returns how many, or NIL when it inserts
-none."
+none.  In copy mode, the lines added since the screen froze are left out:
+the frozen screen shows some of them."
   (unless (or (terminal-scrollback-active terminal)
               (terminal-dead terminal))
-    (let ((text (scrollback-text terminal)))
+    (let ((text (scrollback-text terminal 0 (- (scrollback-count terminal)
+                                               (unrendered-count terminal)))))
       (when (plusp (length text))
-        (setf (terminal-scrollback-active terminal) t)
-        (let* ((buffer (terminal-buffer terminal))
-               (points (buffer-view-points buffer))
-               (positions (point-positions points)))
-          (with-buffer-read-only buffer nil
-            (with-point ((start (buffer-point buffer)))
-              (buffer-start start)
-              (insert-string start text)))
-          (let ((count (count #\Newline text)))
-            (shift-points-by-lines points positions count)
-            count))))))
+        (insert-scrollback terminal text)))))
 
 (defun snap-to-bottom (terminal)
   "Show the screen in every window of the terminal's buffer."
