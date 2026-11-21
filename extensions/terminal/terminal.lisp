@@ -22,6 +22,7 @@
            :activate-scrollback
            :deactivate-scrollback
            :snap-to-bottom
+           :buffer-windows
            :frozen-scrollback-lines
            :terminal-render-throttle-ms))
 (in-package :lem-terminal/terminal)
@@ -625,10 +626,19 @@ that may be edited by the user or watched by other features."
       (line:set-line-string chars line-obj)
       (setf (getf (line:line-plist line-obj) :attribute) attrs))))
 
+(defun buffer-windows (buffer)
+  "Every window showing BUFFER: in every frame (each frame-multiplexer tab is
+one), side and floating windows too.  The scrollback goes in and out of
+BUFFER for all of them, so all of them keep their place, and a terminal stays
+frozen while any of them reads the history."
+  (remove-duplicates
+   (loop :for frame :in (all-frames)
+         :append (get-buffer-windows buffer :frame frame :include-floating-windows t))))
+
 (defun buffer-view-points (buffer)
   "Return the buffer point and the view points of every window showing BUFFER."
   (cons (buffer-point buffer)
-        (mapcar #'window-view-point (get-buffer-windows buffer))))
+        (mapcar #'window-view-point (buffer-windows buffer))))
 
 (defun point-positions (points)
   "Return the (line-number . charpos) of each of POINTS."
@@ -721,7 +731,7 @@ mode freezes TERMINAL with them shown, or NIL."
 (defun snap-to-bottom (terminal)
   "Reset view of every window showing the terminal buffer to the terminal area."
   (let ((buffer (terminal-buffer terminal)))
-    (dolist (window (get-buffer-windows buffer))
+    (dolist (window (buffer-windows buffer))
       (buffer-start (window-view-point window)))))
 
 (defmethod render ((terminal terminal))

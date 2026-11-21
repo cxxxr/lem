@@ -74,6 +74,7 @@ sends (here they are encoded as xterm does, by KEY-SEQUENCE)."))
            :activate-scrollback
            :deactivate-scrollback
            :snap-to-bottom
+           :buffer-windows
            :frozen-scrollback-lines
            :terminal-render-throttle-ms))
 (in-package :lem-terminal/terminal)
@@ -708,9 +709,18 @@ the point at the cursor."))
       (dotimes (y (js:get screen "baseY"))
         (write-line (js:call (js:call screen "getLine" y) "translateToString" t) out)))))
 
+(defun buffer-windows (buffer)
+  "Every window showing BUFFER: in every frame (each frame-multiplexer tab is
+one), side and floating windows too.  The scrollback goes in and out of
+BUFFER for all of them, so all of them keep their place, and a terminal stays
+frozen while any of them reads the history."
+  (remove-duplicates
+   (loop :for frame :in (all-frames)
+         :append (get-buffer-windows buffer :frame frame :include-floating-windows t))))
+
 (defun buffer-view-points (buffer)
   (cons (buffer-point buffer)
-        (mapcar #'window-view-point (get-buffer-windows buffer))))
+        (mapcar #'window-view-point (buffer-windows buffer))))
 
 (defun point-positions (points)
   (mapcar (lambda (point)
@@ -772,7 +782,7 @@ mode freezes TERMINAL with them shown, or NIL."
 
 (defun snap-to-bottom (terminal)
   "Show the screen in every window of the terminal's buffer."
-  (dolist (window (get-buffer-windows (terminal-buffer terminal)))
+  (dolist (window (buffer-windows (terminal-buffer terminal)))
     (buffer-start (window-view-point window))))
 
 ;;; ---- input

@@ -359,11 +359,11 @@ inherit terminal-mode), which keeps the history until one leaves it."
 (defun call-with-scrollback (terminal window downward-p scroll)
   "Call SCROLL, a scroll of WINDOW (towards the end when DOWNWARD-P), with
 TERMINAL's scrollback shown.  A window that reaches the screen stops at its
-first row; once every window of the buffer is there, the terminal runs on as
-before.  Scrolling down from the screen does nothing: there is nothing below
+first row; once every window of the buffer is there (in every frame, see
+TERMINAL:BUFFER-WINDOWS), the terminal runs on as before.  Scrolling down from the screen does nothing: there is nothing below
 it."
   (let* ((buffer (window-buffer window))
-         (windows (adjoin window (get-buffer-windows buffer)))
+         (windows (adjoin window (terminal:buffer-windows buffer)))
          (scrolling (terminal:frozen-scrollback-lines terminal)))
     (unless (and downward-p
                  (or (not scrolling) (> (view-line window) scrolling)))
