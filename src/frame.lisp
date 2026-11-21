@@ -166,24 +166,24 @@ is left; callers that need a buffer must handle that."
   (alexandria:deletef *frames* frame)
   (teardown-windows frame))
 
+(defun map-protected (function list)
+  "Call FUNCTION on each element of LIST, on all of them even if one signals.
+An error is not caught: it is signalled where it happens, with its stack, and
+the calls on the rest of LIST run while it unwinds."
+  (when list
+    (unwind-protect (funcall function (first list))
+      (map-protected function (rest list)))))
+
 (defun teardown-frames ()
   "Tear down every frame: the ones made (all-frames), such as the hidden tabs of
 frame-multiplexer, and the ones mapped to a display.
-Each frame is torn down even if an earlier one signals an error; the first
-such error is signalled again once all are done."
-  (let ((frames (copy-list (all-frames)))
-        (first-error nil))
+Each frame is torn down even if an earlier one signals an error."
+  (let ((frames (copy-list (all-frames))))
     (maphash (lambda (display frame)
                (declare (ignore display))
                (pushnew frame frames))
              *display-frame-map*)
-    (dolist (frame frames)
-      (handler-case (teardown-frame frame)
-        (error (condition)
-          (unless first-error
-            (setf first-error condition)))))
-    (when first-error
-      (error first-error))))
+    (map-protected #'teardown-frame frames)))
 
 (defun window-in-frame-p (window frame)
   (when (or (find window (window-list frame))

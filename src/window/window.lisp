@@ -341,29 +341,35 @@ to the frame again (balance-windows, a resize of the display)."
   "Free the windows of FRAME: the window tree, the floating windows (side
 windows among them), the windows attached to them, and the header windows
 that no other frame has.  Each is freed once and marked deleted, so that a
-later delete-window does nothing.  A frame never set up has no window tree."
+later delete-window does nothing.  A frame never set up has no window tree.
+All are freed even if freeing one signals an error (see map-protected)."
   (labels ((free (window)
+             ;; Marked first, so that a window whose freeing failed is not
+             ;; freed again.
              (unless (window-deleted-p window)
-               (alexandria:when-let ((attached (window-attached-window window)))
-                 (free attached))
-               (%free-window window)
-               (setf (window-deleted-p window) t))))
-    (when (frame-window-tree frame)
-      (mapc #'free (window-list frame)))
+               (setf (window-deleted-p window) t)
+               (unwind-protect
+                    (alexandria:when-let ((attached (window-attached-window window)))
+                      (free attached))
+                 (%free-window window))))
+           (shared-header-p (header)
+             (some (lambda (other)
+                     (and (not (eq other frame))
+                          (member header (frame-header-windows other))))
+                   (all-frames))))
     ;; A side window is a floating window too: FREE skips it the second time.
-    (mapc #'free (frame-floating-windows frame))
-    (mapc #'free (remove nil (list (frame-leftside-window frame)
-                                   (frame-rightside-window frame)
-                                   (frame-bottomside-window frame))))
     ;; make-frame gives each new frame the header windows of the current one
-    ;; (each frame-multiplexer tab has the tab bar): free a header window with
-    ;; the last frame that has it.
-    (dolist (header (frame-header-windows frame))
-      (unless (some (lambda (other)
-                      (and (not (eq other frame))
-                           (member header (frame-header-windows other))))
-                    (all-frames))
-        (free header))))
+    ;; (each frame-multiplexer tab has the tab bar): a header window is freed
+    ;; with the last frame that has it.
+    (map-protected #'free
+                   (append (when (frame-window-tree frame)
+                             (window-list frame))
+                           (frame-floating-windows frame)
+                           (remove nil (list (frame-leftside-window frame)
+                                             (frame-rightside-window frame)
+                                             (frame-bottomside-window frame)))
+                           (remove-if #'shared-header-p
+                                      (frame-header-windows frame)))))
   (values))
 
 (defun adjust-view-point (window)

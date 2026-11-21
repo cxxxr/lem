@@ -473,6 +473,8 @@
                     header-points))))))
 
 (deftest adjust-all-window-size/header-windows-move-up
+  ;; adjust-all-window-size and topleft-window-y are internal: redisplay runs
+  ;; them, which the fake interface does not draw.
   (lem:with-current-buffers ()
     (with-fake-interface ()
       (let* ((upper (make-instance 'lem:header-window
@@ -492,6 +494,8 @@
           (lem:delete-window lower))))))
 
 (deftest teardown-frame/frees-attached-windows
+  ;; window-attached-window and window-deleted-p are internal: lem exports no
+  ;; way to reach an attached window or to tell that a window was freed.
   (lem:with-current-buffers ()
     (let* ((buffer (make-attached-buffer))
            (attached (lem-core::buffer-attached-buffer buffer))

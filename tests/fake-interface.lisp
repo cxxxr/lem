@@ -69,20 +69,51 @@
         (ok (eq frame (unmap-frame (implementation))))
         (ok (null (get-frame (implementation))))))))
 
-(deftest a-failing-teardown-leaves-the-other-frames-torn-down
+(defun make-test-floating-window (buffer)
+  (lem:make-floating-window :buffer buffer :x 0 :y 0 :width 10 :height 1))
+
+(deftest a-failing-teardown-leaves-the-other-windows-torn-down
+  ;; lem-core::window-deleted-p and the frame's floating windows are internal:
+  ;; lem exports no way to tell that a window was freed.
   (with-current-buffers ()
-    (let ((window nil))
+    (let ((windows '()))
       (testing "the error of the teardown is reported when the body returned"
-        (ok (signals (with-fake-interface ()
-                       (setf window (current-window))
-                       ;; teardown-frame fails on it.
-                       (push :not-a-frame lem-core::*frames*)))))
-      (testing "the frames after the failing one are torn down"
-        (ok (lem-core::window-deleted-p window))))
-    (testing "the error of the body is kept, not replaced by the teardown's"
+        (ok (signals
+             (with-fake-interface ()
+               (let ((buffer (make-buffer "floating")))
+                 ;; Frames are torn down newest first: TORN-BEFORE, then
+                 ;; BROKEN, then the first frame, with HEADER.
+                 (let* ((header (make-instance 'header-window
+                                               :buffer (make-buffer "header" :temporary t)))
+                        (first-floating (make-test-floating-window buffer))
+                        (broken (make-frame (current-frame)))
+                        (torn-before (make-frame (current-frame))))
+                   (setup-frame broken (make-buffer "broken"))
+                   (setup-frame torn-before (make-buffer "torn-before"))
+                   (let ((broken-floating (make-test-floating-window buffer)))
+                     ;; Move it to BROKEN, after a window whose freeing fails.
+                     (lem-core::remove-floating-windows (current-frame) broken-floating)
+                     (setf (lem:frame-floating-windows broken)
+                           (list :not-a-window broken-floating))
+                     (setf windows
+                           (list header first-floating (current-window) broken-floating
+                                 (first (window-list broken))
+                                 (first (window-list torn-before)))))))))))
+      (testing "every other window is freed: of the failing frame and of the frames after it"
+        (ok (= 6 (length windows)))
+        (ok (every #'lem-core::window-deleted-p windows)))))
+  (testing "the error of the body is kept, not replaced by the teardown's"
+    (with-current-buffers ()
       (ok (equal "the body's error"
                  (handler-case
                      (with-fake-interface ()
-                       (push :not-a-frame lem-core::*frames*)
+                       (push :not-a-window (lem:frame-floating-windows (current-frame)))
                        (error "the body's error"))
-                   (error (e) (princ-to-string e))))))))
+                   (error (e) (princ-to-string e)))))))
+  (testing "after a return-from, the error of the teardown is reported"
+    (with-current-buffers ()
+      (ok (signals
+           (block body
+             (with-fake-interface ()
+               (push :not-a-window (lem:frame-floating-windows (current-frame)))
+               (return-from body))))))))
