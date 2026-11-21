@@ -8,9 +8,10 @@
 to offer for selection in that frame.
 Extensions that use each frame as a separate workspace, such as
 frame-multiplexer, set this.  A non-empty list restricts the frame to those
-buffers.  To restrict it to no buffer at all, return NIL and true as a second
-value.  When the variable is NIL, or the function returns NIL alone, every
-buffer is offered.")
+buffers.  To restrict it to no buffer at all, return NIL and T as a second
+value: only T, so that a function that happens to return another second value
+(as GETHASH or FIND-SYMBOL do) does not hide every buffer.  When the variable
+is NIL, or the function returns NIL without T, every buffer is offered.")
 
 (defgeneric update-prompt-window (window)
   (:method (window)))
@@ -149,7 +150,7 @@ is left; callers that need a buffer must handle that."
   (multiple-value-bind (buffers restricted)
       (when (and *frame-buffer-list-function* frame)
         (funcall *frame-buffer-list-function* frame))
-    (if (or buffers restricted)
+    (if (or buffers (eq restricted t))
         buffers
         (buffer-list))))
 

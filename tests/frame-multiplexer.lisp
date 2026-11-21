@@ -185,39 +185,62 @@
           (testing "other-buffer falls back to the current buffer, not a buffer of the other frame"
             (ok (eq temporary (other-buffer)))))))))
 
+(defun call-counting-calls (names function)
+  "Call FUNCTION with the functions NAMES counting their calls, and return the
+counts, in the order of NAMES."
+  (let* ((counts (make-list (length names) :initial-element 0))
+         (originals (mapcar #'fdefinition names)))
+    ;; lem/frame-multiplexer is a locked package on SBCL.
+    (#+sbcl sb-ext:without-package-locks #-sbcl progn
+      (unwind-protect
+           (progn
+             (loop :for name :in names
+                   :for original :in originals
+                   :for cell :on counts
+                   :do (let ((original original)
+                             (cell cell))
+                         (setf (fdefinition name)
+                               (lambda (&rest args)
+                                 (incf (car cell))
+                                 (apply original args)))))
+             (funcall function))
+        (loop :for name :in names
+              :for original :in originals
+              :do (setf (fdefinition name) original))))
+    counts))
+
 (deftest the-workspace-buffer-list-reads-the-frame-table-once
   (with-frame-multiplexer ()
     (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
     (loop :for i :below 20
           :do (make-buffer (format nil "background-~D" i)))
-    (let* ((count 0)
-           (name 'lem/frame-multiplexer::virtual-frame-entries)
-           (original (fdefinition name)))
-      ;; Count the calls of virtual-frame-entries, which copies the whole table.
-      ;; lem/frame-multiplexer is a locked package on SBCL.
-      (#+sbcl sb-ext:without-package-locks #-sbcl progn
-        (setf (fdefinition name)
-              (lambda (virtual-frame)
-                (incf count)
-                (funcall original virtual-frame)))
-        (unwind-protect (frame-buffer-list)
-          (setf (fdefinition name) original)))
-      (ok (<= count 1)))))
+    ;; claimed-buffers walks the whole frame table and virtual-frame-entries
+    ;; copies it: once per call of frame-buffer-list, not once per buffer.
+    ;; Expecting claimed-buffers exactly once also makes the test fail if the
+    ;; counting misses the calls (the function inlined or no longer used).
+    (destructuring-bind (claimed entries)
+        (call-counting-calls '(lem/frame-multiplexer::claimed-buffers
+                               lem/frame-multiplexer::virtual-frame-entries)
+                             #'frame-buffer-list)
+      (ok (= 1 claimed))
+      (ok (<= entries 1)))))
 
 (deftest a-frame-buffer-list-function-of-one-value-still-restricts
   (with-fresh-editor ()
     (let ((x (make-buffer "x")))
       (make-buffer "y")
-      (let ((*frame-buffer-list-function* (lambda (frame)
-                                                      (declare (ignore frame))
-                                                      (list x))))
+      (let ((*frame-buffer-list-function*
+              (lambda (frame) (declare (ignore frame)) (list x))))
         (ok (equal (list x) (frame-buffer-list))))
       (let ((*frame-buffer-list-function* (constantly nil)))
         (ok (equal (buffer-list) (frame-buffer-list))))
-      (let ((*frame-buffer-list-function* (lambda (frame)
-                                                      (declare (ignore frame))
-                                                      (values nil t))))
-        (ok (null (frame-buffer-list)))))))
+      (let ((*frame-buffer-list-function*
+              (lambda (frame) (declare (ignore frame)) (values nil t))))
+        (ok (null (frame-buffer-list))))
+      (testing "only T as the second value restricts the frame to no buffer"
+        (let ((*frame-buffer-list-function*
+                (lambda (frame) (declare (ignore frame)) (values nil :unknown))))
+          (ok (equal (buffer-list) (frame-buffer-list))))))))
 
 (deftest killing-tmp-when-it-is-the-only-buffer-of-a-frame
   (with-frame-multiplexer ()
