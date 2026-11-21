@@ -130,7 +130,13 @@ abort itself.")
     :initform nil
     :reader timer-expired-p
     :writer set-timer-expired-p
-    :type boolean)))
+    :type boolean)
+   (running-p
+    :initform nil
+    :accessor timer-running-p
+    :type boolean
+    :documentation "True while the timer's function runs: an idle timer is not
+called again from a read loop its own function entered (a prompt it opened).")))
 
 (defmethod print-object ((object <timer>) stream)
   (print-unreadable-object (object stream :identity t :type t)
@@ -155,27 +161,30 @@ abort itself.")
   (let ((*running-timer* timer)
         (backtrace nil)
         (outside-timer-p nil))
-    (handler-case
-        ;; The backtrace is taken here: by the time handler-case runs its
-        ;; clause, the frames of the failing timer function are gone.
-        (handler-bind ((error (lambda (condition)
-                                (unless (cancels-timer-function-p condition)
-                                  (setf backtrace
-                                        (ignore-errors
-                                         (lem/common/backtrace:safe-backtrace))
-                                        outside-timer-p (not (running-timer-p)))))))
-          (if (timer-handle-function timer)
-              (handler-bind ((error (lambda (condition)
-                                      (unless (cancels-timer-function-p condition)
-                                        (funcall (timer-handle-function timer)
-                                                 condition)))))
-                (funcall (timer-function timer)))
-              (funcall (timer-function timer))))
-      (error (condition)
-        ;; A cancelled function just returns.
-        (unless (cancels-timer-function-p condition)
-          (error 'timer-error :timer timer :condition condition :backtrace backtrace
-                              :outside-timer-p outside-timer-p))))))
+    (setf (timer-running-p timer) t)
+    (unwind-protect
+         (handler-case
+             ;; The backtrace is taken here: by the time handler-case runs its
+             ;; clause, the frames of the failing timer function are gone.
+             (handler-bind ((error (lambda (condition)
+                                     (unless (cancels-timer-function-p condition)
+                                       (setf backtrace
+                                             (ignore-errors
+                                              (lem/common/backtrace:safe-backtrace))
+                                             outside-timer-p (not (running-timer-p)))))))
+               (if (timer-handle-function timer)
+                   (handler-bind ((error (lambda (condition)
+                                           (unless (cancels-timer-function-p condition)
+                                             (funcall (timer-handle-function timer)
+                                                      condition)))))
+                     (funcall (timer-function timer)))
+                   (funcall (timer-function timer))))
+           (error (condition)
+             ;; A cancelled function just returns.
+             (unless (cancels-timer-function-p condition)
+               (error 'timer-error :timer timer :condition condition :backtrace backtrace
+                                   :outside-timer-p outside-timer-p))))
+      (setf (timer-running-p timer) nil))))
 
 
 ;;; timer
@@ -274,6 +283,11 @@ abort itself.")
   (make-timer-instance 'idle-timer function name handle-function))
 
 (defmethod start-timer ((timer idle-timer) ms &key repeat)
+  ;; Started again: in the list once, and not expired (stop-idle-timers
+  ;; leaves expired timers out).
+  (setf *idle-timer-list* (delete timer *idle-timer-list*)
+        *processed-idle-timer-list* (delete timer *processed-idle-timer-list*))
+  (inspire-timer timer)
   (setf (timer-ms timer) ms)
   (setf (timer-repeat-p timer) repeat)
   ;; Not idle: no time to count from until the next with-idle-timers, also
@@ -309,15 +323,12 @@ abort itself.")
   (setf *processed-idle-timer-list* '()))
 
 (defun call-with-idle-timers (function)
-  ;; Each call has its own processed timers: one nested in a prompt a timer
-  ;; opened must not put that timer, still running, back to fire again.
-  ;; unwind-protect: a timer-error or an abort leaving FUNCTION must not
-  ;; leave the repeating timers that fired out of the list.
-  (let ((*processed-idle-timer-list* '()))
-    (start-idle-timers)
-    (unwind-protect (let ((*idle-p* t))
-                      (funcall function))
-      (stop-idle-timers))))
+  ;; unwind-protect: a timer-error leaving FUNCTION must not leave the
+  ;; repeating timers that fired out of the list.
+  (start-idle-timers)
+  (unwind-protect (let ((*idle-p* t))
+                    (funcall function))
+    (stop-idle-timers)))
 
 (defmacro with-idle-timers (() &body body)
   `(call-with-idle-timers (lambda () ,@body)))
@@ -333,6 +344,8 @@ timer ran in before that loop enters with-idle-timers again."
   (let* ((tick-time (get-microsecond-time *timer-manager*))
          (updating-timers (remove-if-not (lambda (timer)
                                            (and (timer-started-p timer)
+                                                ;; Not again from a prompt it opened.
+                                                (not (timer-running-p timer))
                                                 (< (timer-next-time timer) tick-time)))
                                          *idle-timer-list*))
          (deleting-timers (remove-if #'timer-repeat-p

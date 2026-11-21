@@ -133,6 +133,8 @@ can delay by much more than the timer's own interval.")
       (testing "its time of the earlier idle time is not counted from"
         (ok (null (get-next-timer-timing-ms)))))))
 
+;; The tests below read lem/common/timer::*idle-timer-list*: the timer
+;; package exports no way to list the idle timers.
 (defun due-idle-timer (function &key repeat (name "due"))
   "Start an idle timer of FUNCTION, due 10 ms after *current-time*."
   (let ((timer (make-idle-timer function :name name)))
@@ -189,3 +191,34 @@ can delay by much more than the timer's own interval.")
         (setf *current-time* 100)
         (update-idle-timers))
       (ok (not (member timer lem/common/timer::*idle-timer-list*))))))
+
+(deftest a-repeating-idle-timer-fired-outside-of-idle-time-comes-back
+  ;; As a command reading a key with read-key (C-q): update-idle-timers runs
+  ;; with no with-idle-timers around it.
+  (with-testing-timer-manager ()
+    (let* ((count 0)
+           (timer (due-idle-timer (lambda () (incf count)) :repeat t :name "outside")))
+      (with-idle-timers ())
+      (setf *current-time* 100)
+      (update-idle-timers)
+      (ok (= 1 count))
+      (with-idle-timers ())
+      (ok (member timer lem/common/timer::*idle-timer-list*)))))
+
+(deftest a-repeating-idle-timer-stopped-and-started-again-keeps-running
+  (with-testing-timer-manager ()
+    (let* ((restarted (make-idle-timer (lambda ()) :name "restarted"))
+           (restarting (due-idle-timer (lambda ()
+                                         (stop-timer restarted)
+                                         (start-timer restarted 10 :repeat t))
+                                       :name "restarting")))
+      (declare (ignore restarting))
+      (start-timer restarted 1000 :repeat t)
+      (with-idle-timers ()
+        (setf *current-time* 100)
+        (update-idle-timers)
+        (setf *current-time* 200)
+        (update-idle-timers))
+      (testing "it is in the list once, not expired"
+        (ok (= 1 (count restarted lem/common/timer::*idle-timer-list*)))
+        (ok (not (timer-expired-p restarted)))))))
