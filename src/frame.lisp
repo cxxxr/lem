@@ -167,10 +167,23 @@ is left; callers that need a buffer must handle that."
   (teardown-windows frame))
 
 (defun teardown-frames ()
-  (maphash (lambda (k v)
-             (declare (ignore k))
-             (teardown-frame v))
-           *display-frame-map*))
+  "Tear down every frame: the ones made (all-frames), such as the hidden tabs of
+frame-multiplexer, and the ones mapped to a display.
+Each frame is torn down even if an earlier one signals an error; the first
+such error is signalled again once all are done."
+  (let ((frames (copy-list (all-frames)))
+        (first-error nil))
+    (maphash (lambda (display frame)
+               (declare (ignore display))
+               (pushnew frame frames))
+             *display-frame-map*)
+    (dolist (frame frames)
+      (handler-case (teardown-frame frame)
+        (error (condition)
+          (unless first-error
+            (setf first-error condition)))))
+    (when first-error
+      (error first-error))))
 
 (defun window-in-frame-p (window frame)
   (when (or (find window (window-list frame))

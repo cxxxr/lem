@@ -68,3 +68,21 @@
         (ok (eq frame (get-frame (implementation))))
         (ok (eq frame (unmap-frame (implementation))))
         (ok (null (get-frame (implementation))))))))
+
+(deftest a-failing-teardown-leaves-the-other-frames-torn-down
+  (with-current-buffers ()
+    (let ((window nil))
+      (testing "the error of the teardown is reported when the body returned"
+        (ok (signals (with-fake-interface ()
+                       (setf window (current-window))
+                       ;; teardown-frame fails on it.
+                       (push :not-a-frame lem-core::*frames*)))))
+      (testing "the frames after the failing one are torn down"
+        (ok (lem-core::window-deleted-p window))))
+    (testing "the error of the body is kept, not replaced by the teardown's"
+      (ok (equal "the body's error"
+                 (handler-case
+                     (with-fake-interface ()
+                       (push :not-a-frame lem-core::*frames*)
+                       (error "the body's error"))
+                   (error (e) (princ-to-string e))))))))

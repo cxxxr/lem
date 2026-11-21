@@ -471,3 +471,57 @@
       (testing "the points of the header window are deleted"
         (ok (notany (lambda (point) (buffer-has-point-p shown point))
                     header-points))))))
+
+(deftest adjust-all-window-size/header-windows-move-up
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((upper (make-instance 'lem:header-window
+                                   :buffer (lem:make-buffer "upper" :temporary t)))
+             (lower (make-instance 'lem:header-window
+                                   :buffer (lem:make-buffer "lower" :temporary t))))
+        (unwind-protect
+             (progn
+               (assert (= 1 (lem:window-y lower)))
+               (lem:delete-window upper)
+               (lem-core::adjust-all-window-size)
+               (testing "the header window under the deleted one moves up"
+                 (ok (= 0 (lem:window-y lower))))
+               (testing "and the editor windows begin under it"
+                 (ok (= 1 (lem-core::topleft-window-y (lem:current-frame))))
+                 (ok (= 1 (lem:window-y (lem:current-window))))))
+          (lem:delete-window lower))))))
+
+(deftest teardown-frame/frees-attached-windows
+  (lem:with-current-buffers ()
+    (let* ((buffer (make-attached-buffer))
+           (attached (lem-core::buffer-attached-buffer buffer))
+           (window nil)
+           (points '()))
+      (with-fake-interface ()
+        (lem:switch-to-buffer buffer)
+        (setf window (lem-core::window-attached-window
+                      (first (lem:get-buffer-windows buffer))))
+        (assert window)
+        (setf points (window-points window))
+        (ok (every (lambda (point) (buffer-has-point-p attached point)) points)))
+      (testing "the attached window is freed with its frame"
+        (ok (lem-core::window-deleted-p window))
+        (ok (notany (lambda (point) (buffer-has-point-p attached point)) points))))))
+
+(deftest teardown-frames/every-frame
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((hidden-buffer (lem:make-buffer "hidden"))
+             ;; As a hidden frame-multiplexer tab: made and set up, not mapped.
+             (hidden (lem:make-frame (lem:current-frame)))
+             (shown-window (lem:current-window)))
+        (lem:setup-frame hidden hidden-buffer)
+        (let* ((hidden-window (first (lem:window-list hidden)))
+               (points (window-points hidden-window)))
+          (lem:teardown-frames)
+          (ok (null (lem:all-frames)))
+          (ok (lem-core::window-deleted-p shown-window))
+          (testing "the frame not mapped to the display is torn down too"
+            (ok (lem-core::window-deleted-p hidden-window))
+            (ok (notany (lambda (point) (buffer-has-point-p hidden-buffer point))
+                        points))))))))
