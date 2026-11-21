@@ -23,7 +23,8 @@ on:
       - '**.md'
       - 'docs/**'
   # Once a day on the default branch (staging on the cxxxr/lem fork),
-  # skipped when that commit already passed in any run but a pull_request one.
+  # skipped when that commit already passed in a push or manual run, or in a
+  # scheduled run that tested rather than skipped.
   schedule:
     - cron: '30 19 * * *'   # 19:30 UTC, 04:30 JST
   workflow_dispatch:
@@ -54,37 +55,42 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'test.yml',
-              head_sha: context.sha,
-              per_page: 100,
-            });
-            // Not the status: 'success' filter of the API: it can miss a run
-            // that finished minutes ago.  A run still in progress does not
-            // count (it can still fail), so the commit of a push just before
-            // the schedule is tested twice.
-            // A scheduled run that skipped ends as a success too: it counts
-            // only if it tested (its "Run tests" step succeeded).  Else, once
-            // the run it skipped on failed in a re-run, every later scheduled
-            // run would skip on it.
-            const tested = async (run) => {
-              if (run.conclusion !== 'success' || run.event === 'pull_request') return false;
-              if (run.event !== 'schedule') return true;
-              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+            // On an API error, test rather than fail: a failed run would test nothing.
+            let passed;
+            try {
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                run_id: run.id,
-                filter: 'latest',
+                workflow_id: 'test.yml',
+                head_sha: context.sha,
                 per_page: 100,
               });
-              return jobs.some((job) => job.name === 'test' &&
-                (job.steps || []).some((step) => step.name === 'Run tests' && step.conclusion === 'success'));
-            };
-            let passed;
-            for (const run of runs) {
-              if (await tested(run)) { passed = run; break; }
+              // Not the status: 'success' filter of the API: it can miss a run
+              // that finished minutes ago.  A run still in progress does not
+              // count (it can still fail), so the commit of a push just before
+              // the schedule is tested twice.
+              // A scheduled run that skipped ends as a success too: it counts
+              // only if it tested (its "Run tests" step succeeded).  Else, once
+              // the run it skipped on failed in a re-run, every later scheduled
+              // run would skip on it.
+              const tested = async (run) => {
+                if (run.conclusion !== 'success' || run.event === 'pull_request') return false;
+                if (run.event !== 'schedule') return true;
+                const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: run.id,
+                  filter: 'latest',
+                  per_page: 100,
+                });
+                return jobs.some((job) => job.name === 'test' &&
+                  (job.steps || []).some((step) => step.name === 'Run tests' && step.conclusion === 'success'));
+              };
+              for (const run of runs) {
+                if (await tested(run)) { passed = run; break; }
+              }
+            } catch (error) {
+              core.warning(`Could not look up the runs of ${context.sha}: ${error.message}`);
             }
             if (passed) console.log(`${context.sha} already passed in run ${passed.html_url} (${passed.event}): skipping.`);
             else console.log(`${context.sha} has no successful push, manual or scheduled test run yet: testing.`);
