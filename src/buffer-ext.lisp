@@ -47,7 +47,9 @@ Header windows are not among them (see get-buffer-windows)."
      buffer)
   ;; A header window (the frame-multiplexer tab bar, the server's tabbar) draws
   ;; into its own buffer, so it cannot be given another buffer: its owner deletes
-  ;; the window first.  Refuse before anything is changed.
+  ;; the window first.  Refuse before anything is changed.  This guards against a
+  ;; programming error, hence ERROR: such buffers are temporary, so no command
+  ;; offers them to be killed.
   ;; The attached buffer too, as it is deleted with BUFFER after the windows changed.
   (dolist (b (list buffer (buffer-attached-buffer buffer)))
     (alexandria:when-let ((window (and b (buffer-header-window b))))

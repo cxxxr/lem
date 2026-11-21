@@ -404,8 +404,8 @@
       (let* ((buffer (lem:make-buffer "header" :temporary t))
              (header (make-instance 'lem:header-window :buffer buffer))
              ;; As frame-multiplexer's new tabs: the new frame gets the header windows.
-             (other (lem-core::make-frame (lem:current-frame))))
-        (lem-core::setup-frame other (lem:make-buffer "other"))
+             (other (lem:make-frame (lem:current-frame))))
+        (lem:setup-frame other (lem:make-buffer "other"))
         (unwind-protect
              (progn
                (assert (member header (lem:frame-header-windows other)))
@@ -414,4 +414,4 @@
                (testing "so its buffer can be deleted afterwards"
                  (lem:delete-buffer buffer)
                  (ok (lem:deleted-buffer-p buffer))))
-          (lem-core::teardown-frame other))))))
+          (lem:teardown-frame other))))))

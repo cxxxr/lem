@@ -22,7 +22,7 @@ Subclasses can specialize this to request more vertical space.")
 (defmethod %delete-window ((window header-window))
   ;; make-frame gives a new frame the header windows of the current one, so the
   ;; window can be in several frames: leave none of them with the deleted window.
-  (dolist (frame (adjoin (current-frame) (all-frames)))
+  (dolist (frame (all-frames))
     (when (find window (frame-header-windows frame))
       (remove-header-window frame window)
       (notify-header-window-modified frame))))
