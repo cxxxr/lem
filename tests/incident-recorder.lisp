@@ -44,8 +44,7 @@ backtrace taken where it was signalled, as the editor's handlers do."
     (block nil
       (handler-bind ((error (lambda (c)
                               (setf condition c
-                                    backtrace (with-output-to-string (s)
-                                                (uiop:print-backtrace :stream s :count 100)))
+                                    backtrace (lem/common/backtrace:safe-backtrace))
                               (return))))
         (funcall function)))
     (values condition backtrace)))
@@ -68,15 +67,47 @@ backtrace taken where it was signalled, as the editor's handlers do."
   (ok (equal "(LAMBDA (X) :IN LEM-CORE::BAR)"
              (ir::frame-function-name "12: ((LAMBDA (X) :IN LEM-CORE::BAR) 1)")))
   (ok (equal "LEM-CORE::BAZ" (ir::frame-function-name "0: (LEM-CORE::BAZ)")))
-  (ok (null (ir::frame-function-name "Backtrace for: #<THREAD>"))))
+  (ok (null (ir::frame-function-name "Backtrace for: #<THREAD>")))
+  ;; the handler of with-error-handler, exported COMMAND-LOOP or not
+  (ok (ppcre:scan ir::*machinery-frame-regex* "(LAMBDA (CONDITION) :IN LEM-CORE:COMMAND-LOOP)"))
+  (ok (ppcre:scan ir::*machinery-frame-regex* "(LAMBDA (CONDITION) :IN LEM-CORE::TOPLEVEL-COMMAND-LOOP)"))
+  (ok (ppcre:scan ir::*machinery-frame-regex* "LEM/COMMON/BACKTRACE:SAFE-BACKTRACE")))
+
+;; debug 2 keeps the frames (no tail calls) and their arguments
+(defun take-text (text)
+  (declare (optimize (debug 2)))
+  (error "cannot take ~D chars" (length text)))
+(defun pass-text (tag text)
+  (declare (optimize (debug 2)))
+  (take-text text)
+  tag)
 
 (deftest long-strings-in-the-backtrace-are-cut
-  (let* ((text (make-string 200 :initial-element #\x))
-         (frame (format nil "1: (LEM::INSERT-STRING #<POINT> ~S)" text))
-         (cut (ir::sanitize-backtrace frame)))
-    (ok (search "(200 chars)" cut))
-    (ng (search text cut)))
-  (ok (search "\"short\"" (ir::sanitize-backtrace "1: (FOO \"short\")"))))
+  ;; longer than the ~200 characters SBCL's printer writes unquoted, with
+  ;; quotes and lines that look like frames
+  (let ((text (format nil "~{~A~%~}"
+                      (loop :for i :from 1 :to 40
+                            :collect (format nil "12: (line \"~D\"" i)))))
+    (multiple-value-bind (condition backtrace)
+        (signal-and-capture (lambda () (pass-text "tag" text)))
+      (declare (ignore condition))
+      (let ((lines (uiop:split-string (string-right-trim '(#\Newline) backtrace)
+                                      :separator '(#\Newline))))
+        ;; one line per frame: no line of the text is taken as a frame
+        (ok (every (lambda (line) (ppcre:scan "^\\d+: \\(" line)) lines))
+        (ng (search "line \\\"40" backtrace))
+        (ok (search (format nil "(~D chars)" (length text)) backtrace))
+        ;; the frames after the string are kept
+        (ok (find-if (lambda (line) (search "TAKE-TEXT" line)) lines))
+        (ok (find-if (lambda (line) (search "PASS-TEXT \"tag\"" line)) lines))))))
+
+(deftest a-long-message-is-cut
+  (with-recorder (directory)
+    (multiple-value-bind (condition backtrace)
+        (signal-and-capture (lambda () (error "bad: ~A" (make-string 200000 :initial-element #\"))))
+      (let ((path (ir:record-incident condition backtrace :command)))
+        (ok path)
+        (ok (< (length (gethash "message" (gethash "condition" (read-incident path)))) 1000))))))
 
 (deftest error-report-hook-errors-are-dropped
   (let ((called '()))
@@ -187,20 +218,6 @@ backtrace taken where it was signalled, as the editor's handlers do."
   (ok (equal "C-a" (ir::recorded-keys (list (lem:make-key :ctrl t :sym "a")))))
   (ok (equal "Return" (ir::recorded-keys (list (lem:make-key :sym "Return")))))
   (ok (null (ir::recorded-keys '()))))
-
-(deftest a-string-over-several-lines-is-cut
-  (let* ((text (format nil "~{~A~%~}" (loop :for i :from 1 :to 50
-                                            :collect (format nil "12: (line ~D" i))))
-         (backtrace (format nil "0: (LEM::INSERT-STRING #<POINT> ~S)~%1: (LEM::CALLER)" text))
-         (cut (ir::sanitize-backtrace backtrace)))
-    (ok (search "chars)" cut))
-    (ng (search "line 50" cut))
-    ;; the lines of the string are not frames any more
-    (ok (= 2 (count-if (lambda (line) (ir::frame-function-name line))
-                       (uiop:split-string (string-right-trim '(#\Newline) cut)
-                                          :separator '(#\Newline))))))
-  (ok (search "#\\\" \"ok\""
-              (ir::sanitize-backtrace (format nil "1: (FOO #\\\" \"ok\")~%2: (BAR \"x\")")))))
 
 (define-condition test-error (error) ())
 

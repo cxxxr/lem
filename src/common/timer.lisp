@@ -58,7 +58,8 @@
    (backtrace :initarg :backtrace
               :initform nil
               :reader timer-error-backtrace
-              :documentation "The backtrace of CONDITION, taken before the stack unwound."))
+              :documentation "The backtrace of CONDITION, taken before the stack unwound
+(lem/common/backtrace:safe-backtrace)."))
   (:report (lambda (c s)
              (with-slots (timer condition) c
                (format s "Error running timer ~S: ~A" (timer-name timer) condition)))))
@@ -118,12 +119,10 @@
         ;; The backtrace is taken here: by the time handler-case runs its
         ;; clause, the frames of the failing timer function are gone.
         (handler-bind ((error (lambda (condition)
+                                (declare (ignore condition))
                                 (setf backtrace
                                       (ignore-errors
-                                       (with-output-to-string (stream)
-                                         (uiop:print-backtrace :stream stream
-                                                               :condition condition
-                                                               :count 100)))))))
+                                       (lem/common/backtrace:safe-backtrace))))))
           (if (timer-handle-function timer)
               (handler-bind ((error (timer-handle-function timer)))
                 (funcall (timer-function timer)))

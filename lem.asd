@@ -45,6 +45,7 @@
                 :components ((:file "ring")
                              (:file "killring")
                              (:file "history")
+                             (:file "backtrace")
                              (:file "timer")
                              (:file "command")
                              (:file "color")

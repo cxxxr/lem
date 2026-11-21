@@ -28,12 +28,14 @@ errors can be triaged and fixed later (.claude/skills/triage/)."))
 (defparameter *same-fingerprint-interval* 60
   "Seconds during which another error with the same fingerprint is not written again.")
 
-(defparameter *max-string-length-in-backtrace* 80
-  "String literals in backtrace frames longer than this are cut, so that
-buffer text in frame arguments is not copied whole into the incident.")
+(defparameter *max-message-length* 500
+  "Characters kept of the condition's message, which may hold user text.")
 
 (defparameter *max-frame-length* 400
   "Characters kept of each backtrace frame.")
+
+(defparameter *max-backtrace-lines* 120
+  "Lines kept of the backtrace.")
 
 (defparameter *fingerprint-frame-count* 6
   "How many of the topmost frames, after the error machinery, the fingerprint uses.")
@@ -49,9 +51,9 @@ buffer text in frame arguments is not copied whole into the incident.")
              "^(?:ERROR|CERROR|SIGNAL|WARN|EDITOR-ERROR|LEM[A-Z/-]*::?EDITOR-ERROR)$"
              ;; the editor's handlers and this recorder, also as the
              ;; parent of a (LAMBDA ... :IN ...) or (FLET ... :IN ...) frame
-             "(?:BACKTRACE-STRING|POP-UP-BACKTRACE|BAILOUT|REPORT-ERROR|RECORD-INCIDENT|CALL-TIMER-FUNCTION|CALL-BACKGROUND-JOB)\\)?$"
+             "(?:BACKTRACE-STRING|SAFE-BACKTRACE|POP-UP-BACKTRACE|BAILOUT|REPORT-ERROR|RECORD-INCIDENT|CALL-TIMER-FUNCTION|CALL-BACKGROUND-JOB)\\)?$"
              ;; the handler of with-error-handler, expanded in these functions
-             "^\\(LAMBDA \\(CONDITION\\) :IN LEM-CORE::(?:TOPLEVEL-)?COMMAND-LOOP\\)$"))
+             "^\\(LAMBDA \\(CONDITION\\) :IN LEM-CORE::?(?:TOPLEVEL-)?COMMAND-LOOP\\)$"))
    :case-insensitive-mode t)
   "Frames of the error machinery itself, left out of the fingerprint.")
 
@@ -124,41 +126,22 @@ Repeats of the same command and keys are counted instead of listed."
             (setf *recent-commands*
                   (subseq *recent-commands* 0 *max-recent-commands*)))))))
 
-(defun shorten-strings (text)
-  "Cut the string literals in TEXT longer than *max-string-length-in-backtrace*
-and write the newlines of the rest as \\n, so that no string spans lines.
-TEXT may hold many lines: a string argument with newlines is printed over
-several lines of a backtrace."
-  (ppcre:regex-replace-all
-   ;; #\" is the character, not the start of a string
-   "(?<!#\\\\)\"((?:[^\"\\\\]|\\\\.)*)\""
-   text
-   (lambda (match contents)
-     (declare (ignore match))
-     (let ((kept (ppcre:regex-replace-all
-                  (string #\Newline)
-                  (if (> (length contents) *max-string-length-in-backtrace*)
-                      (subseq contents 0 *max-string-length-in-backtrace*)
-                      contents)
-                  "\\\\n")))
-       (if (> (length contents) *max-string-length-in-backtrace*)
-           (format nil "\"~A...\" (~D chars)" kept (length contents))
-           (format nil "\"~A\"" kept))))
-   :simple-calls t))
+(defun cut-string (string max)
+  "Return STRING cut to MAX characters, saying how long it was."
+  (if (> (length string) max)
+      (format nil "~A... (~D chars)" (subseq string 0 max) (length string))
+      string))
 
 (defun sanitize-backtrace (backtrace)
-  "Return BACKTRACE with long strings and long frames cut.
-The strings are cut over the whole text before it is split into lines."
+  "Return BACKTRACE with long frames and lines past *max-backtrace-lines* cut.
+Its arguments are already cut: it comes from lem/common/backtrace:safe-backtrace,
+one line per frame."
   (with-output-to-string (out)
-    (with-input-from-string (in (shorten-strings (or backtrace "")))
+    (with-input-from-string (in (or backtrace ""))
       (loop :for line := (read-line in nil)
-            :while line
-            :do (write-line (if (> (length line) *max-frame-length*)
-                                (concatenate 'string
-                                             (subseq line 0 *max-frame-length*)
-                                             " ...")
-                                line)
-                            out)))))
+            :for count :from 0
+            :while (and line (< count *max-backtrace-lines*))
+            :do (write-line (cut-string line *max-frame-length*) out)))))
 
 (defun frame-function-name (line)
   "Return the function part of a backtrace LINE such as
@@ -258,7 +241,7 @@ an incident is written while the editor may be in a broken state."
         (lem-table (make-hash-table :test 'equal)))
     (setf (gethash "type" condition-table) (safe-string (lambda () (type-of condition)))
           (gethash "message" condition-table)
-          (shorten-strings (or (safe-string (lambda () condition)) "")))
+          (cut-string (or (safe-string (lambda () condition)) "") *max-message-length*))
     (setf (gethash "revision" lem-table) (safe-string #'lem-git-revision)
           (gethash "frontend" lem-table)
           (safe-string (lambda () (type-of (implementation))))
