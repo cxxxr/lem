@@ -458,13 +458,15 @@ module.exports = (win, app) => {
         await key('c', ['control']); await sleep(300);
         await type('exit'); await key('Return');
         check('terminal: exit', await until(async () => (await terminalText()).includes('[Process exited'), 10000), await terminalText());
+        const bufferCount = () => lisp('(length (lem:buffer-list))');
+        const countBeforeKill = await bufferCount();
         await lisp('(lem:send-event (lambda () (lem:kill-buffer (lem:current-buffer))))');
-        await sleep(300);
-        // a start that fails after the process is spawned (its output cannot
-        // be subscribed to) kills that process and leaves no buffer
-        // the next spawn starts the process, whose onData then throws (node-pty's
-        // onData is a getter: an assignment would not replace it)
+        await until(async () => Number(await bufferCount()) < Number(countBeforeKill));
+        // a start that fails after the process is spawned kills that process and
+        // leaves no buffer.  The next spawn starts the process, whose onData then
+        // throws (node-pty's onData is a getter: an assignment would not replace it).
         const breakNextSpawn = `(() => {
+          delete globalThis.lemTestPid;
           const pty = require('node-pty'), spawn = pty.spawn;
           pty.spawn = (...args) => {
             pty.spawn = spawn;
@@ -475,24 +477,29 @@ module.exports = (win, app) => {
             return broken;
           };
         })()`;
-        const buffersBefore = await lisp('(length (lem:buffer-list))');
-        await js(breakNextSpawn);
-        await command('terminal');
-        await sleep(500);
+        const spawned = async () => (await js('typeof globalThis.lemTestPid')) === 'number';
         const alive = () => js(`(() => { try { process.kill(globalThis.lemTestPid, 0); return true; }
                                        catch (e) { return false; } })()`);
+        const buffersBefore = await bufferCount();
+        await js(breakNextSpawn);
+        await command('terminal');
         check('terminal: a failed start kills its process',
-              (await js('typeof globalThis.lemTestPid')) === 'number' && await until(async () => !(await alive()), 5000),
+              await until(async () => (await spawned()) && !(await alive()), 10000),
               await js('globalThis.lemTestPid'));
-        check('terminal: a failed start leaves no buffer',
-              (await lisp('(length (lem:buffer-list))')) === buffersBefore,
-              `${buffersBefore} ${await lisp('(length (lem:buffer-list))')}`);
+        check('terminal: a failed start leaves no buffer', (await bufferCount()) === buffersBefore,
+              `${buffersBefore} ${await bufferCount()}`);
         await key('g', ['control']); await sleep(300);
         // and says why: create's editor-error, the same start called directly
+        // (a terminal that starts after all is not left running)
         await js(breakNextSpawn);
-        const why = await lisp('(handler-case (progn (lem-terminal/terminal:create :rows 24 :cols 80 :buffer (lem:make-buffer "*failed terminal*" :temporary t) :directory "") :started) (lem:editor-error (e) (princ-to-string e)))');
+        const why = await lisp(`(let ((buffer (lem:make-buffer "*failed terminal*" :temporary t)))
+          (handler-case (progn (lem-terminal/terminal:destroy
+                                (lem-terminal/terminal:create :rows 24 :cols 80 :buffer buffer :directory ""))
+                               :started)
+            (lem:editor-error (e) (princ-to-string e))))`);
         check('terminal: a failed start says why', why === '"Cannot start the terminal: onData failed (a test)"', why);
-        check('terminal: so does a direct create, killing its process', await until(async () => !(await alive()), 5000),
+        check('terminal: so does a direct create, killing its process',
+              (await spawned()) && await until(async () => !(await alive()), 5000),
               await js('globalThis.lemTestPid'));
       }
 

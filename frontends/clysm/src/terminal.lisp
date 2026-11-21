@@ -313,7 +313,8 @@ told of the changes of the screen, the exit, the title and the bell."
     (setf (terminal-closed terminal) t)
     (ignore-errors (js:call (terminal-pty terminal) "kill")))
   (alexandria:when-let ((subscription (terminal-output-subscription terminal)))
-    (js:call subscription "dispose"))
+    ;; the screen is freed even when this fails
+    (ignore-errors (js:call subscription "dispose")))
   (js:call (terminal-xterm terminal) "dispose"))
 
 (defun active-screen (terminal)
@@ -352,8 +353,10 @@ unless a terminal ran in it before (M-x terminal-restart keeps its buffer)."
         ;; The process may run already (spawned, then an error setting up its
         ;; handlers): kill it and free the screen, as nothing else could.  The
         ;; error that made the start fail goes on.
-        (when (terminal-pty terminal)
-          (ignore-errors (kill-process terminal)))
+        (alexandria:when-let ((pty (terminal-pty terminal)))
+          (ignore-errors (kill-process terminal))
+          ;; kill-process hangs up; a program that ignores SIGHUP would stay
+          (ignore-errors (js:call pty "kill" "SIGKILL")))
         (unless (buffer-value buffer 'terminal-started)
           (delete-buffer buffer))))
     (setf (buffer-value buffer 'terminal-started) t)
