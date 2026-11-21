@@ -62,12 +62,16 @@ its findings. Then, by severity:
 - **Important**: fix it, verify the fix (the checks it touches, plus a
   regression test that fails before the fix, see `verify worktree`), commit,
   push (`$S pr <scratch>/body.md` again pushes and finds the same PR), and
-  review again. A
-  later round starts from the earlier findings: check they were fixed, then
-  look at what the fixes changed.
+  review again. A later round starts from the earlier findings: check they
+  were fixed, then look at what the fixes changed.
 - **Pre-existing** and **Nit**: do not fix them in this PR. Add each to the
-  Todoist `lem` project (`todoist add "..." -P lem --desc "..."`, details and
-  the PR in the description) without asking.
+  Todoist `lem` project without asking, with the details and the PR in the
+  description and one of two labels:
+  `todoist add "..." -P lem -l ai --desc "..."` when the cause and the fix are
+  clear and an agent can fix it and check it with `verify`;
+  `-l human` when it needs a choice of design, of feature or of process, or
+  work that cannot be done here (a real macOS, the user's own setup).
+  Do not add a finding that is already a task (`todoist list -f '#lem'`).
 
 When a finding is wrong, say why in the PR (`$S comment`) instead of changing
 the code. After three review rounds that still have Important findings, stop

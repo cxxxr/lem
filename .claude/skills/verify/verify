@@ -34,6 +34,10 @@ dir=${LEM_VERIFY_DIR:-${TMPDIR:-/tmp}/lem-verify-$(id -u)}
 # with different directories do not disturb each other.
 socket=lem-verify-$(printf %s "$dir" | cksum | cut -d' ' -f1)
 mkdir -p "$dir/work" "$dir/home"
+# Absolute, without "..", symlinks or a relative part: the compile cache is
+# found from this path, and Rove can map fasls back to their sources only
+# when the cache root is a plain absolute directory.
+dir=$(cd "$dir" && pwd -P)
 
 lisp() {
     # Run SBCL in the repository with Quicklisp from qlot and the verify helpers.
@@ -88,7 +92,6 @@ case "${1:-}" in
             [ -z "$files" ] || echo "$files" | sed 's/^/  /' >&2
         fi
         if [ -z "$files" ]; then echo "no changed .lisp files"; exit 0; fi
-        mkdir -p "$dir/fasl"
         VERIFY_FILES="$files" VERIFY_FASL_DIR="$dir/fasl/" lisp compile-check.lisp
         ;;
     build)
