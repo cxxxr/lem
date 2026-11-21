@@ -488,11 +488,14 @@ command after it runs on."
     (paste string)))
 
 (defun on-window-size-change (window)
-  ;; Not for a window of a hidden frame (a display resize resizes every
-  ;; tab's windows): the terminal fits the windows shown.
-  (alexandria:when-let (terminal (and (member window (frame-shown-windows))
-                                      (buffer-terminal (window-buffer window))))
-    (resize-terminal terminal window)))
+  ;; Only for a window of the current frame (not one of a frame being set up
+  ;; or hidden): the terminal fits the windows shown.  Not while its history
+  ;; is read (see READING-HISTORY-P): FIT-SHOWN-TERMINALS fits it afterwards.
+  (let ((buffer (window-buffer window)))
+    (alexandria:when-let (terminal (and (member window (frame-shown-windows))
+                                        (buffer-terminal buffer)))
+      (unless (reading-history-p buffer terminal)
+        (resize-terminal terminal window)))))
 
 (add-hook *window-size-change-functions*
           'on-window-size-change)

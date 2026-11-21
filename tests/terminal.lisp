@@ -725,8 +725,8 @@ tab's WINDOW, while a second tab, the current one, reads its history."
      (unwind-protect
           (let ((side (lem:frame-rightside-window (lem:current-frame)))
                 (terminal (buffer-terminal buffer)))
-            ;; any command fits the terminals shown
-            (lem:call-command 'lem:recenter nil)
+            ;; after any command, the terminals shown are fitted
+            (lem:run-hooks lem:*post-command-hook*)
             (ok (= (lem:window-width side) (lem-terminal/terminal::terminal-cols terminal))
                 "as narrow as the side window")
             (ok (= (min (if (lem:window-use-modeline-p side)
@@ -823,5 +823,18 @@ tab's WINDOW, while a second tab, the current one, reads its history."
             (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-next nil)
             (ok (= tall (lem-terminal/terminal::terminal-rows terminal))
                 "the second tab shown, the terminal keeps its size")
-            (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-prev nil)
-            (ok (= tall (lem-terminal/terminal::terminal-rows terminal))))))))))
+            (let ((lower (lem:get-next-window (lem:current-window))))
+              (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-prev nil)
+              (ok (= tall (lem-terminal/terminal::terminal-rows terminal)))
+              ;; a split, which resizes the window reading the history
+              (lem:call-command 'lem:split-active-window-vertically nil)
+              (ok (= tall (lem-terminal/terminal::terminal-rows terminal))
+                  "a window resized while the history is read keeps its size")
+              (lem:call-command 'lem:delete-other-windows nil)
+              ;; the reading ends: the next command fits the terminal
+              (loop :repeat 50 :do (wheel window -1))
+              (ng (copy-mode-p buffer))
+              (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-next nil)
+              (ok (= (1- (lem:window-height lower))
+                     (lem-terminal/terminal::terminal-rows terminal))
+                  "then it fits the second tab's window")))))))))
