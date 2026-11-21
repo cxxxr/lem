@@ -45,11 +45,10 @@ anything. Keep the list short enough to read before each commit.
   A test that depends on which buffers exist wraps its body in
   `(with-current-buffers () ...)`, which starts from an empty list and puts
   the old one back afterwards, as `tests/listener-mode.lisp` does.
-  A test that pops up a typeout window (`pop-up-backtrace`, `*EDITOR ERROR*`,
-  `pop-up-typeout-window`) also shares `lem-core::*typeout-window*` and its two
-  companions, which `with-fake-interface` does not rebind: the next popup in
-  another test reuses that window. Bind them to nil around the test, as
-  `tests/incident-recorder.lisp` does; passing locally proves little here.
+  The typeout window (`pop-up-typeout-window`, `*EDITOR ERROR*`) is per use
+  too (since the follow-up of cxxxr/lem#69); other globals of lem-core that
+  keep a window or a buffer are not, and a test that leaves one set breaks
+  the next test, often in CI only: passing locally proves little here.
 - **Origin:** cxxxr/lem#55 (a test passed alone and failed in the suite);
   cxxxr/lem#63 (frames and the current buffer per use); cxxxr/lem#69 (a test
   with two popups failed in CI only).
@@ -60,6 +59,21 @@ anything. Keep the list short enough to read before each commit.
   (`verify worktree REV`, see SKILL.md) and see it fail for the reason of the
   bug, then pass with the fix.
 - **Origin:** cxxxr/lem#55 (follow-up fix commit).
+
+## Errors and backtraces
+
+### Backtraces and messages that are stored
+- **Trigger:** a change that saves a printed backtrace or an error message to a
+  file or sends it out (incidents, logs, `*error-report-hook*`), or that
+  changes how `lem/common/backtrace` prints frames.
+- **Check:** signal an error from a frame whose arguments are a string of more
+  than 200 characters on several lines (with double quotes and lines such as
+  `12: (` in it), a structure with such a string in a slot, and a message of
+  more than 100,000 characters. See that each is cut, that the frames after
+  it are still there one per line, and that printing does not exhaust the
+  stack.
+- **Origin:** cxxxr/lem#69, review rounds 1-2 (multi-line strings split
+  frames; cutting the printed backtrace lost frames).
 
 ## Keeping Lem loadable everywhere
 

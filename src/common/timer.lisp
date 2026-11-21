@@ -6,9 +6,11 @@
    :with-timer-manager
    :running-timer
    :running-timer-p
+   :call-outside-timer
    :timer-error
    :timer-error-backtrace
    :timer-error-condition
+   :timer-error-outside-timer-p
    :timer
    :timer-name
    :timer-expired-p
@@ -24,14 +26,27 @@
   (:lock t))
 (in-package :lem/common/timer)
 
-(defvar *running-timer*)
+(defvar *running-timer* nil
+  "The timer whose function runs, NIL outside of one.")
+
+(defvar *timer-manager*)
+
 (defun running-timer () *running-timer*)
 
 (defun running-timer-p ()
-  "Return true while a timer's function (or its handle-function) runs."
-  (boundp '*running-timer*))
+  "Return true while a timer's function (or its handle-function) runs,
+outside of call-outside-timer."
+  (not (null *running-timer*)))
 
-(defvar *timer-manager*)
+(defun call-outside-timer (function)
+  "Call FUNCTION with no timer running, as running-timer-p sees it: for a
+command loop entered from a timer's function (a prompt it opens), whose
+commands are not the timer's code. The callbacks the timer gave that prompt
+(a completion function, a test function) run there too, so their errors
+are not the timer's either. A timer that fires in FUNCTION is running again
+while its own function runs."
+  (let ((*running-timer* nil))
+    (funcall function)))
 
 (defgeneric send-timer-notification (timer-manager continue))
 
@@ -59,10 +74,20 @@
               :initform nil
               :reader timer-error-backtrace
               :documentation "The backtrace of CONDITION, taken before the stack unwound
-(lem/common/backtrace:safe-backtrace)."))
+(lem/common/backtrace:safe-backtrace).")
+   (outside-timer-p :initarg :outside-timer-p
+                    :initform nil
+                    :reader timer-error-outside-timer-p
+                    :documentation "True if CONDITION was signalled outside of the timer's
+code: in a command loop the timer's function entered (see call-outside-timer),
+by a command run in a prompt it opened."))
   (:report (lambda (c s)
              (with-slots (timer condition) c
-               (format s "Error running timer ~S: ~A" (timer-name timer) condition)))))
+               (format s "Error running timer ~S: ~A"
+                       (ignore-errors (timer-name timer))
+                       ;; The error's own report may signal.
+                       (or (ignore-errors (princ-to-string condition))
+                           "#<error printing the condition>"))))))
 
 (defgeneric timer-expired-p (timer))
 (defgeneric expire-timer (timer))
@@ -114,7 +139,8 @@
 
 (defun call-timer-function (timer)
   (let ((*running-timer* timer)
-        (backtrace nil))
+        (backtrace nil)
+        (outside-timer-p nil))
     (handler-case
         ;; The backtrace is taken here: by the time handler-case runs its
         ;; clause, the frames of the failing timer function are gone.
@@ -122,13 +148,15 @@
                                 (declare (ignore condition))
                                 (setf backtrace
                                       (ignore-errors
-                                       (lem/common/backtrace:safe-backtrace))))))
+                                       (lem/common/backtrace:safe-backtrace))
+                                      outside-timer-p (not (running-timer-p))))))
           (if (timer-handle-function timer)
               (handler-bind ((error (timer-handle-function timer)))
                 (funcall (timer-function timer)))
               (funcall (timer-function timer))))
       (error (condition)
-        (error 'timer-error :timer timer :condition condition :backtrace backtrace)))))
+        (error 'timer-error :timer timer :condition condition :backtrace backtrace
+                            :outside-timer-p outside-timer-p)))))
 
 
 ;;; timer

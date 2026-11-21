@@ -28,7 +28,9 @@
                 :components ((:file "ring")
                              (:file "killring")
                              (:file "history")
-                             (:file "timer")))
+                             (:file "timer")
+                             ;; safe-backtrace has frames on SBCL only
+                             #+sbcl (:file "backtrace")))
                #+sbcl
                (:module "language-server"
                 :components ((:file "utils")
