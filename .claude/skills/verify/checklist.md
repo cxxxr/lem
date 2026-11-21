@@ -125,9 +125,10 @@ anything. Keep the list short enough to read before each commit.
   package-inferred-system (`contrib/ollama/sub/`), the file fails, as the
   broken `.asd` may be its own. With changed files of two systems that depend
   on a broken one (a new `contrib/ollama/a.lisp` with a top-level error, and
-  `b.lisp` and `c.lisp` that use it) or on a missing one (a file of
-  `contrib/migemo/`, which needs cl-migemo), the error is printed once and the
-  other files say `(X did not)`. Revert the edits afterwards.
+  `b.lisp` and `c.lisp` that use it) or on a missing one
+  (`contrib/migemo/main.lisp`, which needs cl-migemo, and a new
+  `contrib/migemo/x.lisp` that uses `lem-migemo/main`), the error is printed
+  once and the other files say `(X did not)`. Revert the edits afterwards.
 - **Origin:** the reviews of cxxxr/lem#62 (`verify compile` ended in a
   backtrace on a load error, and left fasls of failed files that later runs
   took as up to date); cxxxr/lem#70 and #75 (a failed dependency loaded again

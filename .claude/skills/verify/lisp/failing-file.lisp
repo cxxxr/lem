@@ -24,8 +24,6 @@ Set by the :around method on `asdf:perform' below.")
       (format t "~&  in ~a~%"
               (enough-namestring (asdf:component-pathname component) (uiop:getcwd))))))
 
-(defun verify-failing-system (condition)
-  "The name of the system of the file whose compile or load signalled
-CONDITION, or NIL."
-  (let ((component (gethash condition *verify-condition-files*)))
-    (and component (asdf:component-name (asdf:component-system component)))))
+(defun verify-failing-component (condition)
+  "The source file component whose compile or load signalled CONDITION, or NIL."
+  (gethash condition *verify-condition-files*))
