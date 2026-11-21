@@ -129,10 +129,14 @@ anything. Keep the list short enough to read before each commit.
   other files say `(X did not)`. With cl-migemo missing,
   `contrib/migemo/main.lisp` prints `System "cl-migemo" not found`; a new
   `contrib/migemo/x.lisp` and `y.lisp` that use `lem-migemo/main` (main.lisp
-  as a system of its own, without cl-migemo): x prints main.lisp's own error
-  (reading `cl-migemo:`), y says `(lem-migemo/main did not)`. Revert the edits
+  as a system of its own, without cl-migemo): x prints
+  `FAILED to load lem-migemo/x: COMPILE-FILE-ERROR ...` and
+  `in contrib/migemo/main.lisp`, y says `(lem-migemo/main did not)`. A
+  missing sibling of a component (`(:file "b" :depends-on ("a"))` in a
+  throwaway `.asd`) is not taken as a failed system `a`. Revert the edits
   afterwards.
 - **Origin:** the reviews of cxxxr/lem#62 (`verify compile` ended in a
   backtrace on a load error, and left fasls of failed files that later runs
   took as up to date); cxxxr/lem#70 and #75 (a failed dependency loaded again
-  for each changed file).
+  for each changed file); cxxxr/lem#77 (a missing sibling component taken as a
+  failed system).

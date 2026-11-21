@@ -17,13 +17,13 @@ Set by the :around method on `asdf:perform' below.")
                                   component)))))
     (call-next-method)))
 
-(defun verify-print-failing-file (condition)
-  "Print the file whose compile or load signalled CONDITION, if one is known."
-  (let ((component (gethash condition *verify-condition-files*)))
-    (when component
-      (format t "~&  in ~a~%"
-              (enough-namestring (asdf:component-pathname component) (uiop:getcwd))))))
-
 (defun verify-failing-component (condition)
   "The source file component whose compile or load signalled CONDITION, or NIL."
   (gethash condition *verify-condition-files*))
+
+(defun verify-print-failing-file (condition)
+  "Print the file whose compile or load signalled CONDITION, if one is known."
+  (let ((component (verify-failing-component condition)))
+    (when component
+      (format t "~&  in ~a~%"
+              (enough-namestring (asdf:component-pathname component) (uiop:getcwd))))))
