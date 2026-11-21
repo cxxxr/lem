@@ -330,7 +330,8 @@
                "lem-spell-check"
                "lem-tramp"
                "lem-trans"
-               "lem-winner-mode"))
+               "lem-winner-mode"
+               "lem-incident-recorder"))
 
 (defsystem "lem"
   :version "2.3.0"

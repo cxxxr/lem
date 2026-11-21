@@ -3,21 +3,48 @@
 (defvar *editor-abort-hook* '())
 (defvar *exit-editor-hook* '())
 
+(defvar *error-report-hook* '()
+  "Hook (see add-hook) run when an error reaches the editor's own handlers.
+Its functions get (CONDITION BACKTRACE CONTEXT): CONTEXT is :COMMAND (shown
+in *EDITOR ERROR*), :CRASH (the editor exits), :TIMER or :BACKGROUND-JOB,
+and BACKTRACE is a string. They must not signal: report-error drops what
+they signal.")
+
+(defun backtrace-string (condition)
+  (with-output-to-string (stream)
+    (uiop:print-backtrace :stream stream
+                          :condition condition
+                          :count 100)))
+
+(defun report-error (condition backtrace context)
+  "Run *error-report-hook* with CONDITION, BACKTRACE and CONTEXT.
+An error in a hook function is dropped so that reporting never makes
+the error it reports worse."
+  ;; Not run-hooks: it stops at the first hook that signals.
+  (dolist (hook *error-report-hook*)
+    (ignore-errors (funcall (car hook) condition backtrace context))))
+
 (defun bailout (condition)
-  (signal 'exit-editor
-          :report (with-output-to-string (stream)
-                    (princ condition stream)
-                    (uiop:print-backtrace
-                     :stream stream
-                     :condition condition))))
+  (let ((backtrace (ignore-errors (backtrace-string condition))))
+    (report-error condition backtrace :crash)
+    (signal 'exit-editor
+            :report (with-output-to-string (stream)
+                      (princ condition stream)
+                      (fresh-line stream)
+                      (when backtrace
+                        (write-string backtrace stream))))))
 
 (defun pop-up-backtrace (condition)
-  (let ((o (with-output-to-string (stream)
-             (princ condition stream)
-             (fresh-line stream)
-             (uiop:print-backtrace
-              :stream stream
-              :count 100))))
+  (let* ((backtrace (if (typep condition 'timer-error)
+                        (or (timer-error-backtrace condition)
+                            (backtrace-string condition))
+                        (backtrace-string condition)))
+         (o (with-output-to-string (stream)
+              (princ condition stream)
+              (fresh-line stream)
+              (write-string backtrace stream))))
+    (report-error condition backtrace
+                  (if (typep condition 'timer-error) :timer :command))
     (funcall 'pop-up-typeout-window
              (make-buffer "*EDITOR ERROR*")
              :function (lambda (stream)
@@ -167,8 +194,9 @@
                                             :count 100))))))
              (let ((result (funcall function)))
                (send-event (lambda () (funcall cont result)))))
-         (error ()
+         (error (condition)
            (send-event (lambda ()
+                         (report-error condition error-text :background-job)
                          (let ((buffer (make-buffer "*BACKGROUND JOB ERROR*")))
                            (erase-buffer buffer)
                            (insert-string (buffer-point buffer)

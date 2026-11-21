@@ -6,6 +6,7 @@
    :with-timer-manager
    :running-timer
    :timer-error
+   :timer-error-backtrace
    :timer
    :timer-name
    :timer-expired-p
@@ -45,7 +46,11 @@
 
 (define-condition timer-error (error)
   ((timer :initarg :timer)
-   (condition :initarg :condition))
+   (condition :initarg :condition)
+   (backtrace :initarg :backtrace
+              :initform nil
+              :reader timer-error-backtrace
+              :documentation "The backtrace of CONDITION, taken before the stack unwound."))
   (:report (lambda (c s)
              (with-slots (timer condition) c
                (format s "Error running timer ~S: ~A" (timer-name timer) condition)))))
@@ -99,14 +104,24 @@
                                     handle-function)))
 
 (defun call-timer-function (timer)
-  (let ((*running-timer* timer))
+  (let ((*running-timer* timer)
+        (backtrace nil))
     (handler-case
-        (if (timer-handle-function timer)
-            (handler-bind ((error (timer-handle-function timer)))
-              (funcall (timer-function timer)))
-            (funcall (timer-function timer)))
+        ;; The backtrace is taken here: by the time handler-case runs its
+        ;; clause, the frames of the failing timer function are gone.
+        (handler-bind ((error (lambda (condition)
+                                (setf backtrace
+                                      (ignore-errors
+                                       (with-output-to-string (stream)
+                                         (uiop:print-backtrace :stream stream
+                                                               :condition condition
+                                                               :count 100)))))))
+          (if (timer-handle-function timer)
+              (handler-bind ((error (timer-handle-function timer)))
+                (funcall (timer-function timer)))
+              (funcall (timer-function timer))))
       (error (condition)
-        (error 'timer-error :timer timer :condition condition)))))
+        (error 'timer-error :timer timer :condition condition :backtrace backtrace)))))
 
 
 ;;; timer

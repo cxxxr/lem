@@ -563,6 +563,7 @@
   (:export
    :*editor-abort-hook*
    :*exit-editor-hook*
+   :*error-report-hook*
    :exit-editor
    :interactive-p
    :continue-flag
