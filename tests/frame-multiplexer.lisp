@@ -2,6 +2,8 @@
   (:use :cl :lem :rove)
   (:import-from :lem
                 :with-current-buffers)
+  (:import-from :lem/common/var
+                :with-global-variable-value)
   (:import-from :lem-fake-interface
                 :with-fake-interface))
 (in-package :lem-tests/frame-multiplexer)
@@ -17,10 +19,19 @@
   `(call-with-fresh-editor (lambda () ,@body)))
 
 (defun call-with-frame-multiplexer (function)
+  ;; Run frame-multiplexer on its own table of virtual frames and with the
+  ;; variable off at the start, so that running these tests inside a Lem that
+  ;; uses frame-multiplexer leaves its tabs and its setting as they were.
+  ;; with-global-variable-value restores the previous value without running
+  ;; the variable's hook.
   (with-fresh-editor ()
-    (lem/frame-multiplexer::enable-frame-multiplexer)
-    (unwind-protect (funcall function)
-      (lem/frame-multiplexer::disable-frame-multiplexer))))
+    (let ((lem/frame-multiplexer::*virtual-frame-map* (make-hash-table))
+          (lem/frame-multiplexer::*recent-list* nil)
+          (*frame-buffer-list-function* nil))
+      (with-global-variable-value (lem/frame-multiplexer::frame-multiplexer nil)
+        (lem/frame-multiplexer::enable-frame-multiplexer)
+        (unwind-protect (funcall function)
+          (lem/frame-multiplexer::disable-frame-multiplexer))))))
 
 (defmacro with-frame-multiplexer (() &body body)
   `(call-with-frame-multiplexer (lambda () ,@body)))
@@ -89,11 +100,8 @@
   (with-frame-multiplexer ()
     (visit-new-buffer "a")
     (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
-    (setf (variable-value 'lem/frame-multiplexer:frame-multiplexer-separate-buffers :global) nil)
-    (unwind-protect
-         (ok (member "a" (offered-buffer-names) :test #'string=))
-      (setf (variable-value 'lem/frame-multiplexer:frame-multiplexer-separate-buffers :global)
-            t))))
+    (with-global-variable-value (lem/frame-multiplexer:frame-multiplexer-separate-buffers nil)
+      (ok (member "a" (offered-buffer-names) :test #'string=)))))
 
 (deftest quitting-a-window-shows-a-buffer-of-the-same-frame
   (with-frame-multiplexer ()
@@ -174,7 +182,8 @@
         (testing "commands that need another buffer still work"
           (ok (progn (next-buffer) (previous-buffer) t))
           (ok (eq temporary (current-buffer)))
-          (ok (other-buffer)))))))
+          (testing "other-buffer falls back to the current buffer, not a buffer of the other frame"
+            (ok (eq temporary (other-buffer)))))))))
 
 (deftest the-workspace-buffer-list-reads-the-frame-table-once
   (with-frame-multiplexer ()
@@ -185,7 +194,8 @@
            (name 'lem/frame-multiplexer::virtual-frame-entries)
            (original (fdefinition name)))
       ;; Count the calls of virtual-frame-entries, which copies the whole table.
-      (sb-ext:without-package-locks
+      ;; lem/frame-multiplexer is a locked package on SBCL.
+      (#+sbcl sb-ext:without-package-locks #-sbcl progn
         (setf (fdefinition name)
               (lambda (virtual-frame)
                 (incf count)
@@ -208,3 +218,20 @@
                                                       (declare (ignore frame))
                                                       (values nil t))))
         (ok (null (frame-buffer-list)))))))
+
+(deftest the-test-helper-leaves-a-running-frame-multiplexer-as-it-was
+  ;; As in a Lem that uses frame-multiplexer: the variable is on and the
+  ;; workspace functions are set.
+  (let ((list-function (lambda (frame) (declare (ignore frame)) nil))
+        (recent-list (lem/common/ring:make-ring 1)))
+    (with-global-variable-value (lem/frame-multiplexer::frame-multiplexer t)
+      (let ((lem/frame-multiplexer::*virtual-frame-map* (make-hash-table))
+            (lem/frame-multiplexer::*recent-list* recent-list)
+            (*frame-buffer-list-function* list-function))
+        (with-frame-multiplexer ()
+          (testing "the test gets a frame-multiplexer of its own"
+            (ok (gethash (implementation) lem/frame-multiplexer::*virtual-frame-map*))))
+        (testing "the setting and the workspace functions are restored"
+          (ok (eq t (variable-value 'lem/frame-multiplexer::frame-multiplexer :global)))
+          (ok (eq list-function *frame-buffer-list-function*))
+          (ok (eq recent-list lem/frame-multiplexer::*recent-list*)))))))
