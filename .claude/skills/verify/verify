@@ -58,8 +58,9 @@ base_branch() {
 }
 
 changed_lisp_files() {
-    # Not scripts/: they build and save an image, which is what `verify build`
-    # is for.  `verify compile scripts/x.lisp` still compiles one.
+    # Not scripts/: they are in no system, so they would be compiled without
+    # what they load first (lem-sdl2, say).  They are not checked unless
+    # named: `verify compile scripts/x.lisp` compiles one without loading it.
     base=$1
     {
         git -C "$repo" diff --name-only --diff-filter=d "$base"...HEAD

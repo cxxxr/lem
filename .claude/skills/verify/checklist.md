@@ -113,13 +113,14 @@ anything. Keep the list short enough to read before each commit.
   or files (`ql:quickload`, `asdf:load-system`, `asdf:load-asd`,
   `*compile-file-failure-behaviour*`, what is loaded after `compile-file`).
 - **Check:** with throwaway edits, see that each run ends in its own last line
-  (`N warnings` or `VERIFY: tests ...`) with exit status 1, not a backtrace:
-  unbalanced parentheses in a `src/` file, a top-level `(error ...)`, a form
-  the compiler catches as an error (`(let ((1 2)) nil)`) in a `src/` and in a
-  `tests/` file, and a broken `.asd` (`:defsystem-depends-on` a missing
-  system) in a directory between a file and its system's `.asd`. After
-  `verify compile` of such a file, `verify tests` must fail too (no fasl of
-  the failed file is left in the cache). Revert the edits afterwards.
+  (`N warnings` or `VERIFY: tests ...`) with exit status 1, not a backtrace,
+  and names the file: unbalanced parentheses in a `src/` file, a top-level
+  `(error ...)`, a form the compiler catches as an error (`(let ((1 2)) nil)`)
+  in a `src/` and in a `tests/` file. After `verify compile` of such a file,
+  `verify tests` must fail too (no fasl of the failed file is left in the
+  cache). A broken `.asd` (`:defsystem-depends-on` a missing system) in a
+  directory between a file and its system's `.asd` is noted, and the file is
+  still compiled in its system. Revert the edits afterwards.
 - **Origin:** the reviews of cxxxr/lem#62 (`verify compile` ended in a
   backtrace on a load error, and left fasls of failed files that later runs
   took as up to date).

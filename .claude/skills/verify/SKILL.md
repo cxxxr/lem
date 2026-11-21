@@ -42,8 +42,9 @@ system that defines the package `lem-ollama/foo`), compiles the files again
 and prints their warnings (not redefinitions) and the files that failed to
 compile or load. Expect `0 warnings`; fix any undefined function or variable.
 A file in no system is compiled in what is loaded, so its own packages may be
-missing, and is not loaded. `scripts/` is left out of the changed files: those
-scripts build and save an image (that is `verify build`).
+missing, and is not loaded. `scripts/` is left out of the changed files, as
+its files load their frontend before they run: a changed script is not checked
+unless you name it (and `verify build` does not run it).
 
 ## 3. Run the tests
 
