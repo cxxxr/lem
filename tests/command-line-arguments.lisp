@@ -215,4 +215,5 @@ whether the teardown failed and what the finalize saw."
                (ok (null (lem:find-editor-thread)))))
         (lem-mailbox:send-message new-may-end t)
         (lem-mailbox:send-message old-may-end t)
+        (bt2:join-thread new)
         (bt2:join-thread old)))))

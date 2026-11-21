@@ -115,6 +115,9 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
     (setf *editor-thread*
           (bt2:make-thread
            (lambda ()
+             ;; Also set here, before any code of the editor runs: the
+             ;; caller sets it only once make-thread has returned.
+             (setf *editor-thread* (bt2:current-thread))
              (when initialize (funcall initialize))
              ;; When the command loop returns, end-editor ends the editor
              ;; and the frontend; nothing of this thread changes
@@ -140,13 +143,17 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
                                       (setf ended t)
                                       (when finalize (funcall finalize report))))))
                  (unless ended
-                   (setf *in-the-editor* nil)))))
+                   (setf *in-the-editor* nil))
+                 ;; (Not a later editor's thread.)
+                 (when (eq *editor-thread* (bt2:current-thread))
+                   (setf *editor-thread* nil)))))
            :name "editor"))))
 
 (defun find-editor-thread ()
-  "Return the thread of the running editor, or NIL. Not found by its name:
-right after the editor ends, launch can start another while the old thread,
-also named \"editor\", is still finishing."
+  "Return the thread of the editor started last while it has not ended its
+thread, or NIL. Not found by its name: right after the editor ends, launch
+can start another while the old thread, also named \"editor\", is still
+finishing."
   (let ((thread *editor-thread*))
     (when (and thread (bt2:thread-alive-p thread))
       thread)))
