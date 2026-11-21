@@ -359,11 +359,11 @@ inherit terminal-mode), which keeps the history until one leaves it."
 (defun call-with-scrollback (terminal window downward-p scroll)
   "Call SCROLL, a scroll of WINDOW (towards the end when DOWNWARD-P), with
 TERMINAL's scrollback shown.  A window that reaches the screen stops at its
-first row; once every window of the buffer is there, the terminal runs on as
-before.  Scrolling down from the screen does nothing: there is nothing below
-it."
+first row; once every window of the buffer is there (in every frame, see
+TERMINAL:BUFFER-WINDOWS), the terminal runs on as before.  Scrolling down
+from the screen does nothing: there is nothing below it."
   (let* ((buffer (window-buffer window))
-         (windows (adjoin window (get-buffer-windows buffer)))
+         (windows (adjoin window (terminal:buffer-windows buffer)))
          (scrolling (terminal:frozen-scrollback-lines terminal)))
     (unless (and downward-p
                  (or (not scrolling) (> (view-line window) scrolling)))
@@ -454,5 +454,26 @@ windows of different sizes."
 (add-hook *window-size-change-functions*
           'on-window-size-change)
 
+(defun release-read-terminals ()
+  "Let each terminal the wheel froze run on again once no window showing it
+reads its history: every window is on its screen, or none shows it.  The
+window that read the history may have gone with its tab
+(frame-multiplexer-delete, or frame-multiplexer turned off), and no wheel in
+the others would let it run on: a window on the screen does not scroll down.
+A terminal no window shows is not being read either, and a window showing it
+again would start at the oldest line of the history.  Cheap per command:
+only frozen terminals look at their windows."
+  (dolist (buffer (buffer-list))
+    (alexandria:when-let* ((terminal (buffer-terminal buffer))
+                           (lines (and (typep (ensure-mode-object (buffer-major-mode buffer))
+                                              'terminal-mode)
+                                       (terminal:frozen-scrollback-lines terminal))))
+      (when (every (lambda (window) (> (view-line window) lines))
+                   (terminal:buffer-windows buffer))
+        (stop-scrolling terminal)))))
+
 (add-hook *post-command-hook*
           'terminal-resize)
+
+(add-hook *post-command-hook*
+          'release-read-terminals)

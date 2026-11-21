@@ -404,14 +404,35 @@ of every frame, including their floating and side windows, to another buffer."
     (frame-multiplexer-init)
     (setf *frame-buffer-list-function* 'workspace-buffer-list)))
 
+(defun call-logging-errors (what function)
+  "Call FUNCTION, logging an error it signals (as WHAT) instead of signalling
+it.  Printing the condition can fail too: that is ignored."
+  (handler-case (funcall function)
+    (error (condition)
+      (ignore-errors (log:error "~A: ~A" what condition)))))
+
+(defun free-hidden-frames (virtual-frame)
+  "Tear down the frames of VIRTUAL-FRAME's tabs but the one shown: once its
+table is forgotten they cannot be reached again, and would stay in
+all-frames.  An error freeing one is logged and the others are freed still."
+  (dolist (frame (virtual-frame-frames virtual-frame))
+    (unless (eq frame (virtual-frame-current virtual-frame))
+      (call-logging-errors "freeing a frame of a hidden tab"
+                           (lambda () (teardown-frame frame))))))
+
 (defun frame-multiplexer-off ()
+  ;; Turning it off (at exit too) must not stop halfway: errors freeing the
+  ;; hidden tabs or deleting the tab bar are logged, so that the variable's
+  ;; hook returns and the setting is stored, and the table is reset.
   (when (enabled-frame-multiplexer-p)
-    (maphash (lambda (k v)
-               (declare (ignore k))
-               (delete-window v))
-             *virtual-frame-map*)
-    (clrhash *virtual-frame-map*)
-    (setf *frame-buffer-list-function* nil)))
+    (let ((virtual-frames (alexandria:hash-table-values *virtual-frame-map*)))
+      (unwind-protect
+           (dolist (virtual-frame virtual-frames)
+             (free-hidden-frames virtual-frame)
+             (call-logging-errors "deleting the tab bar"
+                                  (lambda () (delete-window virtual-frame))))
+        (clrhash *virtual-frame-map*)
+        (setf *frame-buffer-list-function* nil)))))
 
 (defclass frame-multiplexer-advice () ())
 

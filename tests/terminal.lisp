@@ -569,3 +569,149 @@ internal RENDER-TICK, which MANUAL-TIMER-MANAGER keeps from running)."
      (let ((nlines (lem:buffer-nlines buffer)))
        (wheel window 1)
        (ok (= nlines (lem:buffer-nlines buffer)) "once")))))
+
+(deftest wheel-up-in-a-side-window-shows-the-history
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore window))
+     (ok (wait-for-output buffer))
+     (lem:make-rightside-window buffer)
+     (let ((side (lem:frame-rightside-window (lem:current-frame))))
+       (unwind-protect
+            (progn
+              (wheel side 1)
+              (ok (copy-mode-p buffer) "the terminal is frozen")
+              (ok (shows-history-p buffer side rows) "the side window shows the history")
+              (ng (= 1 (view-line side)) "a few lines above the screen, not its oldest line"))
+         (lem:delete-rightside-window))))))
+
+(defun call-with-frame-multiplexer (function)
+  "Call FUNCTION with frame-multiplexer on, on a table of tabs of its own (as
+tests/frame-multiplexer.lisp does)."
+  (let ((lem/frame-multiplexer::*virtual-frame-map* (make-hash-table))
+        (lem/frame-multiplexer::*recent-list* nil)
+        (lem:*frame-buffer-list-function* nil))
+    (lem/common/var:with-global-variable-value (lem/frame-multiplexer::frame-multiplexer nil)
+      (lem/frame-multiplexer::enable-frame-multiplexer)
+      ;; lay the windows out below the tab bar, as the next redisplay would
+      (lem:redraw-display)
+      (let ((first (lem:current-frame)))
+        (unwind-protect (funcall function)
+          ;; Turning the tabs off keeps the tab shown: the first one, which
+          ;; has the window of CALL-WITH-WHEEL-TERMINAL, also when FUNCTION
+          ;; failed in another tab.
+          (when (and (lem/frame-multiplexer::enabled-frame-multiplexer-p)
+                     (not (eq first (lem:current-frame))))
+            (ignore-errors (lem/frame-multiplexer:frame-multiplexer-switch 0)))
+          (lem/frame-multiplexer::disable-frame-multiplexer))))))
+
+(deftest wheel-in-another-tab-leaves-this-tab-in-the-history
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (call-with-frame-multiplexer
+      (lambda ()
+        (let ((terminal (buffer-terminal buffer)))
+          ;; the tab bar took a row
+          (lem-terminal/terminal-mode::resize-terminal terminal window)
+          (ok (wait-for-output buffer))
+          (let ((rows (lem-terminal/terminal::terminal-rows terminal)))
+            (wheel window 1)
+            (let ((text (lem:line-string (lem:window-view-point window))))
+              (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+              (lem:switch-to-buffer buffer)
+              (let ((other (lem:current-window)))
+                (wheel other 1)
+                (loop :repeat 50 :do (wheel other -1))
+                (ng (shows-history-p buffer other rows) "the other tab is on the screen")
+                (ok (copy-mode-p buffer) "the terminal stays frozen")
+                (ok (shows-history-p buffer window rows)
+                    "the first tab's window still shows the history")
+                (ok (equal text (lem:line-string (lem:window-view-point window)))
+                    "the same line of it"))
+              (lem/frame-multiplexer:frame-multiplexer-prev)
+              (loop :repeat 50 :do (wheel window -1))
+              (ok (not (copy-mode-p buffer))
+                  "every window on the screen: the terminal runs on")))))))))
+
+(deftest the-point-of-another-window-stays-on-its-line
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     ;; (no output after the 100 lines: the screen rows keep their text)
+     (ok (wait-for-output buffer (format nil "99~%100~%")))
+     (lem:split-window-vertically window)
+     ;; the terminal fits the smaller windows now
+     (ok (wait-for-output buffer (format nil "99~%100~%")))
+     (let* ((other (lem:get-next-window window))
+            (point (lem:window-point other)))
+       ;; at the start of the buffer, where the scrollback goes in
+       (lem:buffer-start point)
+       (let ((text (lem:line-string point)))
+         (wheel window 1)
+         (ok (copy-mode-p buffer) "the scrollback is put in")
+         (ok (equal text (lem:line-string (lem:window-point other)))
+             "the other window's point is still on its line"))))
+   :script "seq 1 100; sleep 30"))
+
+(defun call-with-history-read-in-another-tab (function)
+  "Call FUNCTION with BUFFER, its terminal shown on the screen in the first
+tab's WINDOW, while a second tab, the current one, reads its history."
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (call-with-frame-multiplexer
+      (lambda ()
+        (lem-terminal/terminal-mode::resize-terminal (buffer-terminal buffer) window)
+        (ok (wait-for-output buffer))
+        (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+        (lem:switch-to-buffer buffer)
+        (let ((reader (lem:current-window)))
+          (lem-terminal/terminal-mode::show-screen-top
+           reader (- (lem:buffer-nlines buffer)
+                     (lem-terminal/terminal::terminal-rows (buffer-terminal buffer))))
+          (wheel reader 1)
+          (ok (copy-mode-p buffer) "the second tab reads the history"))
+        (funcall function buffer window))))))
+
+(deftest deleting-the-tab-reading-the-history-lets-the-terminal-run-on
+  (call-with-history-read-in-another-tab
+   (lambda (buffer window)
+     (declare (ignore window))
+     (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-delete nil)
+     (ok (not (copy-mode-p buffer)) "the first tab shows the screen: the terminal runs on"))))
+
+(deftest turning-the-tabs-off-lets-the-terminal-run-on
+  (call-with-history-read-in-another-tab
+   (lambda (buffer window)
+     (declare (ignore window))
+     (lem/frame-multiplexer:frame-multiplexer-prev)
+     (ok (copy-mode-p buffer) "the second tab, hidden, still reads the history")
+     ;; turning the tabs off keeps the first tab, the one shown
+     (lem:call-command 'lem/frame-multiplexer:toggle-frame-multiplexer nil)
+     (ok (not (copy-mode-p buffer)) "the terminal runs on"))))
+
+(deftest the-tab-that-was-the-only-reader-going-away-lets-the-terminal-run-on
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (call-with-frame-multiplexer
+      (lambda ()
+        (lem-terminal/terminal-mode::resize-terminal (buffer-terminal buffer) window)
+        (ok (wait-for-output buffer))
+        ;; only the second tab shows the terminal
+        (lem:switch-to-buffer (lem:make-buffer "*not the terminal*" :temporary t))
+        (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+        (lem:switch-to-buffer buffer)
+        (let ((reader (lem:current-window)))
+          (lem-terminal/terminal-mode::show-screen-top
+           reader (- (lem:buffer-nlines buffer)
+                     (lem-terminal/terminal::terminal-rows (buffer-terminal buffer))))
+          (wheel reader 1))
+        (ok (copy-mode-p buffer) "the second tab reads the history")
+        (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-delete nil)
+        (ok (null (lem:get-buffer-windows buffer)) "no window shows the terminal")
+        (ok (not (copy-mode-p buffer)) "the terminal runs on"))))))
