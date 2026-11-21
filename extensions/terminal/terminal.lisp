@@ -415,8 +415,8 @@ and free the native state.  Safe to call more than once."
 (defmethod copy-mode-on ((terminal terminal))
   "Freeze rendering and show the scrollback above the screen, so the whole
 history can be browsed and copied with ordinary Lem commands."
-  (setf (terminal-copy-mode terminal) t)
-  (activate-scrollback terminal))
+  (activate-scrollback terminal :catch-up t)
+  (setf (terminal-copy-mode terminal) t))
 
 (defmethod copy-mode-off ((terminal terminal))
   (setf (terminal-copy-mode terminal) nil)
@@ -616,14 +616,21 @@ Called when transitioning from scrollback-active to normal view."
             (line-start end)
             (delete-between-points start end)))))))
 
-(defun activate-scrollback (terminal)
-  "Insert scrollback lines from the ring buffer into the buffer above the terminal rows."
+(defun activate-scrollback (terminal &key catch-up)
+  "Insert scrollback lines from the ring buffer into the buffer above the
+terminal rows.  With CATCH-UP, first render the output not rendered yet, so
+the rows the buffer shows are the ones the ring continues: lines parsed since
+the last render are in the ring and would show twice otherwise."
   (unless (terminal-scrollback-active terminal)
     ;; The scrollback ring is mutated by cb-sb-pushline/popline on the I/O
     ;; thread during parsing; snapshot it into a string under IO-LOCK, then
     ;; insert into the buffer (editor-thread-only) outside the lock.
     (let ((combined
             (bt2:with-lock-held ((terminal-io-lock terminal))
+              (when (and catch-up
+                         (not (terminal-dead terminal))
+                         (not (process-exited-p terminal)))
+                (render terminal))
               (let ((count (scrollback-count terminal)))
                 (when (plusp count)
                   (let* ((ring (terminal-scrollback-ring terminal))

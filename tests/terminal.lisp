@@ -268,14 +268,18 @@ as a command of its own: the flags of the previous one are not carried on."
   "Render BUFFER's terminal as the timer the I/O thread arms would."
   (lem-terminal/terminal::render-tick (buffer-terminal buffer)))
 
-(defun wait-for-output (buffer)
+(defun wait-for-output (buffer &optional (text (format nil "100~%x")))
   (wait-until (lambda ()
                 (render buffer)
-                (buffer-has-p buffer (format nil "100~%x")))))
+                (buffer-has-p buffer text))))
 
-(defun call-with-wheel-terminal (function)
-  "Call FUNCTION with a terminal buffer in the current window, running a
-program that prints 100 lines and then keeps printing, and the screen's rows."
+(defparameter *wheel-test-script*
+  "seq 1 100; while :; do printf x; sleep 0.02; done"
+  "Prints 100 lines, then keeps adding to the last one.")
+
+(defun call-with-wheel-terminal (function &key (script *wheel-test-script*))
+  "Call FUNCTION with a terminal buffer in the current window, running SCRIPT
+(which starts by printing 100 lines), and the screen's rows."
   (if (library-available-p)
       (lem:with-current-buffers ()
         (lem-fake-interface:with-fake-interface ()
@@ -283,8 +287,7 @@ program that prints 100 lines and then keeps printing, and the screen's rows."
             (let* ((buffer (lem:make-buffer "*terminal wheel test*"))
                    (window (lem:current-window))
                    (rows (1- (lem:window-height window)))
-                   (argv (list "/bin/sh" "-c"
-                               "seq 1 100; while :; do printf x; sleep 0.02; done")))
+                   (argv (list "/bin/sh" "-c" script)))
               (lem:switch-to-buffer buffer)
               (lem-terminal/terminal-mode::terminal-mode)
               (setf (lem:buffer-value buffer 'lem-terminal/terminal-mode::terminal-command)
@@ -337,3 +340,34 @@ program that prints 100 lines and then keeps printing, and the screen's rows."
      (ok (wait-for-output buffer))
      (wheel window 1)
      (ok (equal "1" (first-line buffer)) "the new process's scrollback is shown"))))
+
+(defun paste (text)
+  "Paste TEXT as a frontend does."
+  (lem:paste-using-mode (lem:ensure-mode-object
+                         (lem:current-major-mode-at-point (lem:current-point)))
+                        text))
+
+(deftest wheel-shows-each-line-once-while-lines-scroll-off
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer (format nil "100~%L1~%")))
+     ;; lines go on scrolling off the screen into the scrollback, unrendered
+     (sleep 0.2)
+     (wheel window 1)
+     (let ((lines (uiop:split-string (lem:buffer-text buffer) :separator '(#\Newline))))
+       (ok (= (length (remove "" lines :test #'equal))
+              (length (remove-duplicates (remove "" lines :test #'equal) :test #'equal)))
+           "no line is shown twice where the scrollback meets the screen")))
+   :script "seq 1 100; i=1; while :; do echo L$i; i=$((i+1)); sleep 0.01; done"))
+
+(deftest paste-while-scrolled-shows-the-screen
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (ok (wait-for-output buffer))
+     (wheel window 1)
+     (paste "y")
+     (ok (= rows (lem:buffer-nlines buffer)) "the scrollback is gone")
+     (ok (= 1 (lem:line-number-at-point (lem:window-view-point window))))
+     (ok (not (lem-terminal/terminal::terminal-copy-mode (buffer-terminal buffer)))
+         "the terminal renders again"))))

@@ -428,6 +428,11 @@ first, which COPY-MODE-OFF could not do right once the notice is appended."
   (:documentation "Remove the scrollback and render the screen again."))
 
 (defmethod copy-mode-on ((terminal terminal))
+  ;; Render what xterm.js parsed since the last render first: the lines it
+  ;; pushed off the screen are above it already, and would show twice.
+  (when (and (live-p terminal)
+             (not (deleted-buffer-p (terminal-buffer terminal))))
+    (render terminal))
   (setf (terminal-copy-mode terminal) t)
   (activate-scrollback terminal))
 

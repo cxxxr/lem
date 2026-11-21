@@ -234,6 +234,7 @@ character with its modifiers."
 in Lem (e.g. C-x for nano, or C-q itself)."
   (let ((terminal (get-current-live-terminal))
         (key (read-key)))
+    (back-to-screen (current-buffer))
     (send-key terminal key)))
 
 (defmacro define-terminal-key-command (name keyspec vterm-key)
@@ -308,6 +309,13 @@ it away.  Returns the number of scrollback lines in BUFFER."
     (terminal:copy-mode-off terminal)
     (terminal:snap-to-bottom terminal)))
 
+(defun back-to-screen (buffer)
+  "Show the screen of BUFFER's terminal again, for input sent to it: what the
+program does with it is to be seen."
+  (alexandria:when-let ((terminal (buffer-terminal buffer)))
+    (stop-scrolling terminal buffer)
+    (terminal:deactivate-scrollback terminal)))
+
 (defun call-with-scrollback (terminal window downward-p scroll)
   "Call SCROLL, a scroll of WINDOW (towards the end when DOWNWARD-P), with
 TERMINAL's scrollback shown; once WINDOW is back on the screen, the terminal
@@ -350,9 +358,7 @@ nothing below it."
      (call-next-method))
     (t
      ;; Any other command (typing, etc.) — remove scrollback from buffer
-     (alexandria:when-let ((terminal (get-current-terminal)))
-       (stop-scrolling terminal (current-buffer))
-       (terminal:deactivate-scrollback terminal))
+     (back-to-screen (current-buffer))
      (terminal-input))))
 
 (defun resize-terminal (terminal window)
@@ -369,13 +375,18 @@ windows of different sizes."
                         (window (current-window)))
     (resize-terminal terminal window)))
 
+(defun paste (string)
+  (let ((terminal (get-current-live-terminal)))
+    (back-to-screen (current-buffer))
+    (terminal:paste-string terminal string)))
+
 (defmethod lem-core:paste-using-mode ((mode terminal-mode) string)
-  (terminal:paste-string (get-current-live-terminal) string))
+  (paste string))
 
 (define-command terminal-yank () ()
   "Paste the latest kill (or the clipboard) into the terminal."
   (alexandria:when-let ((string (yank-from-clipboard-or-killring)))
-    (terminal:paste-string (get-current-live-terminal) string)))
+    (paste string)))
 
 (defun on-window-size-change (window)
   (alexandria:when-let (terminal (buffer-terminal (window-buffer window)))
