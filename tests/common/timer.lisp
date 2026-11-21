@@ -46,7 +46,8 @@ can delay by much more than the timer's own interval.")
 (defmacro with-testing-timer-manager (() &body body)
   `(with-timer-manager (make-instance 'testing-timer-manager)
      (let ((*current-time* 0)
-           (lem/common/timer::*idle-timer-list* '()))
+           (lem/common/timer::*idle-timer-list* '())
+           (lem/common/timer::*processed-idle-timer-list* '()))
        ,@body)))
 
 (defun receive (mailbox)
@@ -132,3 +133,63 @@ can delay by much more than the timer's own interval.")
       (start-timer timer 10)
       (testing "its time of the earlier idle time is not counted from"
         (ok (null (get-next-timer-timing-ms)))))))
+
+;; The tests below read lem/common/timer::*idle-timer-list*: the timer
+;; package exports no way to list the idle timers.
+(defun due-idle-timer (function &key repeat (name "due"))
+  "Start an idle timer of FUNCTION, due 10 ms after the idle time starts."
+  (let ((timer (make-idle-timer function :name name)))
+    (start-timer timer 10 :repeat repeat)
+    timer))
+
+(deftest a-failing-idle-timer-leaves-the-others-for-later
+  (with-testing-timer-manager ()
+    (let* ((ran '())
+           (repeating (due-idle-timer (lambda () (push :repeating ran))
+                                      :repeat t :name "repeating"))
+           (other (due-idle-timer (lambda () (push :other ran)) :name "other"))
+           ;; Started last, so first in the list: called first.
+           (failing (due-idle-timer (lambda () (error "An idle timer failed"))
+                                    :name "failing"))
+           (signalled nil))
+      (declare (ignore failing))
+      (handler-case
+          (with-idle-timers ()
+            (setf *current-time* 100)
+            (update-idle-timers))
+        (timer-error (condition)
+          (setf signalled (princ-to-string (timer-error-condition condition)))))
+      (ok (equal "An idle timer failed" signalled))
+      (testing "the timers after it are still there, and run in a later idle time"
+        (ok (member repeating lem/common/timer::*idle-timer-list*))
+        (ok (member other lem/common/timer::*idle-timer-list*))
+        (with-idle-timers ()
+          (setf *current-time* 200)
+          (update-idle-timers))
+        (ok (equal '(:other :repeating) (sort (copy-list ran) #'string<)))))))
+
+(deftest a-repeating-idle-timer-that-fired-comes-back-after-a-failure
+  (with-testing-timer-manager ()
+    (let* ((repeating (due-idle-timer (lambda ()) :repeat t :name "repeating")))
+      ;; Started last: called after the repeating one.
+      (due-idle-timer (lambda () (error "An idle timer failed")) :name "failing")
+      (ignore-errors
+       (with-idle-timers ()
+         (setf *current-time* 100)
+         (update-idle-timers)))
+      (ok (member repeating lem/common/timer::*idle-timer-list*)))))
+
+(deftest an-idle-timer-stopped-or-postponed-by-one-called-before-is-not-called
+  (with-testing-timer-manager ()
+    (let* ((ran '())
+           (stopped (due-idle-timer (lambda () (push :stopped ran)) :name "stopped"))
+           (postponed (due-idle-timer (lambda () (push :postponed ran)) :name "postponed")))
+      (due-idle-timer (lambda ()
+                        (stop-timer stopped)
+                        (stop-timer postponed)
+                        (start-timer postponed 1000))
+                      :name "stopping")
+      (with-idle-timers ()
+        (setf *current-time* 100)
+        (update-idle-timers))
+      (ok (null ran)))))

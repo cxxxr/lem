@@ -306,9 +306,11 @@ abort itself.")
   (setf *processed-idle-timer-list* '()))
 
 (defun call-with-idle-timers (function)
+  ;; unwind-protect: a timer-error leaving FUNCTION must not leave the
+  ;; repeating timers that fired out of the list.
   (start-idle-timers)
-  (prog1 (let ((*idle-p* t))
-           (funcall function))
+  (unwind-protect (let ((*idle-p* t))
+                    (funcall function))
     (stop-idle-timers)))
 
 (defmacro with-idle-timers (() &body body)
@@ -321,27 +323,40 @@ a command started in a prompt a timer opened, seen by the read loop the
 timer ran in before that loop enters with-idle-timers again."
   (not (null (timer-last-time timer))))
 
+(defun idle-timer-due-p (timer tick-time)
+  "Return true if the idle TIMER is to be called at TICK-TIME."
+  (and (timer-started-p timer)
+       (< (timer-next-time timer) tick-time)))
+
+(defun take-due-timer (timer tick-time)
+  "Take the due idle TIMER out of the idle timers just before it is called:
+a repeating one to the processed timers (back when the idle time ends),
+another one expired."
+  (setf *idle-timer-list* (delete timer *idle-timer-list*))
+  (if (timer-repeat-p timer)
+      (push timer *processed-idle-timer-list*)
+      (progn
+        (expire-timer timer)
+        (set-timer-last-time tick-time timer))))
+
 (defun update-idle-timers ()
+  "Call the idle timers that are due, and return true if any was called.
+They are taken and called one at a time: if one fails, the ones after it
+are still in the idle timers, for a later idle time, and none of their
+failures is lost."
   (let* ((tick-time (get-microsecond-time *timer-manager*))
-         (updating-timers (remove-if-not (lambda (timer)
-                                           (and (timer-started-p timer)
-                                                (< (timer-next-time timer) tick-time)))
-                                         *idle-timer-list*))
-         (deleting-timers (remove-if #'timer-repeat-p
-                                     updating-timers))
-         (updating-idle-timers (remove-if-not #'timer-repeat-p
-                                              updating-timers)))
-    (mapc #'expire-timer deleting-timers)
-
-    (setf *idle-timer-list* (set-difference *idle-timer-list* deleting-timers))
-    (setf *idle-timer-list* (set-difference *idle-timer-list* updating-idle-timers))
-    (setf *processed-idle-timer-list* (nconc updating-idle-timers *processed-idle-timer-list*))
-
-    (dolist (timer updating-timers)
-      (unless (timer-repeat-p timer)
-        (set-timer-last-time tick-time timer)))
-    (mapc #'call-timer-function updating-timers)
-    (not (null updating-timers))))
+         (due-timers (remove-if-not (lambda (timer) (idle-timer-due-p timer tick-time))
+                                    *idle-timer-list*))
+         (called nil))
+    (dolist (timer due-timers)
+      ;; Checked again: a timer called before may have stopped it or
+      ;; started it again.
+      (when (and (member timer *idle-timer-list*)
+                 (idle-timer-due-p timer tick-time))
+        (take-due-timer timer tick-time)
+        (setf called t)
+        (call-timer-function timer)))
+    called))
 
 (defun get-next-timer-timing-ms ()
   (when-let (timers (remove-if-not #'timer-started-p *idle-timer-list*))
