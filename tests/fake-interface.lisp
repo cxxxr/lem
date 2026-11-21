@@ -123,3 +123,17 @@
                (push :not-a-window (lem:frame-floating-windows (current-frame)))
                (return-from body)))
            'warning)))))
+
+(deftest each-use-starts-with-no-typeout-window
+  (with-current-buffers ()
+    (let ((outer lem-core::*typeout-window*))
+      (with-fake-interface ()
+        (pop-up-typeout-window (make-buffer "*typeout test*")
+                               :function (lambda (stream) (write-string "text" stream)))
+        (ok lem-core::*typeout-window*))
+      (with-fake-interface ()
+        (testing "the next use does not see the typeout window of the earlier use"
+          (ok (null lem-core::*typeout-window*))
+          (ok (null lem-core::*typeout-before-window*))))
+      (testing "the typeout window outside is left as it was"
+        (ok (eq outer lem-core::*typeout-window*))))))

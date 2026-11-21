@@ -103,10 +103,13 @@
   nil)
 
 (defun call-with-fake-interface (function)
-  ;; Give each use its own frames, current buffer and last focused window.
+  ;; Give each use its own frames, current buffer, last focused window and
+  ;; typeout window (the window of pop-up-typeout-window, *EDITOR ERROR*).
   ;; Frames made by an earlier use would stay in the frame list, where
   ;; delete-buffer switches their windows too, and the current buffer would
-  ;; stay a buffer of an earlier use.  Inside a running Lem, binding them also
+  ;; stay a buffer of an earlier use.  A typeout window left open by an
+  ;; earlier use would be reused by the next popup, a window of frames that
+  ;; are gone.  Inside a running Lem, binding them also
   ;; keeps the user's frames and current buffer as they were.  lem-core
   ;; exports no way to reset these variables, so they are bound directly
   ;; (the frame map made by lem-core::make-display-frame-map, as the global
@@ -127,10 +130,17 @@
          (lem-core::*display-frame-map* (lem-core::make-display-frame-map))
          (lem-core::*last-focused-window* nil)
          (lem/buffer/internal::*current-buffer* (primordial-buffer))
+         (lem-core::*typeout-window* nil)
+         (lem-core::*typeout-before-window* nil)
+         (lem-core::*typeout-window-rewinding-values* nil)
          (bt2:*default-special-bindings*
            (list* (cons 'lem-core::*frames* 'lem-core::*frames*)
                   (cons 'lem-core::*display-frame-map* 'lem-core::*display-frame-map*)
                   (cons 'lem-core::*last-focused-window* 'lem-core::*last-focused-window*)
+                  (cons 'lem-core::*typeout-window* 'lem-core::*typeout-window*)
+                  (cons 'lem-core::*typeout-before-window* 'lem-core::*typeout-before-window*)
+                  (cons 'lem-core::*typeout-window-rewinding-values*
+                        'lem-core::*typeout-window-rewinding-values*)
                   (cons 'lem/buffer/internal::*current-buffer*
                         'lem/buffer/internal::*current-buffer*)
                   bt2:*default-special-bindings*)))

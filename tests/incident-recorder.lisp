@@ -31,18 +31,13 @@
                          (declare (ignorable ,directory))
                          ,@body)))
 
-;; *EDITOR ERROR* is a typeout window, and lem-core keeps the typeout window
-;; in globals that with-fake-interface does not rebind: a popup left open by
-;; an earlier test is reused by the next popup, with a point on lines its
-;; erase deleted. The buffer list is shared too. Start each test that pops up
-;; or runs commands from an empty buffer list and no typeout window.
+;; The buffer list is shared between tests (with-fake-interface gives each
+;; use its own frames and typeout window, not its own buffer list). Start
+;; each test that pops up or runs commands from an empty buffer list.
 (defun call-with-isolated-editor (function)
   (lem:with-current-buffers ()
-    (let ((lem-core::*typeout-window* nil)
-          (lem-core::*typeout-before-window* nil)
-          (lem-core::*typeout-window-rewinding-values* nil))
-      (with-fake-interface ()
-        (funcall function)))))
+    (with-fake-interface ()
+      (funcall function))))
 
 (defmacro with-isolated-editor (() &body body)
   `(call-with-isolated-editor (lambda () ,@body)))
