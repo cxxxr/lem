@@ -518,21 +518,34 @@ module.exports = (win, app) => {
         check('terminal: so does a direct create, killing a process that ignores SIGHUP',
               (await spawned()) && await until(async () => !(await alive()), 5000),
               await js('globalThis.lemTestPid'));
-        // killing the buffer of a program that ignores SIGHUP kills it too (SIGKILL after a grace)
-        await lisp(`(lem:send-event (lambda () (lem-terminal/terminal-mode::create-terminal-with-command
-                      "/bin/sh" (list "/bin/sh" "-c" "trap '' HUP; echo hup-ignored; sleep 1000"))))`);
-        check('terminal: a program that ignores SIGHUP runs',
-              await until(async () => (await terminalText()).includes('hup-ignored'), 10000), await terminalText());
-        const hupPid = await lisp('(js:get (lem-terminal/terminal::terminal-pty (lem-terminal/terminal-mode::get-current-terminal)) "pid")');
-        // anything left of its session (the shell is its leader): the sleep too
-        const hupSession = () => js(`(() => { try {
-            return require('child_process').execFileSync('ps', ['-o', 'pid=', '-s', '${Number(hupPid)}'],
-                                                         { encoding: 'utf8' }).trim();
-          } catch (e) { return ''; } })()`);
-        check('terminal: its job runs', (await hupSession()).split(/\s+/).length >= 2, await hupSession());
-        await lisp('(lem:send-event (lambda () (lem:kill-buffer (lem:current-buffer))))');
-        check('terminal: killing its buffer kills it and its job',
-              await until(async () => (await hupSession()) === '', 5000), await hupSession());
+        // killing the buffer of a program that ignores SIGHUP kills it too (SIGKILL
+        // after a grace), and so the job it runs.  The number of processes of a
+        // session from /proc (Linux), -1 when it cannot be read.
+        const sessionSize = (sid) => js(`(() => { try {
+            const fs = require('fs');
+            return fs.readdirSync('/proc').filter((p) => /^\\d+$/.test(p)).filter((p) => {
+              try {
+                const stat = fs.readFileSync('/proc/' + p + '/stat', 'utf8');
+                return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[3] === '${Number(sid)}';
+              } catch (e) { return false; }
+            }).length;
+          } catch (e) { return -1; } })()`);
+        const killedWithItsJob = async (name, argv, input) => {
+          await lisp(`(lem:send-event (lambda () (lem-terminal/terminal-mode::create-terminal-with-command
+                        "${argv[0]}" (list ${argv.map((a) => lispString(a)).join(' ')}))))`);
+          if (input) { await sleep(1000); await type(input); await key('Return'); }
+          check(`terminal: ${name}: a program that ignores SIGHUP runs`,
+                await until(async () => (await terminalText()).includes('hup-ignored'), 10000), await terminalText());
+          const pid = await lisp('(js:get (lem-terminal/terminal::terminal-pty (lem-terminal/terminal-mode::get-current-terminal)) "pid")');
+          check(`terminal: ${name}: its job runs`, await until(async () => (await sessionSize(pid)) >= 2), await sessionSize(pid));
+          await lisp('(lem:send-event (lambda () (lem:kill-buffer (lem:current-buffer))))');
+          check(`terminal: ${name}: killing its buffer kills it and its job`,
+                await until(async () => (await sessionSize(pid)) === 0, 5000), await sessionSize(pid));
+        };
+        await killedWithItsJob('sh', ['/bin/sh', '-c', "trap '' HUP; echo hup-ignored; sleep 1000"]);
+        // an interactive shell puts the job in a process group of its own
+        await killedWithItsJob('job control', ['/bin/bash', '--norc', '--noprofile', '-i'],
+                               "sh -c \"trap '' HUP; echo hup-ignored; sleep 1000\"");
       }
 
       // the editor seen from outside (M-x remote-start, tools/lem-remote): in the desktop application

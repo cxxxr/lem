@@ -317,32 +317,61 @@ told of the changes of the screen, the exit, the title and the bell."
   (unless (terminal-closed terminal)
     (js:call (terminal-pty terminal) "write" string)))
 
-(defun signal-process-group (pty signal)
-  "Send SIGNAL to the process group of PTY's process.  node-pty makes the
-process a session leader, so its pid names the group: the shell and its
-foreground job, which can outlive the shell."
-  (ignore-errors
-   (js:call (js:global "process") "kill" (- (js:get pty "pid")) signal)))
+(defun session-pids (sid)
+  "The pids of the processes in session SID, read from /proc, and T; NIL and
+NIL where there is no /proc (macOS).  A pid is not given to a new process
+while it is the session id of a live one, so these are the session's own."
+  (let ((fs (node-module "node:fs")))
+    (if (not (js:call fs "existsSync" "/proc/self/stat"))
+        (values nil nil)
+        (let ((names (js:call fs "readdirSync" "/proc"))
+              (pids '()))
+          (dotimes (i (js:get names "length"))
+            (let ((name (js:get names i)))
+              (when (every #'digit-char-p name)
+                ;; "pid (comm) state ppid pgrp session ...": comm may hold spaces
+                (let* ((stat (ignore-errors
+                              (js:call fs "readFileSync"
+                                       (format nil "/proc/~A/stat" name) "utf8")))
+                       (fields (and stat
+                                    (uiop:split-string
+                                     (string-trim " " (subseq stat (1+ (position #\) stat :from-end t))))))))
+                  (when (and fields
+                             (eql sid (ignore-errors (parse-integer (fourth fields)))))
+                    (push (parse-integer name) pids))))))
+          (values pids t)))))
+
+(defun kill-session (pid signal)
+  "Send SIGNAL to every process of the session PID leads: the shell, its
+jobs (in process groups of their own when it does job control) and what
+they started.  Without /proc, to PID's process group."
+  (let ((process (js:global "process")))
+    (multiple-value-bind (pids listed) (session-pids pid)
+      (if listed
+          (dolist (p pids)
+            (ignore-errors (js:call process "kill" p signal)))
+          (ignore-errors (js:call process "kill" (- pid) signal))))))
 
 (defun kill-process (terminal)
   "Kill TERMINAL's process if it still runs, and free its screen.  As Lem's
 native terminal does (terminal_delete), the process and its group get
-SIGHUP, and SIGKILL *KILL-GRACE-MS* later (a program can ignore SIGHUP)."
+SIGHUP, and what is left of its session SIGKILL *KILL-GRACE-MS* later (a
+program can ignore SIGHUP).  Nothing is signalled once node-pty has seen the
+process exit: its pid may be another process's by then."
   (unless (terminal-closed terminal)
     (setf (terminal-closed terminal) t)
-    (let ((pty (terminal-pty terminal)))
-      (signal-process-group pty "SIGHUP")
-      (ignore-errors (js:call pty "kill"))
-      (js:funcall (js:global "setTimeout")
-                  (lambda ()
-                    ;; a group's id is not reused while a member of it lives
-                    (signal-process-group pty "SIGKILL")
-                    ;; the process itself only before node-pty saw it exit:
-                    ;; its pid may be reused after
-                    (unless (terminal-exited terminal)
-                      (ignore-errors (js:call pty "kill" "SIGKILL")))
-                    nil)
-                  *kill-grace-ms*)))
+    (let* ((pty (terminal-pty terminal))
+           (pid (js:get pty "pid")))
+      (unless (terminal-exited terminal)
+        (ignore-errors (js:call (js:global "process") "kill" (- pid) "SIGHUP"))
+        (ignore-errors (js:call pty "kill"))
+        (js:funcall (js:global "setTimeout")
+                    (lambda ()
+                      ;; by the session id, not the pid: node-pty may have
+                      ;; reaped the shell without telling yet
+                      (ignore-errors (kill-session pid "SIGKILL"))
+                      nil)
+                    *kill-grace-ms*))))
   (alexandria:when-let ((subscription (terminal-output-subscription terminal)))
     ;; the screen is freed even when this fails
     (ignore-errors (js:call subscription "dispose")))
