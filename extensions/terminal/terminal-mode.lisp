@@ -162,6 +162,8 @@ its process has exited.  The old output is discarded."
     (unless (terminal:process-exited-p old)
       (editor-error "Terminal process is still running"))
     (terminal:destroy old)
+    ;; The old process may have exited while the buffer was scrolled.
+    (setf (buffer-value buffer 'scrollback-lines) nil)
     (with-buffer-read-only buffer nil
       (erase-buffer buffer))
     (destructuring-bind (&optional program argv)
@@ -306,14 +308,17 @@ it away.  Returns the number of scrollback lines in BUFFER."
     (terminal:copy-mode-off terminal)
     (terminal:snap-to-bottom terminal)))
 
-(defun call-with-scrollback (terminal window scroll)
-  "Call SCROLL, a scroll of WINDOW, with TERMINAL's scrollback shown; once
-WINDOW is back on the screen, the terminal runs on as before."
-  (let* ((buffer (window-buffer window))
-         (lines (start-scrolling terminal buffer)))
-    (funcall scroll)
-    (when (> (line-number-at-point (window-view-point window)) lines)
-      (stop-scrolling terminal buffer))))
+(defun call-with-scrollback (terminal window downward-p scroll)
+  "Call SCROLL, a scroll of WINDOW (towards the end when DOWNWARD-P), with
+TERMINAL's scrollback shown; once WINDOW is back on the screen, the terminal
+runs on as before.  Scrolling down from the screen does nothing: there is
+nothing below it."
+  (let ((buffer (window-buffer window)))
+    (unless (and downward-p (not (buffer-value buffer 'scrollback-lines)))
+      (let ((lines (start-scrolling terminal buffer)))
+        (funcall scroll)
+        (when (> (line-number-at-point (window-view-point window)) lines)
+          (stop-scrolling terminal buffer))))))
 
 (defmethod execute ((mode terminal-mode) command argment)
   (sync-buffer-directory (current-buffer))
@@ -324,6 +329,7 @@ WINDOW is back on the screen, the terminal runs on as before."
           (alexandria:when-let ((terminal (get-current-terminal)))
             (not (terminal:process-exited-p terminal))))
      (call-with-scrollback (get-current-terminal) (current-window)
+                           (eq (typep command 'scroll-down) (plusp (or argment 1)))
                            (lambda () (call-next-method))))
     (*running-bypass-command*
      (call-next-method))

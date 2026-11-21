@@ -252,49 +252,88 @@ itself, as the timer would, with RENDER-TICK."))
     (lem:search-forward point string)))
 
 (defun wheel (window wheel-y)
-  "Turn the mouse wheel over WINDOW as a frontend does (up when WHEEL-Y is 1)."
-  (lem-core::handle-mouse-event
-   (make-instance 'lem-core::mouse-wheel
-                  :x (lem:window-x window) :y (lem:window-y window)
-                  :pixel-x 0 :pixel-y 0 :wheel-x 0 :wheel-y wheel-y)))
+  "Turn the mouse wheel over WINDOW as a frontend does (up when WHEEL-Y is 1),
+as a command of its own: the flags of the previous one are not carried on."
+  (let ((lem-core::*last-flags* nil)
+        (lem-core::*curr-flags* nil))
+    (lem-core::handle-mouse-event
+     (make-instance 'lem-core::mouse-wheel
+                    :x (lem:window-x window) :y (lem:window-y window)
+                    :pixel-x 0 :pixel-y 0 :wheel-x 0 :wheel-y wheel-y))))
 
-(deftest wheel-scrolls-the-scrollback-while-output-goes-on
+(defun buffer-terminal (buffer)
+  (lem-terminal/terminal-mode::buffer-terminal buffer))
+
+(defun render (buffer)
+  "Render BUFFER's terminal as the timer the I/O thread arms would."
+  (lem-terminal/terminal::render-tick (buffer-terminal buffer)))
+
+(defun wait-for-output (buffer)
+  (wait-until (lambda ()
+                (render buffer)
+                (buffer-has-p buffer (format nil "100~%x")))))
+
+(defun call-with-wheel-terminal (function)
+  "Call FUNCTION with a terminal buffer in the current window, running a
+program that prints 100 lines and then keeps printing, and the screen's rows."
   (if (library-available-p)
       (lem:with-current-buffers ()
         (lem-fake-interface:with-fake-interface ()
           (lem/common/timer:with-timer-manager (make-instance 'manual-timer-manager)
-          (let* ((buffer (lem:make-buffer "*terminal wheel test*"))
-                 (window (lem:current-window))
-                 (rows (1- (lem:window-height window)))
-                 (terminal nil))
-            (lem:switch-to-buffer buffer)
-            (lem-terminal/terminal-mode::terminal-mode)
-            (setf terminal (lem-terminal/terminal:create
-                            :rows rows :cols (lem:window-width window)
-                            :buffer buffer :directory ""
-                            :program "/bin/sh"
-                            :argv (list "/bin/sh" "-c"
-                                        "seq 1 100; while :; do printf x; sleep 0.02; done"))
-                  (lem-terminal/terminal-mode::buffer-terminal buffer) terminal)
-            (flet ((render ()
-                     (lem-terminal/terminal::render-tick terminal)))
-              (unwind-protect
-                   (progn
-                     (ok (wait-until (lambda ()
-                                       (render)
-                                       (buffer-has-p buffer (format nil "100~%x")))))
-                     (wheel window 1)
-                     (ok (equal "1" (first-line buffer)) "the scrollback is shown")
-                     (let ((view (lem:line-number-at-point (lem:window-view-point window))))
-                       (ok (< view (- (lem:buffer-nlines buffer) rows)) "the window shows it")
-                       (sleep 0.1)
-                       (render)
-                       (ok (equal "1" (first-line buffer)) "output does not take it away")
-                       (ok (= view (lem:line-number-at-point (lem:window-view-point window)))))
-                     (loop :repeat 50 :do (wheel window -1))
-                     (ok (= rows (lem:buffer-nlines buffer)) "back at the bottom, only the screen")
-                     (ok (= 1 (lem:line-number-at-point (lem:window-view-point window))))
-                     (ok (not (lem-terminal/terminal::terminal-copy-mode terminal))
-                         "the terminal renders again"))
-                (lem-terminal/terminal:destroy terminal)))))))
+            (let* ((buffer (lem:make-buffer "*terminal wheel test*"))
+                   (window (lem:current-window))
+                   (rows (1- (lem:window-height window)))
+                   (argv (list "/bin/sh" "-c"
+                               "seq 1 100; while :; do printf x; sleep 0.02; done")))
+              (lem:switch-to-buffer buffer)
+              (lem-terminal/terminal-mode::terminal-mode)
+              (setf (lem:buffer-value buffer 'lem-terminal/terminal-mode::terminal-command)
+                    (list "/bin/sh" argv)
+                    (lem-terminal/terminal-mode::buffer-terminal buffer)
+                    (lem-terminal/terminal:create
+                     :rows rows :cols (lem:window-width window)
+                     :buffer buffer :directory "" :program "/bin/sh" :argv argv))
+              (unwind-protect (funcall function buffer window rows)
+                (lem-terminal/terminal:destroy (buffer-terminal buffer)))))))
       (skip "terminal.so is not built")))
+
+(deftest wheel-scrolls-the-scrollback-while-output-goes-on
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (ok (wait-for-output buffer))
+     (wheel window 1)
+     (ok (equal "1" (first-line buffer)) "the scrollback is shown")
+     (let ((view (lem:line-number-at-point (lem:window-view-point window))))
+       (ok (< view (- (lem:buffer-nlines buffer) rows)) "the window shows it")
+       (sleep 0.1)
+       (render buffer)
+       (ok (equal "1" (first-line buffer)) "output does not take it away")
+       (ok (= view (lem:line-number-at-point (lem:window-view-point window)))))
+     (loop :repeat 50 :do (wheel window -1))
+     (ok (= rows (lem:buffer-nlines buffer)) "back at the bottom, only the screen")
+     (ok (= 1 (lem:line-number-at-point (lem:window-view-point window))))
+     (ok (not (lem-terminal/terminal::terminal-copy-mode (buffer-terminal buffer)))
+         "the terminal renders again"))))
+
+(deftest wheel-down-at-the-bottom-leaves-the-buffer-alone
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (let ((tick (lem:buffer-modified-tick buffer)))
+       (wheel window -1)
+       (ok (= tick (lem:buffer-modified-tick buffer))
+           "the scrollback is not put in and taken out again")))))
+
+(deftest wheel-scrolls-after-terminal-restart
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (wheel window 1)
+     ;; the process exits while the buffer is scrolled
+     (lem-terminal/terminal::finish-process (buffer-terminal buffer) 0)
+     (lem-terminal/terminal-mode::terminal-restart)
+     (ok (wait-for-output buffer))
+     (wheel window 1)
+     (ok (equal "1" (first-line buffer)) "the new process's scrollback is shown"))))
