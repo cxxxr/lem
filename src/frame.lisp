@@ -7,7 +7,10 @@
   "NIL, or a function of one argument, a frame, that returns the buffers
 to offer for selection in that frame.
 Extensions that use each frame as a separate workspace, such as
-frame-multiplexer, set this.  When it is NIL or returns NIL, every buffer is offered.")
+frame-multiplexer, set this.  The function returns two values: the buffers, and
+true when the frame is restricted to them (then an empty list means no buffer is
+offered).  When the variable is NIL or the second value is false, every buffer
+is offered.")
 
 (defgeneric update-prompt-window (window)
   (:method (window)))
@@ -140,11 +143,15 @@ redraw-display関数でキャッシュを捨てて画面全体を再描画しま
 This is what buffer completion, list-buffers, next-buffer and previous-buffer use,
 so that a frame used as a workspace only shows its own buffers.
 Lookups by name or file (get-buffer, get-file-buffer) still see every buffer:
-two workspaces visiting the same file share one buffer."
-  (or (and *frame-buffer-list-function*
-           frame
-           (funcall *frame-buffer-list-function* frame))
-      (buffer-list)))
+two workspaces visiting the same file share one buffer.
+The list is empty when FRAME is restricted to its own buffers and none of them
+is left; callers that need a buffer must handle that."
+  (multiple-value-bind (buffers restricted)
+      (when (and *frame-buffer-list-function* frame)
+        (funcall *frame-buffer-list-function* frame))
+    (if restricted
+        buffers
+        (buffer-list))))
 
 (defun unmap-frame (display)
   (let ((frame (gethash display *display-frame-map*)))
