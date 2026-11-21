@@ -144,6 +144,7 @@ it in a test process, not in a Lem in use."
   (if (library-available-p)
       (lem:with-current-buffers ()
         (lem-fake-interface:with-fake-interface ()
+         (lem/common/timer:with-timer-manager (make-instance 'quiet-timer-manager)
           (let ((buffers (lem:buffer-list))
                 (terminals lem-terminal/terminal::*terminals*)
                 (errors 0))
@@ -160,7 +161,7 @@ it in a test process, not in a Lem in use."
                                                 terminals))
                 (lem-terminal/terminal:destroy terminal)))
             (ok (= 2 errors) "M-x terminal and a command terminal signal editor-error")
-            (ok (equal buffers (lem:buffer-list)) "no *Terminal* buffer is left"))))
+            (ok (equal buffers (lem:buffer-list)) "no *Terminal* buffer is left")))))
       (skip "terminal.so is not built or is older than its failure handling")))
 
 (deftest terminal-restart-leaves-a-buffer-that-never-had-a-terminal

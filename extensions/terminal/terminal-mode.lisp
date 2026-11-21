@@ -85,8 +85,8 @@ dependency on the TRAMP extension is needed."
 
 (defun create-in-new-buffer (buffer &rest args)
   "Start a terminal in BUFFER, just made for it, with ARGS for `terminal:create'.
-When it cannot start (editor-error), BUFFER is deleted: no empty terminal
-buffer is left behind."
+When `terminal:create' does not return (an editor-error when the terminal
+cannot start), BUFFER is deleted: no empty terminal buffer is left behind."
   (let ((started nil))
     (unwind-protect
          (prog1 (apply #'terminal:create :cols 80 :rows 24 :buffer buffer args)
@@ -177,9 +177,10 @@ is freed only then, so the restart needs room for a second PTY."
                  (terminal:create :cols 80 :rows 24 :buffer buffer
                                   :directory (if program "" (buffer-directory buffer))
                                   :program program :argv argv))))
-      ;; The old process has exited, so its I/O thread no longer renders.
-      (terminal:destroy old)
+      ;; The buffer owns the new terminal before the old one goes.  The old
+      ;; process has exited, so its I/O thread no longer renders.
       (setf (buffer-terminal buffer) new)
+      (terminal:destroy old)
       ;; The new terminal renders all its rows into the emptied buffer.
       (with-buffer-read-only buffer nil
         (erase-buffer buffer))
