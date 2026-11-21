@@ -306,12 +306,24 @@ point is kept for manual/REPL use and tests."
            (type (integer) rows)
            (type (integer) cols))
   (let* ((id (generate-terminal-id))
+         (viscus
+           (let ((viscus (ffi::terminal-new directory id rows cols
+                                            :program program
+                                            :argv argv)))
+             ;; NULL, with errno telling why, when terminal_new is out of
+             ;; memory, file descriptors, processes or PTYs.  Nothing is made
+             ;; for it then: no instance, no I/O thread.
+             (when (cffi:null-pointer-p viscus)
+               (let ((errno #+sbcl (sb-alien:get-errno) #-sbcl nil))
+                 (editor-error "Cannot start the terminal: ~A"
+                               (if errno
+                                   (cffi:foreign-funcall "strerror" :int errno :string)
+                                   "unknown error"))))
+             viscus))
          (terminal
            (make-instance 'terminal
                           :id id
-                          :viscus (ffi::terminal-new directory id rows cols
-                                                     :program program
-                                                     :argv argv)
+                          :viscus viscus
                           :buffer buffer
                           :rows rows
                           :cols cols)))

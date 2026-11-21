@@ -223,27 +223,37 @@ struct terminal *terminal_new(int id,
                               void *cb_sb_clear)
 {
   /* Everything that can fail is done before the shell is started, so a
-     failure has only memory to free: no child to kill and reap, no PTY to
-     close. */
+     failure has no child to kill and reap and no PTY to close.  On failure
+     NULL is returned with errno telling why. */
+  int saved_errno;
+  VTerm *vterm = NULL;
 
   /* Zeroed: the cursor is read at the first render, which can come before
      libvterm reports where the cursor is. */
   struct terminal *terminal = calloc(1, sizeof(struct terminal));
   if (terminal == NULL)
     return NULL;
-
-  VTerm *vterm = vterm_new(rows, cols);
-  if (vterm == NULL) {
+  /* Without the wake pipe the I/O thread could not be woken to exit. */
+  if (pipe(terminal->wake_pipe) != 0) {
+    saved_errno = errno;
     free(terminal);
+    errno = saved_errno;
     return NULL;
+  }
+  fcntl(terminal->wake_pipe[0], F_SETFD, FD_CLOEXEC);
+  fcntl(terminal->wake_pipe[1], F_SETFD, FD_CLOEXEC);
+
+  vterm = vterm_new(rows, cols);
+  if (vterm == NULL) {
+    errno = ENOMEM;
+    goto fail;
   }
   vterm_set_utf8(vterm, 1);
 
   VTermScreen *screen = vterm_obtain_screen(vterm);
   if (screen == NULL) {
-    vterm_free(vterm);
-    free(terminal);
-    return NULL;
+    errno = ENOMEM;
+    goto fail;
   }
   /* Full-screen programs (less, vi, top, ...) switch to the alternate screen
      and expect the original one back on exit; without this their last frame
@@ -251,11 +261,8 @@ struct terminal *terminal_new(int id,
   vterm_screen_enable_altscreen(screen, 1);
 
   run_shell_result result = run_shell(rows, cols, program, argv);
-  if (result.pid < 0) {
-    vterm_free(vterm);
-    free(terminal);
-    return NULL;
-  }
+  if (result.pid < 0)
+    goto fail;
 
   terminal->id = id;
   terminal->screen = screen;
@@ -265,13 +272,6 @@ struct terminal *terminal_new(int id,
   terminal->eof = 0;
   terminal->reaped = 0;
   terminal->exit_status = -1;
-  if (pipe(terminal->wake_pipe) != 0) {
-    terminal->wake_pipe[0] = -1;
-    terminal->wake_pipe[1] = -1;
-  } else {
-    fcntl(terminal->wake_pipe[0], F_SETFD, FD_CLOEXEC);
-    fcntl(terminal->wake_pipe[1], F_SETFD, FD_CLOEXEC);
-  }
   /* Keep the PTY master out of shells spawned by later terminals. */
   fcntl(terminal->fd, F_SETFD, FD_CLOEXEC);
 
@@ -294,6 +294,16 @@ struct terminal *terminal_new(int id,
   vterm_screen_reset(screen, 1);
 
   return terminal;
+
+ fail:
+  saved_errno = errno;
+  if (vterm != NULL)
+    vterm_free(vterm);
+  close(terminal->wake_pipe[0]);
+  close(terminal->wake_pipe[1]);
+  free(terminal);
+  errno = saved_errno;
+  return NULL;
 }
 
 static int decode_wait_status(int status)
