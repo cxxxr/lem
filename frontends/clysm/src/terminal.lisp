@@ -85,6 +85,10 @@ sends (here they are encoded as xterm does, by KEY-SEQUENCE)."))
 (defparameter *scrollback-limit* 5000
   "The number of lines that xterm.js keeps above the screen.")
 
+(defparameter *kill-grace-ms* 200
+  "How long a process killed with SIGHUP has to exit before it gets SIGKILL,
+as Lem's native terminal waits (terminal_delete).")
+
 (defparameter *bell-interval-seconds* 1
   "Minimum seconds between two bell notices from the same terminal.")
 
@@ -133,6 +137,10 @@ three 32-bit words, little-endian: content, foreground, background.")
    (output-subscription :initform nil
                         :accessor terminal-output-subscription
                         :documentation "The handler of the pty's output (its dispose() removes it).")
+   (exited :initform nil
+           :accessor terminal-exited
+           :documentation "T once node-pty reported the process's exit (also
+after it was killed).")
    (closed :initform nil
            :accessor terminal-closed
            :documentation "T once the process has ended (and its output is
@@ -282,6 +290,7 @@ told of the changes of the screen, the exit, the title and the bell."
                      nil)))
     (js:call pty "onExit"
              (lambda (event)
+               (setf (terminal-exited terminal) t)
                (unless (terminal-closed terminal)
                  (let ((status (exit-status-code event)))
                    ;; after what was written before it is parsed
@@ -308,11 +317,32 @@ told of the changes of the screen, the exit, the title and the bell."
   (unless (terminal-closed terminal)
     (js:call (terminal-pty terminal) "write" string)))
 
+(defun signal-process-group (pty signal)
+  "Send SIGNAL to the process group of PTY's process.  node-pty makes the
+process a session leader, so its pid names the group: the shell and its
+foreground job, which can outlive the shell."
+  (ignore-errors
+   (js:call (js:global "process") "kill" (- (js:get pty "pid")) signal)))
+
 (defun kill-process (terminal)
-  "Kill TERMINAL's process if it still runs, and free its screen."
+  "Kill TERMINAL's process if it still runs, and free its screen.  As Lem's
+native terminal does (terminal_delete), the process and its group get
+SIGHUP, and SIGKILL *KILL-GRACE-MS* later (a program can ignore SIGHUP)."
   (unless (terminal-closed terminal)
     (setf (terminal-closed terminal) t)
-    (ignore-errors (js:call (terminal-pty terminal) "kill")))
+    (let ((pty (terminal-pty terminal)))
+      (signal-process-group pty "SIGHUP")
+      (ignore-errors (js:call pty "kill"))
+      (js:funcall (js:global "setTimeout")
+                  (lambda ()
+                    ;; a group's id is not reused while a member of it lives
+                    (signal-process-group pty "SIGKILL")
+                    ;; the process itself only before node-pty saw it exit:
+                    ;; its pid may be reused after
+                    (unless (terminal-exited terminal)
+                      (ignore-errors (js:call pty "kill" "SIGKILL")))
+                    nil)
+                  *kill-grace-ms*)))
   (alexandria:when-let ((subscription (terminal-output-subscription terminal)))
     ;; the screen is freed even when this fails
     (ignore-errors (js:call subscription "dispose")))
