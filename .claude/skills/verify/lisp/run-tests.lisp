@@ -6,10 +6,12 @@
 fails to compile, with SBCL's default *compile-file-failure-behaviour*
 :error), print it and quit with a failure, so that the last line is still
 VERIFY: tests failed."
+  (setf *verify-failing-file* nil)
   (handler-case (funcall function)
     (error (condition)
-      (format t "~&VERIFY: could not load the tests:~%  ~a~%VERIFY: tests failed~%"
-              condition)
+      (format t "~&VERIFY: could not load the tests:~%  ~a~%" condition)
+      (verify-print-failing-file)
+      (format t "~&VERIFY: tests failed~%")
       (uiop:quit 1))))
 
 (verify-load-or-fail

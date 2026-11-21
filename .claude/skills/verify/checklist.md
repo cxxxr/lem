@@ -120,7 +120,9 @@ anything. Keep the list short enough to read before each commit.
   `verify tests` must fail too (no fasl of the failed file is left in the
   cache). A broken `.asd` (`:defsystem-depends-on` a missing system) in a
   directory between a file and its system's `.asd` is noted, and the file is
-  still compiled in its system. Revert the edits afterwards.
+  still compiled in its system; but when the system above is a
+  package-inferred-system (`contrib/ollama/sub/`), the file fails, as the
+  broken `.asd` may be its own. Revert the edits afterwards.
 - **Origin:** the reviews of cxxxr/lem#62 (`verify compile` ended in a
   backtrace on a load error, and left fasls of failed files that later runs
   took as up to date).
