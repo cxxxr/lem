@@ -114,10 +114,13 @@
   ;; these variables have when it is made (bt2:*default-special-bindings*, as
   ;; with-implementation does for *implementation*).  So it sees this use's
   ;; frames, not the global ones, but what it sets afterwards (setf
-  ;; current-buffer, a frame it makes) stays in that thread.
+  ;; current-buffer, a frame it makes) stays in that thread.  Such a thread
+  ;; must be done before FUNCTION returns: the frames are torn down then.
   ;;
-  ;; The frames are torn down at the end, so that their windows' points do not
-  ;; stay in buffers that outlive this use, such as *tmp*.
+  ;; The frames are torn down at the end, so that the points of their windows
+  ;; do not stay in buffers that outlive this use, such as *tmp*.
+  ;; teardown-frame frees the window tree, the floating windows and the left
+  ;; and right side windows; it does not free bottom side or header windows.
   (let* ((lem-core::*frames* '())
          (lem-core::*display-frame-map* (make-hash-table))
          (lem-core::*last-focused-window* nil)

@@ -9,6 +9,8 @@
 (deftest each-use-starts-with-its-own-frames-and-current-buffer
   ;; Start from an empty buffer list, so that the *tmp* of the frames made
   ;; here is not the shared one and does not stay in the global buffer list.
+  ;; (with-current-buffers replaces the buffer list for every thread while it
+  ;; runs, as all the tests of lem-tests that use it do.)
   (with-current-buffers ()
     (let ((outer-frames (all-frames)))
       (with-fake-interface ()
