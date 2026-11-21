@@ -535,12 +535,10 @@
 (deftest map-protected/the-first-error-is-signalled
   ;; map-protected is internal: a helper of teardown-frames and teardown-windows.
   (let ((called '())
-        (warnings '()))
+        (conditions '()))
     (ok (equal "1"
                (handler-case
-                   (handler-bind ((warning (lambda (w)
-                                             (push (princ-to-string w) warnings)
-                                             (muffle-warning w))))
+                   (handler-bind ((condition (lambda (c) (push c conditions))))
                      (lem-core::map-protected
                       (lambda (n)
                         (push n called)
@@ -550,9 +548,9 @@
                  (error (e) (princ-to-string e)))))
     (testing "every element is called, also after the errors"
       (ok (equal '(0 1 2 3 4) (reverse called))))
-    (testing "the later error is warned about"
-      (ok (= 1 (length warnings)))
-      (ok (search "3" (first warnings))))))
+    (testing "the later error is not signalled out of map-protected (it is logged)"
+      (ok (= 1 (count-if (lambda (c) (typep c 'error)) conditions)))
+      (ok (notany (lambda (c) (typep c 'warning)) conditions)))))
 
 (deftest map-protected/a-warning-handler-that-exits-skips-nothing
   ;; map-protected is internal: a helper of teardown-frames and teardown-windows.

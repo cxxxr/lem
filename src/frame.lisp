@@ -170,7 +170,8 @@ is left; callers that need a buffer must handle that."
   "Call FUNCTION on each element of LIST, on all of them even if one signals.
 The first error is not caught: it is signalled where it happens, with its
 stack.  While it unwinds, FUNCTION is called on the rest of LIST, and their
-errors are only warned about, so that they do not replace the first."
+errors are logged (log:error), not signalled: a condition signalled then
+would replace the first error, or let a handler that exits skip the rest."
   (loop :for (element . rest) :on list
         :do (let ((done nil))
               (unwind-protect
@@ -178,23 +179,10 @@ errors are only warned about, so that they do not replace the first."
                      (funcall function element)
                      (setf done t))
                 (unless done
-                  ;; The warnings, also those of nested calls, are held until
-                  ;; all are done, so that a handler of a warning that exits
-                  ;; cannot skip the rest.
-                  (let ((warnings '()))
-                    (dolist (other rest)
-                      (handler-case
-                          (handler-bind ((warning (lambda (warning)
-                                                    (push warning warnings)
-                                                    (muffle-warning warning))))
-                            (funcall function other))
-                        (error (condition)
-                          (push (make-condition 'simple-warning
-                                                :format-control "~A also failed: ~A"
-                                                :format-arguments (list other condition))
-                                warnings))))
-                    (dolist (warning (nreverse warnings))
-                      (warn warning))))))))
+                  (dolist (other rest)
+                    (handler-case (funcall function other)
+                      (error (condition)
+                        (log:error "~A also failed: ~A" other condition)))))))))
 
 (defun teardown-frames ()
   "Tear down every frame: the ones made (all-frames), such as the hidden tabs of
