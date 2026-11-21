@@ -4,18 +4,22 @@ on:
   push:
     branches:
       - main
+    # Keep in sync with SHIP_CI_IGNORED in .claude/skills/ship/ship.
     paths-ignore:
       - '.claude/**'
       - '**.md'
       - 'docs/**'
   pull_request:
     # Changes only to the Claude Code skills or to documents need no build.
+    # Keep in sync with SHIP_CI_IGNORED in .claude/skills/ship/ship.
     paths-ignore:
       - '.claude/**'
       - '**.md'
       - 'docs/**'
-  # Every target, macOS included, once a day on the default branch (staging
-  # on the cxxxr/lem fork), skipped when that commit already passed.
+  # Every default target (not SDL2), macOS included, once a day on the
+  # default branch (staging on the cxxxr/lem fork), skipped when that commit
+  # already passed on every OS (in a push or manual run, or a scheduled run
+  # that built rather than skipped).
   schedule:
     - cron: '0 19 * * *'   # 19:00 UTC, 04:00 JST
   # Trigger manually to optionally include heavier/unstable targets
@@ -31,7 +35,7 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     permissions:
-      actions: read     # to find the last scheduled run
+      actions: read     # to find the runs for this commit
       contents: read
     outputs:
       os: ${{ steps.set-matrix.outputs.os }}
@@ -53,22 +57,56 @@ jobs:
               osList = osList.filter((os) => !os.startsWith("macos"));
             }
 
-            // A scheduled run builds nothing when the last successful
-            // scheduled run was for the same commit.
+            // A scheduled run builds nothing when a run of this workflow
+            // already passed on every OS for the same commit: a push (to
+            // main upstream), a manual run, or an earlier scheduled run.
+            // Not a pull_request run: it built no macOS, and it built the
+            // merge of the PR into its base, not this commit.  The build
+            // job's name ("builds ...") is read below.
             let skip = false;
             if (context.eventName === 'schedule') {
-              const { data } = await github.rest.actions.listWorkflowRuns({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'ci.yml',
-                event: 'schedule',
-                status: 'success',
-                per_page: 1,
-              });
-              const last = data.workflow_runs[0];
-              if (last && last.head_sha === context.sha) {
-                console.log(`${context.sha} already passed in run ${last.html_url}: skipping.`);
+              // On an API error (passed is null), build rather than fail: a failed run would build nothing.
+              let passed;
+              try {
+                const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: 'ci.yml',
+                  head_sha: context.sha,
+                  per_page: 100,
+                });
+                // Not the status: 'success' filter of the API: it can miss a run
+                // that finished minutes ago.  A run still in progress does not
+                // count (it can still fail), so the commit of a push just before
+                // the schedule is built twice.
+                // A scheduled run that skipped ends as a success too: it counts
+                // only if it built (its build jobs, which run only then,
+                // succeeded).  Else, once the run it skipped on failed in a
+                // re-run, every later scheduled run would skip on it.
+                const built = async (run) => {
+                  if (run.conclusion !== 'success' || run.event === 'pull_request') return false;
+                  if (run.event !== 'schedule') return true;
+                  const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id: run.id,
+                    filter: 'latest',
+                    per_page: 100,
+                  });
+                  return jobs.some((job) => job.name.startsWith('builds ') && job.conclusion === 'success');
+                };
+                for (const run of runs) {
+                  if (await built(run)) { passed = run; break; }
+                }
+              } catch (error) {
+                core.warning(`Could not look up the runs of ${context.sha}, building: ${error.message}`);
+                passed = null;
+              }
+              if (passed) {
+                console.log(`${context.sha} already passed in run ${passed.html_url} (${passed.event}): skipping.`);
                 skip = true;
+              } else if (passed === undefined) {
+                console.log(`${context.sha} has no successful push, manual or scheduled build on every OS yet: building.`);
               }
             }
             core.setOutput('skip', String(skip));
