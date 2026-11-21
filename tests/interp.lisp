@@ -8,6 +8,23 @@
   (let ((value (lem:continue-flag :test-command-flag)))
     (alexandria:nconcf *result* (list value))))
 
+(define-condition unprintable-error (error) ()
+  (:report (lambda (condition stream)
+             (declare (ignore condition stream))
+             (error "This condition cannot be printed"))))
+
+(lem:define-command $fail-in-a-prompt () ()
+  (error "A command in a prompt failed"))
+
+(defmacro with-reported-contexts ((contexts) &body body)
+  `(let ((,contexts '())
+         (lem:*error-report-hook* '()))
+     (lem:add-hook lem:*error-report-hook*
+                   (lambda (condition backtrace context)
+                     (declare (ignore condition backtrace))
+                     (push context ,contexts)))
+     ,@body))
+
 (defun execute-testing-command (n command-name &optional argument)
   (lem:do-command-loop ()
     (lem:call-command command-name argument)
@@ -42,15 +59,6 @@
     (ok (stringp report))
     (ok (< 150 (frame-line-count report)))))
 
-(defmacro with-reported-contexts ((contexts) &body body)
-  `(let ((,contexts '())
-         (lem:*error-report-hook* '()))
-     (lem:add-hook lem:*error-report-hook*
-                   (lambda (condition backtrace context)
-                     (declare (ignore condition backtrace))
-                     (push context ,contexts)))
-     ,@body))
-
 (deftest the-last-reported-condition-is-not-kept-outside-a-command-loop
   ;; In a thread of its own, with no binding of *last-reported-condition*:
   ;; outside of a command loop also when the tests run in a Lem, whose
@@ -75,9 +83,6 @@
                                               :timer nil :condition original)
                               nil :timer)
       (ok (equal '(:timer) contexts)))))
-
-(lem:define-command $fail-in-a-prompt () ()
-  (error "A command in a prompt failed"))
 
 (defun contexts-of-a-command-failing-in-a-prompt-of-a-timer (handle-function-p)
   (lem-fake-interface:with-fake-interface ()
@@ -111,11 +116,6 @@
   (testing "without one: reported once, as the timer-error"
     (ok (equal '(:command) (contexts-of-a-command-failing-in-a-prompt-of-a-timer nil)))))
 
-(define-condition unprintable-error (error) ()
-  (:report (lambda (condition stream)
-             (declare (ignore condition stream))
-             (error "This condition cannot be printed"))))
-
 (deftest a-background-job-error-that-cannot-be-printed-is-shown
   (lem-fake-interface:with-fake-interface ()
     (lem:with-current-buffers ()
@@ -139,3 +139,27 @@
             (ok (and buffer
                      (search "#<error printing the condition>"
                              (lem:buffer-text buffer))))))))))
+
+(deftest an-error-that-cannot-be-printed-is-shown
+  (lem-fake-interface:with-fake-interface ()
+    (lem:with-current-buffers ()
+      (with-reported-contexts (contexts)
+        (lem-core::with-error-handler ()
+          (error 'unprintable-error))
+        (ok (equal '(:command) contexts))
+        (let ((buffer (lem:get-buffer "*EDITOR ERROR*")))
+          (ok (and buffer
+                   (search "#<error printing the condition>" (lem:buffer-text buffer)))))))))
+
+(deftest a-timer-error-is-reported-once-by-with-error-handler
+  ;; As around the editor's initialization: no command loop iteration.
+  (lem-fake-interface:with-fake-interface ()
+    (lem:with-current-buffers ()
+      (with-reported-contexts (contexts)
+        (let ((timer (lem:make-idle-timer (lambda () (error "A timer failed"))
+                                          :name "a failing timer"
+                                          :handle-function (lambda (condition)
+                                                             (lem:pop-up-backtrace condition)))))
+          (lem-core::with-error-handler ()
+            (lem/common/timer::call-timer-function timer)))
+        (ok (equal '(:timer) contexts))))))

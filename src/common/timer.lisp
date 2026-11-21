@@ -81,7 +81,11 @@ code: in a command loop the timer's function entered (see call-outside-timer),
 by a command run in a prompt it opened."))
   (:report (lambda (c s)
              (with-slots (timer condition) c
-               (format s "Error running timer ~S: ~A" (timer-name timer) condition)))))
+               (format s "Error running timer ~S: ~A"
+                       (ignore-errors (timer-name timer))
+                       ;; The error's own report may signal.
+                       (or (ignore-errors (princ-to-string condition))
+                           "#<error printing the condition>"))))))
 
 (defgeneric timer-expired-p (timer))
 (defgeneric expire-timer (timer))

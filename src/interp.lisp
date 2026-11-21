@@ -12,13 +12,14 @@ line per frame, arguments cut). For :BACKGROUND-JOB they run in the job's
 thread, not in the editor's. They must not signal: report-error drops
 what they signal.")
 
-;; The condition report-error reported last, while a toplevel command loop
-;; iteration runs (command-loop binds it to NIL for each); unbound outside of
-;; one. A timer's error is reported by the timer's handle-function (as the
-;; original error) and again when the timer-error wrapping it reaches the
-;; command loop, in the same iteration; this lets the second one be skipped.
-;; Bound per iteration so that the condition, and the buffers or strings it
-;; refers to, is not kept until the next error.
+;; The condition report-error reported last, inside a with-error-handler
+;; (which binds it to NIL: once per toplevel command loop iteration, and
+;; around the editor's initialization); unbound outside of one. A timer's
+;; error is reported by the timer's handle-function (as the original error)
+;; and again when the timer-error wrapping it reaches the with-error-handler
+;; around the timer; this lets the second one be skipped. Bound there so that
+;; the condition, and the buffers or strings it refers to, is not kept until
+;; the next error.
 (defvar *last-reported-condition*)
 
 (defun backtrace-string (condition &key (count 100))
@@ -28,6 +29,12 @@ if COUNT is NIL."
     (uiop:print-backtrace :stream stream
                           :condition condition
                           :count count)))
+
+(defun condition-text (condition)
+  "Return CONDITION printed with princ, or a placeholder if its report
+signals: the error being reported must not be replaced by that one."
+  (or (ignore-errors (princ-to-string condition))
+      "#<error printing the condition>"))
 
 (defun already-reported-p (condition)
   "Return true if CONDITION, or the error a timer-error CONDITION wraps, is
@@ -59,7 +66,7 @@ reports worse."
     (report-error condition (ignore-errors (safe-backtrace)) :crash)
     (signal 'exit-editor
             :report (with-output-to-string (stream)
-                      (princ condition stream)
+                      (write-string (condition-text condition) stream)
                       (fresh-line stream)
                       (when backtrace
                         (write-string backtrace stream))))))
@@ -68,7 +75,7 @@ reports worse."
   (let* ((timer-backtrace (and (typep condition 'timer-error)
                                (timer-error-backtrace condition)))
          (o (with-output-to-string (stream)
-              (princ condition stream)
+              (write-string (condition-text condition) stream)
               (fresh-line stream)
               (write-string (or timer-backtrace (backtrace-string condition))
                             stream))))
@@ -90,14 +97,15 @@ reports worse."
              :erase t)))
 
 (defmacro with-error-handler (() &body body)
-  `(handler-case
-       (handler-bind ((error
-                        (lambda (condition)
-                          (handler-bind ((error #'bailout))
-                            (pop-up-backtrace condition)
-                            (redraw-display)))))
-         ,@body)
-     (error ())))
+  `(let ((*last-reported-condition* nil))
+     (handler-case
+         (handler-bind ((error
+                          (lambda (condition)
+                            (handler-bind ((error #'bailout))
+                              (pop-up-backtrace condition)
+                              (redraw-display)))))
+           ,@body)
+       (error ()))))
 
 (defvar *interactive-p* nil)
 (defun interactive-p () *interactive-p*)
@@ -193,18 +201,19 @@ reports worse."
            (do-command-loop (:interactive t)
              (incf *command-loop-counter*)
              (if (toplevel-command-loop-p)
-                 (let ((*last-reported-condition* nil))
-                   (with-error-handler ()
-                     (let ((*toplevel-command-loop-p* nil))
-                       (handler-bind ((editor-condition
-                                        (lambda (c)
-                                          (declare (ignore c))
-                                          (invoke-restart 'lem-restart:message))))
-                         (command-loop-body)))))
+                 (with-error-handler ()
+                   (let ((*toplevel-command-loop-p* nil))
+                     (handler-bind ((editor-condition
+                                      (lambda (c)
+                                        (declare (ignore c))
+                                        (invoke-restart 'lem-restart:message))))
+                       (command-loop-body))))
                  (command-loop-body))
              (fix-current-buffer-if-broken))))
     ;; Inline, so that the frames of a command loop stay as they were: the
-    ;; incident fingerprint is made of the names of the topmost frames.
+    ;; incident fingerprint is made of the names of the topmost frames. A
+    ;; command loop entered from a timer has (FLET RUN :IN COMMAND-LOOP) and
+    ;; CALL-OUTSIDE-TIMER in place of COMMAND-LOOP.
     (declare (inline run))
     (if (running-timer-p)
         ;; A command loop entered from a timer's function (a prompt it
@@ -247,11 +256,8 @@ reports worse."
            ;; Reported here, in the job's thread, which the report is about.
            (report-error condition backtrace :background-job)
            (let ((error-text (with-output-to-string (stream)
-                               ;; A condition's report may signal; the job's
-                               ;; thread has no handler around this.
-                               (write-string (or (ignore-errors (princ-to-string condition))
-                                                 "#<error printing the condition>")
-                                             stream)
+                               ;; The job's thread has no handler around this.
+                               (write-string (condition-text condition) stream)
                                (fresh-line stream)
                                (write-string (or printed-backtrace "") stream))))
              (send-event (lambda ()
