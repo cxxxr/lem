@@ -1,10 +1,10 @@
 name: CI
 
 on:
-  # A push to a PR's branch also triggers pull_request: run on push only for
-  # the long-lived branches, so a PR's commit is tested once.
+  # A PR's commits are tested by pull_request; a push to a PR's branch or a
+  # merge into staging would test the same code again.  On push, only main.
   push:
-    branches: [main, staging]
+    branches: [main]
     paths-ignore:
       - '.claude/**'
       - '**.md'
