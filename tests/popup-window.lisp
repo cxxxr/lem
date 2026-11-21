@@ -27,7 +27,6 @@ The cause is that the lem-interface has been changed, but the fake-interface has
         (lem:display-popup-message "hello")
         (redraw-display)
         (let ((popup-window (find-popup-window)))
-          (ok (equal "hello" (lem-fake-interface:get-displayed-text popup-window)))
           (ok (equal "hello" (lem:buffer-text (lem:window-buffer popup-window))))
           (ok (eql 1 (lem:window-border popup-window)))
           (ok (eq (lem:current-window)

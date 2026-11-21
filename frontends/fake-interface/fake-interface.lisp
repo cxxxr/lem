@@ -1,8 +1,7 @@
 (defpackage :lem-fake-interface
   (:use :cl :lem)
   (:export :fake-interface
-           :with-fake-interface
-           :get-displayed-text))
+           :with-fake-interface))
 (in-package :lem-fake-interface)
 
 (defclass fake-interface (lem:implementation)
@@ -27,16 +26,7 @@
   y
   width
   height
-  modeline
-  lines)
-
-(defun get-displayed-text (&optional (window (current-window)))
-  (let ((lines (view-lines (screen-view (window-screen window)))))
-    (with-output-to-string (out)
-      (loop :for line :across lines
-            :for line-string := (string-right-trim (string (code-char 0)) line)
-            :do (fresh-line out)
-                (write-string line-string out)))))
+  modeline)
 
 (defmethod lem-if:invoke ((implementation fake-interface) function)
   (funcall function))
@@ -62,12 +52,7 @@
    :y y
    :width width
    :height height
-   :modeline use-modeline
-   :lines (let ((lines (make-array height)))
-            (dotimes (i height)
-              (setf (aref lines i)
-                    (make-string width :initial-element (code-char 0))))
-            lines)))
+   :modeline use-modeline))
 
 (defmethod lem-if:delete-view ((implementation fake-interface) view)
   nil)
@@ -118,27 +103,43 @@
   nil)
 
 (defun call-with-fake-interface (function)
-  ;; Give each use its own frames and current buffer.  Frames made by an
-  ;; earlier use would stay in the frame list, where delete-buffer switches
-  ;; their windows too, and the current buffer would stay a buffer of an
-  ;; earlier use.  Inside a running Lem, binding them also keeps the user's
-  ;; frames and current buffer as they were.  lem-core exports no way to
-  ;; reset these variables, so they are bound directly.  Threads made in
-  ;; FUNCTION get the same bindings, as with-implementation does for
-  ;; *implementation*.
+  ;; Give each use its own frames, current buffer and last focused window.
+  ;; Frames made by an earlier use would stay in the frame list, where
+  ;; delete-buffer switches their windows too, and the current buffer would
+  ;; stay a buffer of an earlier use.  Inside a running Lem, binding them also
+  ;; keeps the user's frames and current buffer as they were.  lem-core
+  ;; exports no way to reset these variables, so they are bound directly.
+  ;;
+  ;; A thread made in FUNCTION starts with bindings of its own to the values
+  ;; these variables have when it is made (bt2:*default-special-bindings*, as
+  ;; with-implementation does for *implementation*).  So it sees this use's
+  ;; frames, not the global ones, but what it sets afterwards (setf
+  ;; current-buffer, a frame it makes) stays in that thread.
+  ;;
+  ;; The frames are torn down at the end, so that their windows' points do not
+  ;; stay in buffers that outlive this use, such as *tmp*.
   (let* ((lem-core::*frames* '())
          (lem-core::*display-frame-map* (make-hash-table))
+         (lem-core::*last-focused-window* nil)
          (lem/buffer/internal::*current-buffer* (primordial-buffer))
          (bt2:*default-special-bindings*
            (list* (cons 'lem-core::*frames* 'lem-core::*frames*)
                   (cons 'lem-core::*display-frame-map* 'lem-core::*display-frame-map*)
+                  (cons 'lem-core::*last-focused-window* 'lem-core::*last-focused-window*)
                   (cons 'lem/buffer/internal::*current-buffer*
                         'lem/buffer/internal::*current-buffer*)
                   bt2:*default-special-bindings*)))
     (with-implementation (make-instance 'fake-interface)
-      (setup-first-frame)
-      (setf (current-buffer) (window-buffer (current-window)))
-      (funcall function))))
+      (unwind-protect
+           (progn
+             (setup-first-frame)
+             (setf (current-buffer) (window-buffer (current-window)))
+             (funcall function))
+        ;; teardown-frame removes the frame from *frames*.  A frame never
+        ;; set up (make-frame alone) has no windows to tear down.
+        (dolist (frame (copy-list (all-frames)))
+          (when (frame-window-tree frame)
+            (teardown-frame frame)))))))
 
 (defmacro with-fake-interface (() &body body)
   `(call-with-fake-interface (lambda () ,@body)))
