@@ -108,6 +108,8 @@ case "${1:-}" in
         waited=0
         pending=
         previous=
+        names=
+        last=
         while :; do
             # The checks of commit SHA itself, not of whatever the PR's head is:
             # right after a push, the PR still shows the previous commit's checks.
@@ -126,6 +128,7 @@ case "${1:-}" in
                 # Workflows create some check runs late (jobs that need another
                 # job): done only when two polls in a row found every check
                 # completed, with the same checks.
+                last=$names
                 names=$(echo "$checks" | cut -f2 | sort)
                 if [ -z "$pending" ]; then
                     if [ "$names" = "$previous" ]; then echo "CI passed for $sha"; exit 0; fi
@@ -135,10 +138,14 @@ case "${1:-}" in
                 fi
             fi
             if [ "$waited" -ge "$timeout" ]; then
-                if [ -n "$checks" ] && [ -z "$pending" ]; then
-                    echo "CI passed for $sha (all completed at the timeout)"; exit 0
+                # The same two-poll rule holds at the timeout: a list of checks
+                # seen once may still lack the jobs created late.
+                if [ -n "$checks" ] && [ "$waited" -lt $((timeout + 120)) ] &&
+                       { [ -z "$pending" ] || [ "$names" != "$last" ]; }; then
+                    sleep 30; waited=$((waited + 30)); continue
                 fi
-                if [ -n "$checks" ] && ! echo "$pending" | cut -f2 | grep -qvE "$slow"; then
+                if [ -n "$checks" ] && [ -n "$pending" ] && [ "$names" = "$last" ] &&
+                       ! echo "$pending" | cut -f2 | grep -qvE "$slow"; then
                     echo "CI passed for $sha except checks still pending:" >&2
                     echo "$pending" | cut -f2 | sed 's/^/  /' >&2
                     exit 0
