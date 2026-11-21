@@ -41,4 +41,13 @@ make test
 
 ## CI
 
-Tests run via GitHub Actions on every PR. See `.github/workflows/test.yml`.
+Tests run via GitHub Actions (`.github/workflows/test.yml`; the Nix builds in
+`ci.yml`):
+
+- On a pull request, on Linux. A PR that changes only `.claude/`, `docs/` or
+  `*.md` files runs no tests (`paths-ignore`).
+- Not on a merge into `staging` (cxxxr/lem): its head is tested by the daily
+  scheduled run, which also builds on macOS and skips a commit that already
+  passed. `ship scheduled` (`.claude/skills/ship/`) shows the newest results.
+- On a push to `main`: the tests and the Nix builds on every OS, macOS
+  included (the same `paths-ignore`).

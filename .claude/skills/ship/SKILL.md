@@ -33,9 +33,11 @@ logical change, messages like the existing history).
 
 A conflict is for the user (see the end). Once the branch is rebased on
 `cxxxr/staging`, verify it again: the code under the change is not the one
-verified. `$S pr` pushes a rebased branch over the one already pushed
-(`--force-with-lease`: only if nobody else pushed to it since); the commits
-reviewed before the rebase are gone, so review the new ones too.
+verified. `$S pr` pushes a rebased branch over the one already pushed, but
+only when the commit on the remote branch is one this branch had (it looks in
+the branch's reflog), so a push by someone else is not overwritten: it stops
+instead, and that is for the user. The commits reviewed before the rebase are
+gone, so review the new ones too.
 
 ## 2. Verify
 
@@ -100,24 +102,48 @@ git rev-parse HEAD          # <SHA>: the commit you verified and pushed, not $S 
 $S wait <PR> <SHA>
 ```
 
-It waits until `<SHA>` is the PR's head and reads the checks, the commit
-statuses and the workflow runs of that commit (right after a push, the PR may
-still show the previous commit and its checks). Every workflow run must have
-completed, so jobs created late (`needs:`) are waited for too.
+It waits until `<SHA>` is the PR's head (a short SHA is fine) and reads the
+checks, the commit statuses and the workflow runs of that commit (right after
+a push, the PR may still show the previous commit and its checks). Every
+workflow run must have completed, so jobs created late (`needs:`) are waited
+for too. Only the newest run of each workflow and event counts, with the
+checks of its latest attempt: a re-run of the failed jobs, or a new run of the
+same event (closing and reopening the PR), replaces an earlier failure. A
+`workflow_dispatch` run is another event and does not: the failed
+`pull_request` run still counts.
+
+Pull requests build on Linux only; macOS and what was merged into `staging`
+are tested by the daily scheduled runs (step 8). A workflow with its own
+macOS job (`build-terminal-shared-object.yml`, for changes to
+`extensions/terminal/`) still runs on the PR: those are the slow checks
+(`SHIP_CI_SLOW`).
 
 | Exit | Meaning | Then |
 |------|---------|------|
-| 0 | passed; or only the slow macOS checks still pending at the timeout (it names them); or no CI applies (the PR changes only `.claude/`, `docs/` or `*.md`, which the workflows skip) | step 6; note the pending checks for step 8 |
-| 1 | a check, status or workflow run failed or was cancelled | read its log (`gh run view --repo cxxxr/lem --log-failed`), fix it as an Important finding (step 4), and wait again on the new SHA |
+| 0 | passed; or only slow (macOS) checks still pending at the timeout, and every run not completed waits for one of them (it names them); or no CI applies: every `pull_request` workflow in `.github/workflows` skips all the changed files by its `paths` or `paths-ignore` (e.g. only `.claude/`, `docs/`, `*.md`) | step 6; note the pending checks for step 8 |
+| 1 | a check, status or workflow run failed or was cancelled; each is printed with its URL, whose number after `/runs/` is the run ID (a commit status of another app links to that app instead) | read the log of the failed job (`gh run view --job <job-id> --repo cxxxr/lem --log`, the number after `/job/`; `gh run view <run-id> --repo cxxxr/lem --log-failed` once the whole run completed). Caused by the change: fix it as an Important finding (step 4) and wait again on the new SHA. A failure of the infrastructure (a runner lost, the network, a download): re-run it once (below); a second failure is for the user. A test that fails though the change does not touch it is a flaky test, not something to re-run: add it to Todoist (step 4) and tell the user |
+| 2 | `<SHA>` is neither in this clone nor at the PR's head; or `jq` is not installed (it says `ship wait needs jq`) | give the SHA of `git rev-parse HEAD` after the push; for jq, tell the user |
 | 3 | timed out on other checks, or `<SHA>` never became the PR's head | stop and tell the user |
-| 4 | GitHub could not be read three polls in a row (network, `gh auth`, a wrong PR number); it prints gh's error | not a CI failure: fix the cause if it is yours (the PR number), else stop and tell the user |
-| 5 | the PR's head moved past `<SHA>` to a newer commit | someone pushed to the branch: stop and tell the user |
+| 4 | GitHub could not be read three polls in a row (network, `gh auth`, a wrong PR number), or the fetch of the PR's head failed when `<SHA>` is not in this clone; it prints the error | not a CI failure: fix the cause if it is yours (the PR number), else stop and tell the user |
+| 5 | the PR's head moved past `<SHA>`, or a later commit replaced it (a rebase pushed over it) | first check that `<SHA>` is `git rev-parse HEAD` (an older SHA of your own, from before an amend, also gives 5); else someone pushed to the branch: stop and tell the user |
 
-A run that failed for a reason outside the change (a flaky runner) is retried
-with GitHub's "Re-run jobs" (`gh run rerun <run-id> --failed --repo cxxxr/lem`),
-which makes a new attempt of the same run. A new run of the workflow
-(`workflow_dispatch`, closing and reopening the PR) does not replace the
-failed one: `$S wait` keeps reading the failed run and exits 1 again.
+To re-run a failure of the infrastructure, once:
+
+```sh
+$S rerun <run-id>           # or the URL that wait printed
+$S wait <PR> <SHA>
+```
+
+`$S rerun` waits for the run to complete (GitHub re-runs only a completed
+run), re-runs its failed jobs (a new attempt of the same run) and returns once
+that attempt started; a `$S wait` before that would read the old failure and
+exit 1 at once. Its exit status: 0 started; 1 gh refused the re-run (it prints
+why) or no new attempt showed in 2 minutes: look at the run on GitHub, and if
+it did start, go on with `$S wait`, else tell the user; 2 not a workflow run
+(a commit status of another app); 3 the run did not complete within
+`SHIP_CI_TIMEOUT`: as `$S wait` exit 3; 4 the run could not be read (at the
+first read: a job ID given instead of the run ID, or GitHub; later, three
+polls in a row): as `$S wait` exit 4.
 
 ## 6. Record the evidence
 
@@ -147,7 +173,7 @@ fixed, the Todoist tasks added (with their labels) and the findings that were
 tasks already (their IDs), the slow checks left pending (step 8), and anything
 not verified.
 
-## 8. Slow checks left pending
+## 8. After the merge: slow checks and the daily runs
 
 When step 5 passed with slow checks still pending, their result comes after
 the merge; nobody would read it. Wait for them in the background (the PR's
@@ -160,11 +186,31 @@ SHIP_CI_SLOW= $S wait <PR> <SHA>     # run_in_background: none counts as slow no
 - 0: say in the report that they passed.
 - 1: the failure is on `staging` now. Add a task,
   `todoist add "..." -P lem -l ai --desc "..."` with the check, the SHA, the
-  PR and the log (`gh run view --repo cxxxr/lem --log-failed`), and tell the
-  user.
+  PR and the log (`gh run view <run-id> --repo cxxxr/lem --log-failed`), and
+  tell the user.
 - 3 (still pending), or the session ends first: add a task to look at them
   later, `todoist add "..." -P lem -l ai --desc "..."` with the PR, the SHA and
   the command above.
+
+The merge itself is not tested at once: the daily scheduled runs of `CI` and
+`Nix CI` test the head of `staging` (macOS included), and their failures
+only reach a mailbox. Read the newest scheduled run of each workflow (also
+`Nightly Builds` and the stale bot, whose failures nobody reads either):
+
+```sh
+$S scheduled                # status, workflow, commit, date, URL; exit 1 if one failed
+```
+
+Exit 4: GitHub or git could not be read; say so in the report.
+
+For each failed one, look in Todoist for an open task about that workflow's
+scheduled run (as in step 4). If there is one, add the new run to it
+(`todoist comment <id> "<URL>"`); else add
+`todoist add "定期実行の <workflow> が失敗" -P lem -l ai --desc "..."` with the
+run URL, the commit, the failed jobs and the log
+(`gh run view <run-id> --repo cxxxr/lem --log-failed`). Say it in the report;
+it is not a reason to hold this PR's merge, which is done by now. A workflow
+missing from the list has not had a scheduled run yet.
 
 ## Stop and ask the user instead of merging when
 
@@ -172,5 +218,6 @@ SHIP_CI_SLOW= $S wait <PR> <SHA>     # run_in_background: none counts as slow no
 - a fix would change what the user asked for, or a finding needs their choice;
 - preflight finds a conflict with `staging`;
 - CI times out on checks other than the slow ones (`$S wait` exit 3), fails
-  for a reason outside the change (a runner, the network), cannot be read
-  (exit 4), or the PR's head moved past the commit (exit 5).
+  again for a reason outside the change after one `$S rerun` (step 5), cannot
+  be read (exit 4), or the PR's head moved past the commit (exit 5);
+- `$S pr` refuses to push because someone else pushed to the branch.

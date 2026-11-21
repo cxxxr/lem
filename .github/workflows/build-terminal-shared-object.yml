@@ -15,6 +15,10 @@ on:
       - 'scripts/build-terminal.lisp'
       - '.github/workflows/build-terminal-shared-object.yml'
   pull_request:
+    # ship wait (.claude/skills/ship/ship) reads this list to pass a PR that
+    # no workflow runs for: keep it a list of globs without "!", or ship
+    # cannot read it and a PR changing only documents waits until it times
+    # out.
     paths:
       - 'extensions/terminal/terminal.c'
       - 'extensions/terminal/ffi.lisp'
