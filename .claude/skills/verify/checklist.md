@@ -38,11 +38,15 @@ anything. Keep the list short enough to read before each commit.
 - **Trigger:** a new or changed test using `with-fake-interface`, especially
   one that kills buffers or creates frames.
 - **Check:** run the test package alone **and** inside the whole `lem-tests`
-  run. Frames stay in `lem-core::*frames*` and the current buffer stays from
-  earlier tests, so `delete-buffer` and `switch-to-buffer` can reach another
-  test's state. Bind `lem-core::*frames*` and set the current buffer at the
-  start of the test, as `tests/frame-multiplexer.lisp` does.
-- **Origin:** cxxxr/lem#55 (a test passed alone and failed in the suite).
+  run. `with-fake-interface` gives each use its own frames and current buffer
+  (since cxxxr/lem#63), so the test need not bind them, but the buffer list
+  is still shared: buffers made by earlier tests (and not deleted) are in
+  `(buffer-list)`, and `other-buffer`, `bury-buffer` or a kill can pick one.
+  A test that depends on which buffers exist wraps its body in
+  `(with-current-buffers () ...)`, which starts from an empty list and puts
+  the old one back afterwards, as `tests/listener-mode.lisp` does.
+- **Origin:** cxxxr/lem#55 (a test passed alone and failed in the suite);
+  cxxxr/lem#63 (frames and the current buffer per use).
 
 ### A test for a bug fix
 - **Trigger:** a fix with a new regression test.
