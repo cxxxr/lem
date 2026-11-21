@@ -4,18 +4,21 @@ on:
   push:
     branches:
       - main
+    # Keep in sync with SHIP_CI_IGNORED in .claude/skills/ship/ship.
     paths-ignore:
       - '.claude/**'
       - '**.md'
       - 'docs/**'
   pull_request:
     # Changes only to the Claude Code skills or to documents need no build.
+    # Keep in sync with SHIP_CI_IGNORED in .claude/skills/ship/ship.
     paths-ignore:
       - '.claude/**'
       - '**.md'
       - 'docs/**'
   # Every target, macOS included, once a day on the default branch (staging
-  # on the cxxxr/lem fork), skipped when that commit already passed.
+  # on the cxxxr/lem fork), skipped when that commit already passed on
+  # every OS (in a push, manual or scheduled run).
   schedule:
     - cron: '0 19 * * *'   # 19:00 UTC, 04:00 JST
   # Trigger manually to optionally include heavier/unstable targets
@@ -31,7 +34,7 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     permissions:
-      actions: read     # to find the last scheduled run
+      actions: read     # to find the runs for this commit
       contents: read
     outputs:
       os: ${{ steps.set-matrix.outputs.os }}
@@ -53,22 +56,29 @@ jobs:
               osList = osList.filter((os) => !os.startsWith("macos"));
             }
 
-            // A scheduled run builds nothing when the last successful
-            // scheduled run was for the same commit.
+            // A scheduled run builds nothing when a run of this workflow
+            // already passed on every OS for the same commit: a push (to
+            // main upstream), a manual run, or an earlier scheduled run.
+            // Not a pull_request run: it built no macOS, and it built the
+            // merge of the PR into its base, not this commit.
             let skip = false;
             if (context.eventName === 'schedule') {
-              const { data } = await github.rest.actions.listWorkflowRuns({
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 workflow_id: 'ci.yml',
-                event: 'schedule',
-                status: 'success',
-                per_page: 1,
+                head_sha: context.sha,
+                per_page: 100,
               });
-              const last = data.workflow_runs[0];
-              if (last && last.head_sha === context.sha) {
-                console.log(`${context.sha} already passed in run ${last.html_url}: skipping.`);
+              // Not the status: 'success' filter of the API: it can miss a run
+              // that finished minutes ago.
+              const passed = runs.find((run) =>
+                run.conclusion === 'success' && run.event !== 'pull_request');
+              if (passed) {
+                console.log(`${context.sha} already passed in run ${passed.html_url} (${passed.event}): skipping.`);
                 skip = true;
+              } else {
+                console.log(`${context.sha} has no successful run on every OS yet: building.`);
               }
             }
             core.setOutput('skip', String(skip));

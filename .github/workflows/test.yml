@@ -7,19 +7,23 @@ on:
   # is tested by the daily scheduled run below, not at each merge.
   push:
     branches: [main]
+    # Keep in sync with SHIP_CI_IGNORED in .claude/skills/ship/ship.
     paths-ignore:
       - '.claude/**'
       - '**.md'
       - 'docs/**'
   pull_request:
-    branches: ["*"]
+    # "**" so pull requests into branches with a slash (release/2.0, stacked
+    # PRs such as sdl3/foo) are tested too; "*" does not match "/".
+    branches: ["**"]
     # Changes only to the Claude Code skills or to documents need no test run.
+    # Keep in sync with SHIP_CI_IGNORED in .claude/skills/ship/ship.
     paths-ignore:
       - '.claude/**'
       - '**.md'
       - 'docs/**'
   # Once a day on the default branch (staging on the cxxxr/lem fork),
-  # skipped when that commit already passed.
+  # skipped when that commit already passed in any run but a pull_request one.
   schedule:
     - cron: '30 19 * * *'   # 19:30 UTC, 04:30 JST
   workflow_dispatch:
@@ -35,30 +39,34 @@ jobs:
   test:
     runs-on: ubuntu-latest
     permissions:
-      actions: read     # to find the last scheduled run
+      actions: read     # to find the runs for this commit
       contents: read
 
     steps:
-      # A scheduled run tests nothing when the last successful scheduled run
-      # was for the same commit.
+      # A scheduled run tests nothing when a run of this workflow already
+      # passed for the same commit: a push (to main upstream), a manual run,
+      # or an earlier scheduled run.  Not a pull_request run: it tested the
+      # merge of the PR into its base, not this commit.
       - name: Skip a commit that already passed
         id: skip
         if: github.event_name == 'schedule'
         uses: actions/github-script@v9
         with:
           script: |
-            const { data } = await github.rest.actions.listWorkflowRuns({
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'test.yml',
-              event: 'schedule',
-              status: 'success',
-              per_page: 1,
+              head_sha: context.sha,
+              per_page: 100,
             });
-            const last = data.workflow_runs[0];
-            const skip = Boolean(last && last.head_sha === context.sha);
-            if (skip) console.log(`${context.sha} already passed in run ${last.html_url}: skipping.`);
-            core.setOutput('skip', String(skip));
+            // Not the status: 'success' filter of the API: it can miss a run
+            // that finished minutes ago.
+            const passed = runs.find((run) =>
+              run.conclusion === 'success' && run.event !== 'pull_request');
+            if (passed) console.log(`${context.sha} already passed in run ${passed.html_url} (${passed.event}): skipping.`);
+            else console.log(`${context.sha} has no successful run yet: testing.`);
+            core.setOutput('skip', String(Boolean(passed)));
 
       - uses: actions/checkout@v7
         if: steps.skip.outputs.skip != 'true'
@@ -84,6 +92,8 @@ jobs:
 
   push_image:
     name: Push Image to GHCR
+    # No image of a commit whose tests failed.
+    needs: test
     runs-on: ubuntu-latest
     # Not for the daily scheduled run: on a repository whose default branch
     # is main, it would push an image every day.
