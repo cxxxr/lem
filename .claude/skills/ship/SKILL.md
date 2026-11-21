@@ -107,8 +107,10 @@ checks, the commit statuses and the workflow runs of that commit (right after
 a push, the PR may still show the previous commit and its checks). Every
 workflow run must have completed, so jobs created late (`needs:`) are waited
 for too. Only the newest run of each workflow and event counts, with the
-checks of its latest attempt: a new run (`workflow_dispatch`) or a re-run of
-the failed jobs replaces an earlier failure.
+checks of its latest attempt: a re-run of the failed jobs, or a new run of the
+same event (closing and reopening the PR), replaces an earlier failure. A
+`workflow_dispatch` run is another event and does not: the failed
+`pull_request` run still counts.
 
 Pull requests build on Linux only; macOS and what was merged into `staging`
 are tested by the daily scheduled runs (step 8). A workflow with its own
@@ -119,7 +121,8 @@ macOS job (`build-terminal-shared-object.yml`, for changes to
 | Exit | Meaning | Then |
 |------|---------|------|
 | 0 | passed; or only slow (macOS) checks still pending at the timeout, and every run not completed waits for one of them (it names them); or no CI applies: every `pull_request` workflow in `.github/workflows` skips all the changed files by its `paths` or `paths-ignore` (e.g. only `.claude/`, `docs/`, `*.md`) | step 6; note the pending checks for step 8 |
-| 1 | a check, status or workflow run failed or was cancelled; each is printed with its URL, whose number after `/runs/` is the run ID | read the log (`gh run view <run-id> --repo cxxxr/lem --log-failed`). Caused by the change: fix it as an Important finding (step 4) and wait again on the new SHA. Outside the change (a runner, the network, a download): re-run it once (below); a second failure is for the user |
+| 1 | a check, status or workflow run failed or was cancelled; each is printed with its URL, whose number after `/runs/` is the run ID (a commit status of another app links to that app instead) | read the log (`gh run view <run-id> --repo cxxxr/lem --log-failed`). Caused by the change: fix it as an Important finding (step 4) and wait again on the new SHA. Outside the change (a runner, the network, a download): re-run it once (below); a second failure is for the user |
+| 2 | `<SHA>` is neither in this clone nor at the PR's head | give the SHA of `git rev-parse HEAD` after the push |
 | 3 | timed out on other checks, or `<SHA>` never became the PR's head | stop and tell the user |
 | 4 | GitHub could not be read three polls in a row (network, `gh auth`, a wrong PR number); it prints gh's error | not a CI failure: fix the cause if it is yours (the PR number), else stop and tell the user |
 | 5 | the PR's head moved past `<SHA>`, or a later commit replaced it (a rebase pushed over it) | someone pushed to the branch: stop and tell the user |
@@ -184,11 +187,14 @@ SHIP_CI_SLOW= $S wait <PR> <SHA>     # run_in_background: none counts as slow no
 
 The merge itself is not tested at once: the daily scheduled runs of `CI` and
 `Nix CI` test the head of `staging` (macOS included), and their failures
-only reach a mailbox. Read the newest scheduled run of each workflow:
+only reach a mailbox. Read the newest scheduled run of each workflow (also
+`Nightly Builds` and the stale bot, whose failures nobody reads either):
 
 ```sh
 $S scheduled                # status, workflow, commit, date, URL; exit 1 if one failed
 ```
+
+Exit 4: GitHub or git could not be read; say so in the report.
 
 For each failed one, look in Todoist for an open task about that workflow's
 scheduled run (as in step 4). If there is one, add the new run to it

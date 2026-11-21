@@ -23,10 +23,13 @@
 #                               URL from wait) and wait until the new attempt started,
 #                               so that a wait right after it does not read the old one
 #   ship scheduled              the newest scheduled run of each workflow on the base
-#                               branch (the daily tests of what was merged); 1 if one failed
+#                               branch (CI and Nix CI test what was merged; also the
+#                               nightly builds and the stale bot): 1 if one failed,
+#                               4 GitHub or git could not be read
 #   ship merge PR SHA           merge the PR if its head is still SHA, then fetch the base
 #
-# Exit status: 0 done, 1 failed, 2 usage error; wait also 3, 4 and 5 (above).
+# Exit status: 0 done, 1 failed, 2 usage error (wait: also a SHA not in this
+# clone nor at the PR's head); wait also 3, 4 and 5 (above).
 #
 # Environment:
 #   SHIP_REPO        repository of the PR (default: cxxxr/lem)
@@ -83,10 +86,10 @@ included() {
 }
 
 # The pull_request filters of the workflow file $1 at commit $2, one per
-# line: "always" (it runs for every PR), "unknown" (a form not read here,
-# taken as "always"), "ignore ERE" (paths-ignore) or "paths ERE" (paths),
-# each glob turned into an extended regexp; nothing when it does not run on
-# pull requests.  Reads the block style of YAML the workflows use.
+# line: "always" (no paths filter), "unknown" (a form not read here, taken
+# as running for every PR), "ignore ERE" (paths-ignore), "paths ERE",
+# "branches ERE" or "branches-ignore ERE", each glob turned into an extended
+# regexp; nothing when it does not run on pull requests.  Reads the block style of YAML the workflows use.
 pr_filters() {
     git show "$2:$1" | awk '
         function indent(s) { match(s, /^ */); return RLENGTH }
@@ -100,6 +103,17 @@ pr_filters() {
             gsub(/\*/, "[^/]*", g)
             gsub(/\001/, "(.*/)?", g); gsub(/\002/, ".*", g)
             return "^" g "$"
+        }
+        function item(kind, g) {
+            sub(/^[ \t]+/, "", g); sub(/[ \t]+$/, "", g)
+            if (g ~ /^\047.*\047$/ || g ~ /^".*"$/) g = substr(g, 2, length(g) - 2)
+            if (g == "") return
+            if (g ~ /^!/) print "unknown"; else print kind " " ere(g)
+        }
+        function flow(kind, v,   n, a, i) {
+            if (v !~ /^\[.*\]$/) { print "unknown"; return }
+            n = split(substr(v, 2, length(v) - 2), a, ",")
+            for (i = 1; i <= n; i++) item(kind, a[i])
         }
         function endpr() { if (pr && !filtered) print "always"; pr = 0 }
         /^[ \t]*(#.*)?$/ { next }
@@ -126,13 +140,14 @@ pr_filters() {
                 next
             }
             if (!pr) next
-            if (line ~ /^(paths|paths-ignore):/) {
-                filtered = 1; list = (line ~ /^paths:/) ? "paths" : "ignore"; listind = ind
-                if (value(line) != "") { print "unknown"; list = "" }
+            if (line ~ /^(paths|paths-ignore|branches|branches-ignore):/) {
+                kind = line; sub(/:.*/, "", kind)
+                if (kind == "paths-ignore") kind = "ignore"
+                if (kind == "paths" || kind == "ignore") filtered = 1
+                list = kind; listind = ind; v = value(line)
+                if (v != "") { flow(kind, v); list = "" }
             } else if (list != "" && ind >= listind && line ~ /^- /) {
-                g = line; sub(/^- */, "", g); sub(/[ \t]+#.*$/, "", g)
-                if (g ~ /^\047.*\047$/ || g ~ /^".*"$/) g = substr(g, 2, length(g) - 2)
-                if (g ~ /^!/) print "unknown"; else print list " " ere(g)
+                g = line; sub(/^- */, "", g); sub(/[ \t]+#.*$/, "", g); item(list, g)
             } else if (ind <= listind) list = ""
         }
         END { endpr() }'
@@ -146,7 +161,13 @@ ci_applies() {
         case $wf in *.yml|*.yaml) ;; *) continue ;; esac
         filters=$(pr_filters "$wf" "$2") || return 0
         [ -n "$filters" ] || continue
-        if echo "$filters" | grep -qxE 'always|unknown'; then return 0; fi
+        if echo "$filters" | grep -qx unknown; then return 0; fi
+        # Not for pull requests into the base branch.
+        br=$(echo "$filters" | sed -n 's/^branches //p' | paste -sd'|' -)
+        bri=$(echo "$filters" | sed -n 's/^branches-ignore //p' | paste -sd'|' -)
+        if [ -n "$br" ] && ! printf '%s\n' "$base" | grep -qE "$br"; then continue; fi
+        if [ -n "$bri" ] && printf '%s\n' "$base" | grep -qE "$bri"; then continue; fi
+        if echo "$filters" | grep -qx always; then return 0; fi
         ign=$(echo "$filters" | sed -n 's/^ignore //p' | paste -sd'|' -)
         pat=$(echo "$filters" | sed -n 's/^paths //p' | paste -sd'|' -)
         if [ -n "$ign" ] && grep -qvE "$ign" "$1"; then return 0; fi
@@ -262,6 +283,7 @@ case "${1:-}" in
         errors=0
         seen=
         moved=
+        replaced=
         pending=
         running=
         previous=
@@ -290,10 +312,11 @@ case "${1:-}" in
             # created late because they need another job.  Only the newest run
             # of each workflow and event counts (a workflow runs on both push
             # and pull_request), and with it only the check runs of its check
-            # suite and of its latest attempt: a newer run (workflow_dispatch,
-            # a reopened PR) replaces an older failed or stuck one, and so does
+            # suite and of its latest attempt: a newer run of the same event
+            # (a reopened PR) replaces an older failed or stuck one, and so does
             # a re-run of the failed jobs, whose new attempt starts at
-            # run_started_at.  Check runs of other apps have no workflow run.
+            # run_started_at.  A workflow_dispatch run is another event and
+            # replaces nothing.  Check runs of other apps have no workflow run.
             jq -rn --slurpfile runs "$tmp/runs" --slurpfile checks "$tmp/checks" '
                 ($runs[0] | group_by([.workflow_id, .event]) | map(max_by(.run_number))) as $kept
                 | ([$runs[0][].suite] - [$kept[].suite]) as $dropped
@@ -344,25 +367,32 @@ case "${1:-}" in
             errors=0
             if [ "$head" = "$sha" ]; then
                 seen=1
+                replaced=
             elif [ "$head" != "$moved" ]; then
                 moved=$head
+                replaced=
                 git cat-file -e "$head^{commit}" 2>/dev/null ||
                     git fetch -q "$remote" "refs/pull/$number/head" 2>/dev/null || true
-                # A newer commit on top of SHA, or one that replaced it (a
-                # rebase pushed over it, so SHA is not in the PR any more): SHA
-                # will not be the head again.  An older head that SHA is on
-                # top of, or one older than SHA, is a push not seen yet.
+                # A newer commit on top of SHA: SHA will not be the head again.
+                # An older head that SHA is on top of is a push not seen yet.
                 if git merge-base --is-ancestor "$sha" "$head" 2>/dev/null; then
                     echo "the head of PR $number moved past $sha to $head" >&2
                     exit 5
                 fi
+                # Neither: a commit that replaced SHA (a rebase pushed over it)
+                # when SHA was the head before or this one is newer; else an
+                # older head not replaced yet by the push of SHA.  Decided at
+                # the next poll, if the head is still this one: one read may
+                # be stale, or a push back to SHA not shown yet.
                 if git cat-file -e "$head^{commit}" 2>/dev/null &&
                        ! git merge-base --is-ancestor "$head" "$sha" &&
                        { [ -n "$seen" ] ||
                              [ "$(git show -s --format=%ct "$head")" -gt "$(git show -s --format=%ct "$sha")" ]; }; then
-                    echo "the head of PR $number is $head, which replaced $sha (a rebase or a force-push)" >&2
-                    exit 5
+                    replaced=$head
                 fi
+            elif [ -n "$replaced" ]; then
+                echo "the head of PR $number is $head, which replaced $sha (a rebase or a force-push)" >&2
+                exit 5
             fi
             # Also with no check at all: a run that failed to start (a broken
             # workflow file) creates none.
@@ -433,17 +463,28 @@ case "${1:-}" in
         ;;
     rerun)
         run=${2:?usage: ship rerun RUN}
-        run=${run##*/runs/}
-        run=${run%%/*}
-        attempt=$(gh api "repos/$repo/actions/runs/$run" --jq .run_attempt)
+        case $run in
+            *[!0-9]*)
+                # Only a URL of a workflow run or job has a run ID; a commit
+                # status of another app has none.
+                case $run in */actions/runs/[0-9]*) ;; *)
+                    echo "not a workflow run of GitHub Actions: $run" >&2; exit 2 ;;
+                esac
+                run=${run##*/actions/runs/}
+                run=${run%%/*} ;;
+        esac
+        before=$(gh api "repos/$repo/actions/runs/$run" --jq '"\(.run_attempt) \(.run_started_at)"')
         gh run rerun "$run" --failed --repo "$repo"
-        # Until the new attempt shows, the run and its check runs are still
-        # the failed ones.
+        # Until the new attempt shows, with its own start time (ship wait drops
+        # the check runs that completed before it), the run and its check runs
+        # are still the failed ones.
         tries=0
         while [ "$tries" -lt 24 ]; do
-            now=$(gh api "repos/$repo/actions/runs/$run" --jq '"\(.run_attempt) \(.status)"' 2>/dev/null || true)
-            if [ "${now%% *}" -gt "$attempt" ] 2>/dev/null; then
-                echo "run $run: attempt ${now%% *} ${now#* }"
+            now=$(gh api "repos/$repo/actions/runs/$run" \
+                      --jq '"\(.run_attempt) \(.run_started_at) \(.status)"' 2>/dev/null || true)
+            if [ -n "$now" ] && [ "${now%% *}" -gt "${before%% *}" ] &&
+                   [ "$(echo "$now" | cut -d' ' -f2)" != "${before#* }" ]; then
+                echo "run $run: attempt ${now%% *}, ${now##* }"
                 exit 0
             fi
             sleep 5
@@ -454,13 +495,14 @@ case "${1:-}" in
         ;;
     scheduled)
         # The newest scheduled run of each workflow still in the base branch.
+        # GitHub or git not read: 4, as for wait (1 is a failed run).
         tmp=$(mktemp)
         trap 'rm -f "$tmp"' EXIT
-        git fetch -q "$remote" "$base"
+        git fetch -q "$remote" "$base" || exit 4
         gh api "repos/$repo/actions/runs?event=schedule&branch=$base&per_page=100" \
             --jq '.workflow_runs | group_by(.workflow_id) | map(max_by(.run_number))[]
                   | "\(.path)\t\(.status)/\(.conclusion)\t\(.name)\t\(.head_sha[:12])\t\(.created_at)\t\(.html_url)"' \
-            >"$tmp"
+            >"$tmp" || exit 4
         status=0
         while IFS="$(printf '\t')" read -r path state rest; do
             git cat-file -e "$remote/$base:$path" 2>/dev/null || continue
