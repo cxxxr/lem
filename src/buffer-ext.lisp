@@ -25,7 +25,7 @@ When BUFFER is the primordial buffer itself, it is a new buffer named after it
 
 (defun strip-buffer-from-frame-windows (buffer frame)
   "Show another buffer in every window of FRAME that shows BUFFER.
-Return true if there was such a window."
+Header windows are not among them (see get-buffer-windows)."
   ;; The replacement is chosen once: switch-to-buffer moves the buffer it leaves,
   ;; BUFFER, to the head of the buffer list, so choosing it again for the next
   ;; window would give another buffer.
@@ -35,18 +35,27 @@ Return true if there was such a window."
     (let ((replacement (replacement-buffer buffer frame)))
       (dolist (window windows)
         (with-current-window window
-          (switch-to-buffer replacement))))
-    t))
+          (switch-to-buffer replacement))))))
+
+(defun buffer-header-window (buffer)
+  "Return a header window of some frame that shows BUFFER, or NIL."
+  (loop :for frame :in (all-frames)
+        :thereis (find buffer (frame-header-windows frame) :key #'window-buffer)))
 
 (defmethod delete-buffer-using-manager :before
     ((manager buffer-list-manager)
      buffer)
-  (let ((shown (loop :for frame :in (all-frames)
-                     :count (strip-buffer-from-frame-windows buffer frame))))
-    ;; Once, however many windows showed BUFFER: deleting the attached buffer
-    ;; a second time fails, as it is already freed.
-    (alexandria:when-let ((attached (buffer-attached-buffer buffer)))
-      (when (and (plusp shown)
-                 (not (deleted-buffer-p attached)))
-        (delete-buffer attached))))
+  ;; A header window (the frame-multiplexer tab bar, the server's tabbar) draws
+  ;; into its own buffer, so it cannot be given another buffer: its owner deletes
+  ;; the window first.  Refuse before anything is changed.
+  (alexandria:when-let ((window (buffer-header-window buffer)))
+    (error "Cannot delete ~A: the header window ~A shows it; delete the window first."
+           buffer window))
+  (dolist (frame (all-frames))
+    (strip-buffer-from-frame-windows buffer frame))
+  ;; Whether or not BUFFER was shown: the attached buffer lives only with it.
+  ;; Once, as deleting it a second time fails (it is already freed).
+  (alexandria:when-let ((attached (buffer-attached-buffer buffer)))
+    (unless (deleted-buffer-p attached)
+      (delete-buffer attached)))
   (run-hooks (make-per-buffer-hook :var 'kill-buffer-hook :buffer buffer) buffer))

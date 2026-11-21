@@ -825,7 +825,9 @@ You can pass in the optional argument WINDOW-LIST to replace the default
                                        (include-floating-windows nil))
   "Return the windows of FRAME that show BUFFER, each once.
 With INCLUDE-FLOATING-WINDOWS, the floating windows and the side windows
-(left, right and bottom) are included too."
+(left, right and bottom) are included too.
+Header windows (frame-header-windows) never are: each draws into a buffer of
+its own and is not a place to show another buffer."
   ;; A side window is a floating window, so it is usually in
   ;; frame-floating-windows as well: remove-duplicates keeps it once.
   (loop :for window :in (remove-duplicates

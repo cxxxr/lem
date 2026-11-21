@@ -346,3 +346,46 @@
         (lem:kill-buffer buffer)
         (ok (lem:deleted-buffer-p attached))
         (ok (= 1 count))))))
+
+(deftest kill-buffer/attached-buffer-of-a-hidden-buffer
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (make-attached-buffer))
+             (attached (lem-core::buffer-attached-buffer buffer))
+             (count 0))
+        (lem:switch-to-buffer (lem:make-buffer "other"))
+        (assert (null (lem:get-buffer-windows buffer :include-floating-windows t)))
+        (lem:add-hook (lem:variable-value 'lem:kill-buffer-hook :buffer attached)
+                      (lambda (buffer)
+                        (declare (ignore buffer))
+                        (incf count)))
+        (lem:kill-buffer buffer)
+        (ok (lem:deleted-buffer-p buffer))
+        (testing "the attached buffer is deleted although BUFFER was in no window"
+          (ok (lem:deleted-buffer-p attached))
+          (ok (= 1 count)))))))
+
+(deftest get-buffer-windows/no-header-windows
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (lem:make-buffer "header" :temporary t))
+             (header (make-instance 'lem:header-window :buffer buffer)))
+        (unwind-protect
+             (ok (null (lem:get-buffer-windows buffer :include-floating-windows t)))
+          (lem:delete-window header))))))
+
+(deftest delete-buffer/refused-while-a-header-window-shows-it
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (lem:make-buffer "header" :temporary t))
+             (header (make-instance 'lem:header-window :buffer buffer)))
+        (unwind-protect
+             (progn
+               (ok (signals (lem:delete-buffer buffer)))
+               (testing "nothing is changed"
+                 (ng (lem:deleted-buffer-p buffer))
+                 (ok (eq buffer (lem:window-buffer header)))))
+          (lem:delete-window header))
+        (testing "once the header window is deleted, the buffer can be"
+          (lem:delete-buffer buffer)
+          (ok (lem:deleted-buffer-p buffer)))))))
