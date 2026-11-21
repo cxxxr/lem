@@ -60,8 +60,9 @@ TIMER-MANAGER runs its timers (the editor's: in the editor thread)."))
 
 (defclass timer-manager ()
   ()
-  (:documentation "A timer manager that drops the notifications: its timers'
-functions do not run. Subclasses say where they run (lem-timer-manager)."))
+  (:documentation "A timer manager that drops the notifications: the functions
+of its timers (not of idle timers, which the editor loop runs itself) do not
+run. Subclasses say where they run (lem-timer-manager)."))
 
 (defmethod send-timer-notification ((timer-manager timer-manager) continue)
   (declare (ignore continue)))
