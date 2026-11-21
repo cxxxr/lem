@@ -197,3 +197,18 @@
         (unwind-protect (frame-buffer-list)
           (setf (fdefinition name) original)))
       (ok (<= count 1)))))
+
+(deftest a-frame-buffer-list-function-of-one-value-still-restricts
+  (with-fresh-editor ()
+    (let ((x (make-buffer "x")))
+      (make-buffer "y")
+      (let ((*frame-buffer-list-function* (lambda (frame)
+                                                      (declare (ignore frame))
+                                                      (list x))))
+        (ok (equal (list x) (frame-buffer-list))))
+      (let ((*frame-buffer-list-function* (constantly nil)))
+        (ok (equal (buffer-list) (frame-buffer-list))))
+      (let ((*frame-buffer-list-function* (lambda (frame)
+                                                      (declare (ignore frame))
+                                                      (values nil t))))
+        (ok (null (frame-buffer-list)))))))

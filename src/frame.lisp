@@ -7,10 +7,10 @@
   "NIL, or a function of one argument, a frame, that returns the buffers
 to offer for selection in that frame.
 Extensions that use each frame as a separate workspace, such as
-frame-multiplexer, set this.  The function returns two values: the buffers, and
-true when the frame is restricted to them (then an empty list means no buffer is
-offered).  When the variable is NIL or the second value is false, every buffer
-is offered.")
+frame-multiplexer, set this.  A non-empty list restricts the frame to those
+buffers.  To restrict it to no buffer at all, return NIL and true as a second
+value.  When the variable is NIL, or the function returns NIL alone, every
+buffer is offered.")
 
 (defgeneric update-prompt-window (window)
   (:method (window)))
@@ -149,7 +149,7 @@ is left; callers that need a buffer must handle that."
   (multiple-value-bind (buffers restricted)
       (when (and *frame-buffer-list-function* frame)
         (funcall *frame-buffer-list-function* frame))
-    (if restricted
+    (if (or buffers restricted)
         buffers
         (buffer-list))))
 
