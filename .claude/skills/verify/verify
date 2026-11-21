@@ -88,7 +88,7 @@ case "${1:-}" in
             [ -z "$files" ] || echo "$files" | sed 's/^/  /' >&2
         fi
         if [ -z "$files" ]; then echo "no changed .lisp files"; exit 0; fi
-        VERIFY_FILES="$files" lisp compile-check.lisp
+        VERIFY_FILES="$files" VERIFY_FASL_DIR="$dir/fasl/" lisp compile-check.lisp
         ;;
     build)
         VERIFY_BINARY="$dir/lem" lisp build-ncurses.lisp >"$dir/build.log" 2>&1 || {
