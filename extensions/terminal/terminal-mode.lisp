@@ -145,27 +145,33 @@ and returning to the same terminal would do nothing."
          (create-terminal-with-command program argv))
         ;; Local: reuse or create
         ((or always-create-terminal-p
-             (buffer-terminal buf))
+             (buffer-terminal buf)
+             (restart-failed-p buf))
          (create-terminal (buffer-directory buf)))
         (t
          (alexandria:if-let (buffer (terminal:find-terminal-buffer))
            (setf (current-window) (pop-to-buffer buffer))
            (create-terminal (buffer-directory buf))))))))
 
+(defun restart-failed-p (buffer)
+  "True when BUFFER's terminal was destroyed by a `terminal-restart' that then
+could not start a new one."
+  (buffer-value buffer 'restart-failed))
+
 (define-command terminal-restart () ()
   "Start the terminal's command again in the current terminal buffer, after
 its process has exited.  The old output is discarded."
   (let* ((buffer (current-buffer))
          (old (buffer-terminal buffer)))
-    ;; A terminal-mode buffer without a terminal is one whose restart failed.
-    (unless (or old (mode-active-p buffer 'terminal-mode))
+    (unless (or old (restart-failed-p buffer))
       (editor-error "Not a terminal buffer"))
     (when (and old (not (terminal:process-exited-p old)))
       (editor-error "Terminal process is still running"))
     (when old
       (terminal:destroy old))
     ;; Its native state is freed: keep no reference to it if create fails.
-    (setf (buffer-terminal buffer) nil)
+    (setf (buffer-terminal buffer) nil
+          (buffer-value buffer 'restart-failed) t)
     ;; The old process may have exited while the buffer was scrolled.
     (setf (buffer-value buffer 'scrollback-lines) nil)
     (with-buffer-read-only buffer nil
@@ -175,7 +181,8 @@ its process has exited.  The old output is discarded."
       (setf (buffer-terminal buffer)
             (terminal:create :cols 80 :rows 24 :buffer buffer
                              :directory (if program "" (buffer-directory buffer))
-                             :program program :argv argv)))
+                             :program program :argv argv)
+            (buffer-value buffer 'restart-failed) nil))
     (resize-terminal (buffer-terminal buffer) (current-window))))
 
 (defun get-current-terminal ()
@@ -186,7 +193,9 @@ its process has exited.  The old output is discarded."
 process has already exited, or did not start (a failed `terminal-restart'),
 so there is nothing to send input to."
   (let ((terminal (get-current-terminal)))
-    (when (or (null terminal) (terminal:process-exited-p terminal))
+    (unless terminal
+      (editor-error "Terminal did not start (M-x terminal-restart to try again)"))
+    (when (terminal:process-exited-p terminal)
       (editor-error "Terminal process has exited"))
     terminal))
 

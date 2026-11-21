@@ -127,3 +127,13 @@ it in a test process, not in a Lem in use."
                 (when new
                   (lem-terminal/terminal:destroy new))))))))
       (skip "terminal.so is not built or is older than its failure handling")))
+
+(deftest terminal-restart-leaves-a-buffer-that-never-had-a-terminal
+  (lem:with-current-buffers ()
+    (lem-fake-interface:with-fake-interface ()
+      (let ((buffer (lem:make-buffer "*terminal restart text*")))
+        (lem:switch-to-buffer buffer)
+        (lem:insert-string (lem:buffer-point buffer) "unsaved text")
+        (lem-terminal/terminal-mode::terminal-mode)
+        (ok (signals (lem-terminal/terminal-mode::terminal-restart) 'lem:editor-error))
+        (ok (equal "unsaved text" (lem:buffer-text buffer)) "its text is kept")))))
