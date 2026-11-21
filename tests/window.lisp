@@ -415,3 +415,34 @@
                  (lem:delete-buffer buffer)
                  (ok (lem:deleted-buffer-p buffer))))
           (lem:teardown-frame other))))))
+
+(defun buffer-has-point-p (buffer point)
+  ;; lem exports no way to list the points registered in a buffer.
+  (and (member point (lem/buffer/internal::buffer-points buffer)) t))
+
+(defun window-points (window)
+  (list (lem:window-view-point window) (lem-core::%window-point window)))
+
+(deftest teardown-frame/frees-bottom-side-and-header-windows
+  (lem:with-current-buffers ()
+    (let ((shown (lem:make-buffer "shown"))
+          (bottom-points '())
+          (header-points '()))
+      (with-fake-interface ()
+        (let* ((bottom (lem:make-bottomside-window shown))
+               (header (make-instance 'lem:header-window :buffer shown))
+               ;; As frame-multiplexer's new tabs: the new frame gets the header windows.
+               (other (lem:make-frame (lem:current-frame))))
+          (lem:setup-frame other (lem:make-buffer "other"))
+          (setf bottom-points (window-points bottom)
+                header-points (window-points header))
+          (ok (every (lambda (point) (buffer-has-point-p shown point))
+                     (append bottom-points header-points)))
+          (testing "a header window another frame still has is kept"
+            (lem:teardown-frame other)
+            (ng (lem-core::window-deleted-p header))
+            (ok (every (lambda (point) (buffer-has-point-p shown point))
+                       header-points)))))
+      (testing "the points of the bottom side and header windows are deleted"
+        (ok (notany (lambda (point) (buffer-has-point-p shown point))
+                    (append bottom-points header-points)))))))

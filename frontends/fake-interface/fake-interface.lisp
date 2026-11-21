@@ -119,8 +119,8 @@
   ;;
   ;; The frames are torn down at the end, so that the points of their windows
   ;; do not stay in buffers that outlive this use, such as *tmp*.
-  ;; teardown-frame frees the window tree, the floating windows and the left
-  ;; and right side windows; it does not free bottom side or header windows.
+  ;; teardown-frame frees the window tree, the floating, side and header
+  ;; windows (a header window with the last frame that has it).
   (let* ((lem-core::*frames* '())
          (lem-core::*display-frame-map* (make-hash-table))
          (lem-core::*last-focused-window* nil)

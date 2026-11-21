@@ -338,10 +338,27 @@ to the frame again (balance-windows, a resize of the display)."
     (setf (frame-window-tree frame) window)))
 
 (defun teardown-windows (frame)
-  (mapc #'%free-window (window-list frame))
-  (mapc #'%free-window (frame-floating-windows frame))
-  (mapc #'%free-window (uiop:ensure-list (frame-leftside-window frame)))
-  (mapc #'%free-window (uiop:ensure-list (frame-rightside-window frame)))
+  "Free the windows of FRAME: the window tree, the floating windows, the side
+windows and the header windows that no other frame has."
+  ;; A side window is a floating window too: free it once.
+  (mapc #'%free-window
+        (remove-duplicates (append (window-list frame)
+                                   (frame-floating-windows frame)
+                                   (remove nil
+                                           (list (frame-leftside-window frame)
+                                                 (frame-rightside-window frame)
+                                                 (frame-bottomside-window frame))))))
+  ;; make-frame gives each new frame the header windows of the current one
+  ;; (each frame-multiplexer tab has the tab bar): free a header window with
+  ;; the last frame that has it.
+  (dolist (header (frame-header-windows frame))
+    (unless (or (window-deleted-p header)
+                (some (lambda (other)
+                        (and (not (eq other frame))
+                             (member header (frame-header-windows other))))
+                      (all-frames)))
+      (%free-window header)
+      (setf (window-deleted-p header) t)))
   (values))
 
 (defun adjust-view-point (window)
