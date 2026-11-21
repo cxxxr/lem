@@ -2,7 +2,8 @@
 ;;; the method below must not be saved into the Lem that `verify build' makes.
 
 (defvar *verify-condition-files* (make-hash-table :test 'eq :weakness :key)
-  "The source file whose compile or load signalled each error condition.
+  "The source file component whose compile or load signalled each error
+condition.
 Set by the :around method on `asdf:perform' below.")
 
 (defmethod asdf:perform :around ((operation asdf:operation) (component asdf:cl-source-file))
@@ -13,11 +14,18 @@ Set by the :around method on `asdf:perform' below.")
   (handler-bind ((error (lambda (condition)
                           (unless (gethash condition *verify-condition-files*)
                             (setf (gethash condition *verify-condition-files*)
-                                  (asdf:component-pathname component))))))
+                                  component)))))
     (call-next-method)))
 
 (defun verify-print-failing-file (condition)
   "Print the file whose compile or load signalled CONDITION, if one is known."
-  (let ((file (gethash condition *verify-condition-files*)))
-    (when file
-      (format t "~&  in ~a~%" (enough-namestring file (uiop:getcwd))))))
+  (let ((component (gethash condition *verify-condition-files*)))
+    (when component
+      (format t "~&  in ~a~%"
+              (enough-namestring (asdf:component-pathname component) (uiop:getcwd))))))
+
+(defun verify-failing-system (condition)
+  "The name of the system of the file whose compile or load signalled
+CONDITION, or NIL."
+  (let ((component (gethash condition *verify-condition-files*)))
+    (and component (asdf:component-name (asdf:component-system component)))))

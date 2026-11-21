@@ -37,12 +37,13 @@ $V compile src/x.lisp
 
 It loads Lem and `lem-tests`, then for each file the system it belongs to
 (found from the `.asd` files above it, e.g. `lem-ncurses` for
-`frontends/ncurses/`; for a file of the directory of a package-inferred
-system such as `lem-ollama`, or below it, that is not one of its components
-and has a package definition, the system ASDF finds by its path:
-`lem-ollama/sub/foo` for `sub/foo.lisp`), compiles the files again
-and prints their warnings (not redefinitions) and the files that failed to
-compile or load. Expect `0 warnings`; fix any undefined function or variable.
+`frontends/ncurses/`), compiles the files again and prints their warnings (not
+redefinitions) and the files that failed to compile or load. Expect
+`0 warnings`; fix any undefined function or variable. A `.lisp` file with a
+package definition in the directory of a package-inferred system such as
+`lem-ollama`, or below it, that is not one of its components, is in the system
+ASDF finds by its path: `lem-ollama/sub/foo` for `sub/foo.lisp`. Not
+`Foo.lisp` on Linux: ASDF looks for the lowercase name, and a note says so.
 A file in no system is compiled in what is loaded, so its own packages may be
 missing, and is not loaded. `scripts/` is left out of the changed files, as
 its files load their frontend before they run: a changed script is listed as
