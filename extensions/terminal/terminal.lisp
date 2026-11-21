@@ -125,7 +125,10 @@ opens a fresh shell instead of reusing a dead one."
        :reader terminal-id)
    (viscus :initarg :viscus
            :reader terminal-viscus)
+   ;; NIL until the I/O thread is made: DESTROY runs before that when
+   ;; CREATE fails.
    (thread :initarg :thread
+           :initform nil
            :accessor terminal-thread)
    (buffer :initarg :buffer
            :reader terminal-buffer)
@@ -330,28 +333,39 @@ point is kept for manual/REPL use and tests."
                                   :string)
                                  "unknown error")))
              viscus))
-         (terminal
-           (make-instance 'terminal
-                          :id id
-                          :viscus viscus
-                          :buffer buffer
-                          :rows rows
-                          :cols cols)))
-    (setf (terminal-scrollback-ring terminal)
-          (make-array *scrollback-limit* :initial-element nil))
-    (mark-all-rows-dirty terminal)
-    ;; The I/O thread owns PTY parsing: it blocks in select (process-input-wait),
-    ;; then drains and parses a budgeted slice into vterm under IO-LOCK, then asks
-    ;; the editor thread to render via ARM-RENDER-TIMER.  Because this thread now
-    ;; consumes the PTY itself, select no longer returns immediately on unread
-    ;; data — there is no hot-spin and no need for a throttling sleep.  The editor
-    ;; thread only renders (self-paced via the render timer), so heavy output can't
-    ;; monopolise the command loop or outrun a slow frontend.
-    (setf (terminal-thread terminal)
-          (bt2:make-thread (lambda () (io-loop terminal))
-                           :name (format nil "Terminal ~D" id)))
-    (add-terminal terminal)
-    terminal))
+         (terminal nil)
+         (registered nil))
+    ;; The shell runs from here on: if what follows fails (no thread can be
+    ;; made), it is killed and the native state freed, as nothing else could.
+    (unwind-protect
+         (progn
+           (setf terminal (make-instance 'terminal
+                                         :id id
+                                         :viscus viscus
+                                         :buffer buffer
+                                         :rows rows
+                                         :cols cols))
+           (setf (terminal-scrollback-ring terminal)
+                 (make-array *scrollback-limit* :initial-element nil))
+           (mark-all-rows-dirty terminal)
+           ;; The I/O thread owns PTY parsing: it blocks in select
+           ;; (process-input-wait), then drains and parses a budgeted slice into
+           ;; vterm under IO-LOCK, then asks the editor thread to render via
+           ;; ARM-RENDER-TIMER.  Because this thread consumes the PTY itself,
+           ;; select no longer returns immediately on unread data — there is no
+           ;; hot-spin and no need for a throttling sleep.  The editor thread only
+           ;; renders (self-paced via the render timer), so heavy output can't
+           ;; monopolise the command loop or outrun a slow frontend.
+           (setf (terminal-thread terminal)
+                 (bt2:make-thread (lambda () (io-loop terminal))
+                                  :name (format nil "Terminal ~D" id)))
+           (add-terminal terminal)
+           (setf registered t)
+           terminal)
+      (unless registered
+        (if terminal
+            (destroy terminal)
+            (ffi::terminal-delete viscus))))))
 
 (defun io-loop (terminal)
   "Body of the terminal's I/O thread.  Blocks until the PTY has output, parses

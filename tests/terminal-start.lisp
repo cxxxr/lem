@@ -173,3 +173,78 @@ it in a test process, not in a Lem in use."
         (lem-terminal/terminal-mode::terminal-mode)
         (ok (signals (lem-terminal/terminal-mode::terminal-restart) 'lem:editor-error))
         (ok (equal "unsaved text" (lem:buffer-text buffer)) "its text is kept")))))
+
+(defun child-pids ()
+  "The pids of this process's children (running or not yet reaped).  A shell
+a terminal starts is one of them from the fork on, before it execs."
+  (let ((self (cffi:foreign-funcall "getpid" :int))
+        (pids '()))
+    (dolist (dir (directory #p"/proc/*/") pids)
+      (let ((pid (car (last (pathname-directory dir))))
+            (stat (ignore-errors
+                   (uiop:read-file-string (merge-pathnames "stat" dir)))))
+        (when (and stat (every #'digit-char-p pid))
+          ;; stat is "pid (comm) state ppid ...": the comm may hold spaces
+          (let* ((after-comm (subseq stat (1+ (position #\) stat :from-end t))))
+                 (ppid (parse-integer (second (uiop:split-string
+                                               (string-trim " " after-comm)))
+                                      :junk-allowed t)))
+            (when (eql ppid self)
+              (push (parse-integer pid) pids))))))))
+
+(defun new-children (before)
+  "Children of this process that were not in BEFORE.  Asked once: the
+terminal is freed, its child reaped, before the failed start returns."
+  (set-difference (child-pids) before))
+
+(deftest a-start-that-fails-after-the-fork-leaves-no-shell
+  (if (and (library-available-p)
+           ;; CHILD-PIDS reads /proc: without it the check could not fail
+           (probe-file "/proc/self/stat"))
+      (let ((buffer (lem:make-buffer "*terminal orphan test*" :temporary t))
+            (terminals lem-terminal/terminal::*terminals*)
+            (children (child-pids))
+            (terminal nil)
+            (condition nil))
+        ;; fails in create after terminal_new has started the shell
+        (let ((lem-terminal/terminal::*scrollback-limit* -1))
+          (handler-case
+              (setf terminal
+                    (lem-terminal/terminal:create :rows 24 :cols 80 :buffer buffer
+                                                  :directory "" :program "/bin/sh"
+                                                  :argv (list "/bin/sh" "-c" "sleep 30")))
+            (error (c) (setf condition c))))
+        (when terminal
+          (lem-terminal/terminal:destroy terminal))
+        (ok (typep condition 'type-error)
+            (format nil "the error of the failed step goes on: ~A" condition))
+        (ok (null (new-children children)) "the shell is killed and reaped")
+        (ok (eq terminals lem-terminal/terminal::*terminals*) "no terminal is registered"))
+      (skip "needs terminal.so with its failure handling, and /proc")))
+
+(deftest a-terminal-buffer-whose-setup-fails-leaves-no-shell
+  (if (and (library-available-p)
+           ;; CHILD-PIDS reads /proc: without it the check could not fail
+           (probe-file "/proc/self/stat"))
+      (lem:with-current-buffers ()
+        (lem-fake-interface:with-fake-interface ()
+         (lem/common/timer:with-timer-manager (make-instance 'quiet-timer-manager)
+          (let ((buffers (lem:buffer-list))
+                (terminals lem-terminal/terminal::*terminals*)
+                (children (child-pids))
+                (condition nil))
+            (handler-case
+                (lem-terminal/terminal-mode::call-with-new-terminal-buffer
+                 "*Terminal*" (list :directory "" :program "/bin/sh"
+                                    :argv (list "/bin/sh" "-c" "sleep 30"))
+                 (lambda (buffer)
+                   (declare (ignore buffer))
+                   (error "setting the buffer up failed")))
+              (error (c) (setf condition c)))
+            (ok (search "setting the buffer up failed" (princ-to-string condition))
+                "the error goes on")
+            (ok (null (new-children children)) "the shell is killed and reaped")
+            (ok (equal terminals lem-terminal/terminal::*terminals*)
+                "the terminal is not registered")
+            (ok (equal buffers (lem:buffer-list)) "the buffer is deleted")))))
+      (skip "needs terminal.so with its failure handling, and /proc")))

@@ -83,28 +83,36 @@ dependency on the TRAMP extension is needed."
 (defun (setf buffer-terminal) (terminal buffer)
   (setf (buffer-value buffer 'terminal) terminal))
 
-(defun create-in-new-buffer (buffer &rest args)
-  "Start a terminal in BUFFER, just made for it, with ARGS for `terminal:create'.
-When `terminal:create' does not return (an editor-error when the terminal
-cannot start), BUFFER is deleted: no empty terminal buffer is left behind."
-  (let ((started nil))
+(defun call-with-new-terminal-buffer (name create-args setup)
+  "Make a buffer named NAME, start a terminal in it with CREATE-ARGS for
+`terminal:create', and call SETUP with the buffer; its value is returned.
+Until SETUP returns, a failure (an editor-error when the terminal cannot
+start, or an error setting the buffer up) destroys the terminal and deletes
+the buffer: no empty buffer, and no shell nobody can kill, is left behind."
+  (let ((buffer (make-buffer (unique-buffer-name name) :enable-undo-p nil))
+        (terminal nil)
+        (done nil))
     (unwind-protect
-         (prog1 (apply #'terminal:create :cols 80 :rows 24 :buffer buffer args)
-           (setf started t))
-      ;; Lem on Clysm's create deletes a fresh buffer itself.
-      (unless (or started (deleted-buffer-p buffer))
-        (delete-buffer buffer)))))
+         (progn
+           (setf terminal (apply #'terminal:create :cols 80 :rows 24 :buffer buffer
+                                 create-args)
+                 (buffer-terminal buffer) terminal)
+           (prog1 (funcall setup buffer)
+             (setf done t)))
+      (unless done
+        ;; The buffer goes even when destroying the terminal fails.
+        (unwind-protect
+             (when terminal
+               (terminal:destroy terminal))
+          ;; Lem on Clysm's create deletes a fresh buffer itself.
+          (unless (deleted-buffer-p buffer)
+            (delete-buffer buffer)))))))
 
-(defun make-terminal-buffer (buffer-directory)
-  (declare (type (string) buffer-directory))
-  (let* ((buffer (make-buffer (unique-buffer-name "*Terminal*") :enable-undo-p nil))
-         (terminal (create-in-new-buffer buffer :directory buffer-directory)))
-    (setf (buffer-terminal buffer) terminal)
-    ;; A local shell: its working directory is the buffer's directory.
-    ;; Terminals running other commands (e.g. TRAMP's ssh) are not tracked.
-    (setf (buffer-value buffer 'track-directory) t)
-    (change-buffer-mode buffer 'terminal-mode)
-    buffer))
+(defun show-terminal-buffer (buffer)
+  "Show BUFFER's terminal in a window, fitted to it, and select that window."
+  (let ((window (pop-to-buffer buffer)))
+    (resize-terminal (buffer-terminal buffer) window)
+    (setf (current-window) window)))
 
 (defun on-kill-buffer (buffer)
   (let ((terminal (buffer-terminal buffer)))
@@ -113,26 +121,27 @@ cannot start), BUFFER is deleted: no empty terminal buffer is left behind."
 
 (defun create-terminal (buffer-directory)
   (declare (type (string) buffer-directory))
-  (let* ((buffer (make-terminal-buffer buffer-directory))
-         (window (pop-to-buffer buffer)))
-    (resize-terminal (buffer-terminal buffer) window)
-    (setf (current-window) window)))
+  (call-with-new-terminal-buffer
+   "*Terminal*" (list :directory buffer-directory)
+   (lambda (buffer)
+     ;; A local shell: its working directory is the buffer's directory.
+     ;; Terminals running other commands (e.g. TRAMP's ssh) are not tracked.
+     (setf (buffer-value buffer 'track-directory) t)
+     (change-buffer-mode buffer 'terminal-mode)
+     (show-terminal-buffer buffer))))
 
 (defun create-terminal-with-command (program argv &key (name "*Terminal*"))
   "Create a terminal buffer running PROGRAM with ARGV (a list of strings).
 Unlike `create-terminal', this launches an arbitrary command instead of the
 user's shell started in a directory."
   (declare (type (string) program))
-  (let* ((buffer (make-buffer (unique-buffer-name name) :enable-undo-p nil))
-         (terminal (create-in-new-buffer buffer :directory ""
-                                                :program program :argv argv)))
-    (setf (buffer-terminal buffer) terminal)
-    ;; Remembered so `terminal-restart' runs the same command again.
-    (setf (buffer-value buffer 'terminal-command) (list program argv))
-    (change-buffer-mode buffer 'terminal-mode)
-    (let ((window (pop-to-buffer buffer)))
-      (resize-terminal (buffer-terminal buffer) window)
-      (setf (current-window) window))))
+  (call-with-new-terminal-buffer
+   name (list :directory "" :program program :argv argv)
+   (lambda (buffer)
+     ;; Remembered so `terminal-restart' runs the same command again.
+     (setf (buffer-value buffer 'terminal-command) (list program argv))
+     (change-buffer-mode buffer 'terminal-mode)
+     (show-terminal-buffer buffer))))
 
 (define-command terminal (always-create-terminal-p) (:universal-nil)
   "Open a terminal buffer.  When the current buffer visits a TRAMP path
