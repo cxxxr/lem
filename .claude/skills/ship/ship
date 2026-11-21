@@ -311,6 +311,7 @@ case "${1:-}" in
         replaced=
         previous_head=
         fresh=
+        extended=
         pending=
         running=
         previous=
@@ -380,34 +381,41 @@ case "${1:-}" in
         # in a row: exit 4.
         merge=
         merge_errors=0
+        # The merge decides only without SHIP_CI_IGNORED: else its read
+        # errors (it is still read for a conflict) do not end the wait.
+        merge_needed=1
+        [ -z "${SHIP_CI_IGNORED+set}" ] || merge_needed=
         merge_error() {
             merge_errors=$((merge_errors + 1))
-            if [ "$merge_errors" -ge 3 ]; then
-                echo "cannot read the merge of PR $number with $target ($merge_errors polls in a row):" >&2
+            if [ -n "$merge_needed" ] && [ "$merge_errors" -ge 3 ]; then
+                echo "cannot read the merge of PR $number with $target ($merge_errors polls without a read):" >&2
                 sed 's/^/  /' "$err" >&2
                 exit 4
             fi
             return 1
         }
+        # Its mergeable state is read again at each call: the base can move
+        # into a conflict after the merge was made.
         merge_commit() {
-            [ -z "$merge" ] || return 0
             m=$(gh api "repos/$repo/pulls/$number" \
                     --jq '"\(.head.sha) \(.mergeable) \(.merge_commit_sha)"' 2>"$err") || merge_error || return 1
             set -- $m
-            merge_errors=0
             [ "$1" = "$sha" ] || return 1
             if [ "$2" = false ]; then
                 echo "PR $number conflicts with $target: no workflow runs for it" >&2
                 exit 3
             fi
-            [ "$2" = true ] || return 1
-            if ! git cat-file -e "$3^{commit}" 2>/dev/null; then
-                git fetch -q "$remote" "refs/pull/$number/merge" 2>"$err" || merge_error || return 1
-                git cat-file -e "$3^{commit}" 2>/dev/null || return 1
+            if [ -z "$merge" ]; then
+                [ "$2" = true ] || return 1
+                if ! git cat-file -e "$3^{commit}" 2>/dev/null; then
+                    git fetch -q "$remote" "refs/pull/$number/merge" 2>"$err" || merge_error || return 1
+                    git cat-file -e "$3^{commit}" 2>/dev/null || return 1
+                fi
+                # Made of SHA itself (the head is its second parent).
+                [ "$(git rev-parse -q --verify "$3^2")" = "$sha" ] || return 1
+                merge=$3
             fi
-            # Made of SHA itself (the head is its second parent).
-            [ "$(git rev-parse -q --verify "$3^2")" = "$sha" ] || return 1
-            merge=$3
+            merge_errors=0
         }
         # Whether the pending checks are all slow ones, and each workflow run
         # not completed yet has one of them: a run waiting only for other jobs
@@ -474,11 +482,14 @@ case "${1:-}" in
             # No workflow run for a while (checks of other apps aside): the PR
             # conflicts with its base (exit 3 in merge_commit), or no CI
             # applies: every pull_request workflow skips the changed files (or
-            # SHIP_CI_IGNORED matches them all).  Only after SHIP_CI_START, so
-            # a workflow that failed to start is not taken for this.
+            # SHIP_CI_IGNORED matches them all), and the checks of other apps
+            # completed (a failed one exited above).  Only after
+            # SHIP_CI_START, so a workflow that failed to start is not taken
+            # for this.
             if [ "$head" = "$sha" ] && [ -z "$runs" ] && [ "$waited" -ge "$start" ] &&
                    { merge_commit || [ -n "${SHIP_CI_IGNORED+set}" ]; } &&
-                   [ "${SHIP_CI_IGNORED-unset}" != "" ]; then
+                   [ "${SHIP_CI_IGNORED-unset}" != "" ] &&
+                   { [ -z "$checks" ] || ! printf '%s\n' "$checks" | grep -qv '^completed/'; }; then
                 # Every changed file (gh pr view lists only the first 100), and
                 # not over 300: GitHub's paths filters look at the first 300.
                 if gh api --paginate "repos/$repo/pulls/$number/files?per_page=100" \
@@ -520,6 +531,14 @@ case "${1:-}" in
                 # also after timeout + 120), or one other than SHA first seen
                 # at this poll (a stale read too) or whose commit is not here
                 # yet: decided at a later poll.
+                # One extension per head found to have moved: stale reads
+                # alternating between two heads do not poll forever.
+                if [ -n "$fresh" ]; then
+                    case " $extended " in
+                        *" $head "*) fresh= ;;
+                        *) extended="$extended $head" ;;
+                    esac
+                fi
                 if [ "$head" != "$sha" ] &&
                        { [ -n "$fresh" ] ||
                              { [ "$waited" -lt $((timeout + 120)) ] &&
@@ -541,6 +560,10 @@ case "${1:-}" in
                 if [ "$head" != "$sha" ]; then
                     echo "the head of PR $number is $head, not $sha" >&2
                 else
+                    if [ -z "$runs" ]; then
+                        echo "CI timed out after ${timeout}s: no workflow run appeared for $sha" >&2
+                        exit 3
+                    fi
                     echo "CI timed out after ${timeout}s; pending:" >&2
                     printf '%s\n%s\n' "$pending" "$running" | sed '/^$/d' | cut -f2,4 |
                         sed 's/^/  /' | grep . >&2 || echo "  (no checks reported)" >&2
