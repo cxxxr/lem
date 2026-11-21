@@ -577,11 +577,12 @@
 (deftest teardown-frame/unmaps-the-frame
   (lem:with-current-buffers ()
     (with-fake-interface ()
-      (let ((hidden (lem:make-frame (lem:current-frame))))
+      (let ((hidden (lem:make-frame (lem:current-frame)))
+            (shown (lem:current-frame)))
         (lem:setup-frame hidden (lem:make-buffer "hidden"))
         (testing "a frame not mapped leaves the mapped one alone"
           (lem:teardown-frame hidden)
-          (ok (lem:current-frame)))
+          (ok (eq shown (lem:current-frame))))
         (testing "the mapped frame leaves its display"
           (lem:teardown-frame (lem:current-frame))
           (ok (null (lem:current-frame)))

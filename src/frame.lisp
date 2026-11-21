@@ -1,6 +1,8 @@
 (in-package :lem-core)
 
-(defvar *display-frame-map* (make-hash-table))
+(defvar *display-frame-map* (make-hash-table #+sbcl :synchronized #+sbcl t)
+  "The frame shown on each display.  The frontends read it from their own
+threads (SDL's event loop) while the editor thread maps and unmaps frames.")
 (defvar *frames* '())
 
 (defvar *frame-buffer-list-function* nil
@@ -166,8 +168,8 @@ is left; callers that need a buffer must handle that."
   "Free the windows of FRAME and forget it: it leaves all-frames, and a display
 it is mapped to has no frame afterwards (current-frame is NIL there) rather
 than a frame whose windows were freed.  The frontends whose events can come
-after exit (SDL2, SDL3, the server) already check current-frame for NIL, as
-they do for an event before the first frame is made."
+after exit (SDL2, SDL3, the server) check current-frame for NIL, as for an
+event before the first frame is made."
   (alexandria:deletef *frames* frame)
   (unwind-protect (teardown-windows frame)
     (let ((displays '()))
