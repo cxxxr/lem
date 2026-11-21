@@ -91,18 +91,28 @@ Written only in the editor thread.")
 (:command name :keys string :count n)."
   (reverse (copy-list *recent-commands*)))
 
+(defun text-key-p (key)
+  "Return true if KEY types a character: one character with no modifier
+other than shift."
+  (and (not (or (key-ctrl key) (key-meta key) (key-super key) (key-hyper key)))
+       (= 1 (length (key-sym key)))))
+
+(defun recorded-keys (keys)
+  "Return KEYS as a string, or NIL when every key of them types a character.
+Many commands run on typed text, not only self-insert (terminal-input,
+isearch, completion, skk), so typed text is told by its keys and not by
+the command: a password typed in a terminal or a prompt is not recorded."
+  (when (and keys (notevery #'text-key-p keys))
+    (keyseq-to-string keys)))
+
 (defun record-command ()
   "Add the command about to run to *recent-commands*.
-Self-insert keeps no keys, so that typed text (a password in a prompt)
-is not recorded; repeats of the same command and keys are counted instead
-of listed."
+Repeats of the same command and keys are counted instead of listed."
   (let* ((command (this-command))
          (name (if command
                    (princ-to-string (command-name command))
                    "?"))
-         (keys (unless (and command (eq (command-name command) 'self-insert))
-                 (let ((keys (this-command-keys)))
-                   (when keys (keyseq-to-string keys)))))
+         (keys (recorded-keys (this-command-keys)))
          (last (first *recent-commands*)))
     (if (and last
              (equal (getf last :command) name)
@@ -114,33 +124,41 @@ of listed."
             (setf *recent-commands*
                   (subseq *recent-commands* 0 *max-recent-commands*)))))))
 
-(defun shorten-strings (frame)
-  "Cut the string literals in FRAME longer than *max-string-length-in-backtrace*."
+(defun shorten-strings (text)
+  "Cut the string literals in TEXT longer than *max-string-length-in-backtrace*
+and write the newlines of the rest as \\n, so that no string spans lines.
+TEXT may hold many lines: a string argument with newlines is printed over
+several lines of a backtrace."
   (ppcre:regex-replace-all
-   "\"((?:[^\"\\\\]|\\\\.)*)\""
-   frame
+   ;; #\" is the character, not the start of a string
+   "(?<!#\\\\)\"((?:[^\"\\\\]|\\\\.)*)\""
+   text
    (lambda (match contents)
      (declare (ignore match))
-     (if (> (length contents) *max-string-length-in-backtrace*)
-         (format nil "\"~A...\" (~D chars)"
-                 (subseq contents 0 *max-string-length-in-backtrace*)
-                 (length contents))
-         (format nil "\"~A\"" contents)))
+     (let ((kept (ppcre:regex-replace-all
+                  (string #\Newline)
+                  (if (> (length contents) *max-string-length-in-backtrace*)
+                      (subseq contents 0 *max-string-length-in-backtrace*)
+                      contents)
+                  "\\\\n")))
+       (if (> (length contents) *max-string-length-in-backtrace*)
+           (format nil "\"~A...\" (~D chars)" kept (length contents))
+           (format nil "\"~A\"" kept))))
    :simple-calls t))
 
 (defun sanitize-backtrace (backtrace)
-  "Return BACKTRACE with long strings and long frames cut."
+  "Return BACKTRACE with long strings and long frames cut.
+The strings are cut over the whole text before it is split into lines."
   (with-output-to-string (out)
-    (with-input-from-string (in (or backtrace ""))
+    (with-input-from-string (in (shorten-strings (or backtrace "")))
       (loop :for line := (read-line in nil)
             :while line
-            :do (let ((line (shorten-strings line)))
-                  (write-line (if (> (length line) *max-frame-length*)
-                                  (concatenate 'string
-                                               (subseq line 0 *max-frame-length*)
-                                               " ...")
-                                  line)
-                              out))))))
+            :do (write-line (if (> (length line) *max-frame-length*)
+                                (concatenate 'string
+                                             (subseq line 0 *max-frame-length*)
+                                             " ...")
+                                line)
+                            out)))))
 
 (defun frame-function-name (line)
   "Return the function part of a backtrace LINE such as
@@ -174,15 +192,19 @@ Used instead of sxhash, which may change between Lisp versions."
 signalled from the same place: the condition type and the names of the
 topmost frames below the error machinery. Frame arguments and the error
 message are left out, since they change from one occurrence to the next."
-  (let ((names (with-input-from-string (in (or backtrace ""))
+  (let ((names (with-input-from-string (in (sanitize-backtrace backtrace))
                  (loop :for line := (read-line in nil)
                        :while line
                        :for name := (frame-function-name line)
                        :when (and name
                                   (not (ppcre:scan *machinery-frame-regex* name)))
                          :collect name))))
-    (fnv-1a (format nil "~S~{|~A~}"
-                    (type-of condition)
+    ;; With *package* bound to KEYWORD every symbol is printed with its
+    ;; package, whatever package was current when the error was signalled.
+    ;; uiop:print-backtrace already binds *package* to CL for the frames.
+    (fnv-1a (format nil "~A~{|~A~}"
+                    (let ((*package* (find-package :keyword)))
+                      (prin1-to-string (type-of condition)))
                     (subseq names 0 (min *fingerprint-frame-count* (length names)))))))
 
 (defun utc-timestamp (universal-time &key compact)

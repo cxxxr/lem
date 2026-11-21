@@ -16,13 +16,26 @@ they signal.")
                           :condition condition
                           :count 100)))
 
+(defvar *last-reported-condition* nil
+  "The condition report-error reported last. A timer's error is reported by
+the timer's handle-function (as the original error) and again when the
+timer-error wrapping it reaches the command loop; this lets the second one
+be skipped.")
+
 (defun report-error (condition backtrace context)
-  "Run *error-report-hook* with CONDITION, BACKTRACE and CONTEXT.
+  "Run *error-report-hook* with CONDITION, BACKTRACE and CONTEXT, unless
+CONDITION, or the error a timer-error CONDITION wraps, was reported last.
 An error in a hook function is dropped so that reporting never makes
 the error it reports worse."
-  ;; Not run-hooks: it stops at the first hook that signals.
-  (dolist (hook *error-report-hook*)
-    (ignore-errors (funcall (car hook) condition backtrace context))))
+  (unless (and *last-reported-condition*
+               (or (eq condition *last-reported-condition*)
+                   (and (typep condition 'timer-error)
+                        (eq (timer-error-condition condition)
+                            *last-reported-condition*))))
+    (setf *last-reported-condition* condition)
+    ;; Not run-hooks: it stops at the first hook that signals.
+    (dolist (hook *error-report-hook*)
+      (ignore-errors (funcall (car hook) condition backtrace context)))))
 
 (defun bailout (condition)
   (let ((backtrace (ignore-errors (backtrace-string condition))))
@@ -43,8 +56,11 @@ the error it reports worse."
               (princ condition stream)
               (fresh-line stream)
               (write-string backtrace stream))))
+    ;; A timer's handle-function shows the original error, not a timer-error.
     (report-error condition backtrace
-                  (if (typep condition 'timer-error) :timer :command))
+                  (if (or (typep condition 'timer-error) (running-timer-p))
+                      :timer
+                      :command))
     (funcall 'pop-up-typeout-window
              (make-buffer "*EDITOR ERROR*")
              :function (lambda (stream)

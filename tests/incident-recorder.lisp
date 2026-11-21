@@ -18,7 +18,8 @@
          (ir::*recent-commands* '())
          (ir::*incident-count* 0)
          (ir::*last-written-times* (make-hash-table :test 'equal))
-         (ir::*suppressed-counts* (make-hash-table :test 'equal)))
+         (ir::*suppressed-counts* (make-hash-table :test 'equal))
+         (lem-core::*last-reported-condition* nil))
     ;; registered with add-hook, as the extension does, not bound as a list
     (lem:add-hook lem:*error-report-hook* 'ir:record-incident)
     (unwind-protect (funcall function directory)
@@ -178,3 +179,51 @@ backtrace taken where it was signalled, as the editor's handlers do."
       (let ((files (incident-files directory)))
         (ok (= 1 (length files)))
         (ok (equal "crash" (gethash "context" (read-incident (first files)))))))))
+
+(deftest typed-keys-are-not-recorded-whatever-the-command
+  ;; terminal-input, isearch and completion run on typed text too
+  (ok (null (ir::recorded-keys (list (lem:make-key :sym "p") (lem:make-key :sym "w")))))
+  (ok (null (ir::recorded-keys (list (lem:make-key :shift t :sym "P")))))
+  (ok (equal "C-a" (ir::recorded-keys (list (lem:make-key :ctrl t :sym "a")))))
+  (ok (equal "Return" (ir::recorded-keys (list (lem:make-key :sym "Return")))))
+  (ok (null (ir::recorded-keys '()))))
+
+(deftest a-string-over-several-lines-is-cut
+  (let* ((text (format nil "~{~A~%~}" (loop :for i :from 1 :to 50
+                                            :collect (format nil "12: (line ~D" i))))
+         (backtrace (format nil "0: (LEM::INSERT-STRING #<POINT> ~S)~%1: (LEM::CALLER)" text))
+         (cut (ir::sanitize-backtrace backtrace)))
+    (ok (search "chars)" cut))
+    (ng (search "line 50" cut))
+    ;; the lines of the string are not frames any more
+    (ok (= 2 (count-if (lambda (line) (ir::frame-function-name line))
+                       (uiop:split-string (string-right-trim '(#\Newline) cut)
+                                          :separator '(#\Newline))))))
+  (ok (search "#\\\" \"ok\""
+              (ir::sanitize-backtrace (format nil "1: (FOO #\\\" \"ok\")~%2: (BAR \"x\")")))))
+
+(define-condition test-error (error) ())
+
+(deftest the-fingerprint-does-not-depend-on-the-current-package
+  (multiple-value-bind (condition backtrace)
+      (signal-and-capture (lambda () (error 'test-error)))
+    (ok (equal (let ((*package* (find-package :cl-user)))
+                 (ir:incident-fingerprint condition backtrace))
+               (let ((*package* (find-package :lem-tests/incident-recorder)))
+                 (ir:incident-fingerprint condition backtrace))))))
+
+(deftest a-timer-error-shown-by-its-handle-function-is-recorded-once
+  (with-fake-interface ()
+    (with-recorder (directory)
+      (let* ((timer (lem:make-idle-timer (lambda () (fail-in-place-b "handled"))
+                                         :name "handled timer"
+                                         :handle-function (lambda (c) (lem:pop-up-backtrace c))))
+             (timer-error (handler-case (progn (lem/common/timer::call-timer-function timer) nil)
+                            (lem/common/timer:timer-error (e) e))))
+        ;; the command loop shows the timer-error too, as with-error-handler does
+        (lem:pop-up-backtrace timer-error)
+        (let ((files (incident-files directory)))
+          (ok (= 1 (length files)))
+          (let ((incident (read-incident (first files))))
+            (ok (equal "timer" (gethash "context" incident)))
+            (ok (search "FAIL-IN-PLACE-B" (gethash "backtrace" incident)))))))))

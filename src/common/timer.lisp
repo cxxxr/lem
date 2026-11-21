@@ -5,8 +5,10 @@
    :send-timer-notification
    :with-timer-manager
    :running-timer
+   :running-timer-p
    :timer-error
    :timer-error-backtrace
+   :timer-error-condition
    :timer
    :timer-name
    :timer-expired-p
@@ -24,6 +26,10 @@
 
 (defvar *running-timer*)
 (defun running-timer () *running-timer*)
+
+(defun running-timer-p ()
+  "Return true while a timer's function (or its handle-function) runs."
+  (boundp '*running-timer*))
 
 (defvar *timer-manager*)
 
@@ -46,7 +52,9 @@
 
 (define-condition timer-error (error)
   ((timer :initarg :timer)
-   (condition :initarg :condition)
+   (condition :initarg :condition
+              :reader timer-error-condition
+              :documentation "The error the timer's function signalled.")
    (backtrace :initarg :backtrace
               :initform nil
               :reader timer-error-backtrace
