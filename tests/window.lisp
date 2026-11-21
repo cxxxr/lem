@@ -365,15 +365,6 @@
           (ok (lem:deleted-buffer-p attached))
           (ok (= 1 count)))))))
 
-(deftest get-buffer-windows/no-header-windows
-  (lem:with-current-buffers ()
-    (with-fake-interface ()
-      (let* ((buffer (lem:make-buffer "header" :temporary t))
-             (header (make-instance 'lem:header-window :buffer buffer)))
-        (unwind-protect
-             (ok (null (lem:get-buffer-windows buffer :include-floating-windows t)))
-          (lem:delete-window header))))))
-
 (deftest delete-buffer/refused-while-a-header-window-shows-it
   (lem:with-current-buffers ()
     (with-fake-interface ()
@@ -389,3 +380,38 @@
         (testing "once the header window is deleted, the buffer can be"
           (lem:delete-buffer buffer)
           (ok (lem:deleted-buffer-p buffer)))))))
+
+(deftest delete-buffer/refused-while-a-header-window-shows-the-attached-buffer
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (make-attached-buffer))
+             (attached (lem-core::buffer-attached-buffer buffer))
+             (header (make-instance 'lem:header-window :buffer attached)))
+        (lem:switch-to-buffer buffer)
+        (unwind-protect
+             (let ((windows (lem:get-buffer-windows buffer)))
+               (assert windows)
+               (ok (signals (lem:delete-buffer buffer)))
+               (testing "nothing is changed, the windows still show BUFFER"
+                 (ng (lem:deleted-buffer-p buffer))
+                 (ng (lem:deleted-buffer-p attached))
+                 (ok (equal windows (lem:get-buffer-windows buffer)))))
+          (lem:delete-window header))))))
+
+(deftest delete-window/a-header-window-leaves-every-frame
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (lem:make-buffer "header" :temporary t))
+             (header (make-instance 'lem:header-window :buffer buffer))
+             ;; As frame-multiplexer's new tabs: the new frame gets the header windows.
+             (other (lem-core::make-frame (lem:current-frame))))
+        (lem-core::setup-frame other (lem:make-buffer "other"))
+        (unwind-protect
+             (progn
+               (assert (member header (lem:frame-header-windows other)))
+               (lem:delete-window header)
+               (ok (null (lem:frame-header-windows other)))
+               (testing "so its buffer can be deleted afterwards"
+                 (lem:delete-buffer buffer)
+                 (ok (lem:deleted-buffer-p buffer))))
+          (lem-core::teardown-frame other))))))

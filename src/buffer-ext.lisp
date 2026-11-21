@@ -48,9 +48,11 @@ Header windows are not among them (see get-buffer-windows)."
   ;; A header window (the frame-multiplexer tab bar, the server's tabbar) draws
   ;; into its own buffer, so it cannot be given another buffer: its owner deletes
   ;; the window first.  Refuse before anything is changed.
-  (alexandria:when-let ((window (buffer-header-window buffer)))
-    (error "Cannot delete ~A: the header window ~A shows it; delete the window first."
-           buffer window))
+  ;; The attached buffer too, as it is deleted with BUFFER after the windows changed.
+  (dolist (b (list buffer (buffer-attached-buffer buffer)))
+    (alexandria:when-let ((window (and b (buffer-header-window b))))
+      (error "Cannot delete ~A: the header window ~A shows ~:[its attached buffer ~A~;it~]; delete the window first."
+             buffer window (eq b buffer) b)))
   (dolist (frame (all-frames))
     (strip-buffer-from-frame-windows buffer frame))
   ;; Whether or not BUFFER was shown: the attached buffer lives only with it.
