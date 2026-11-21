@@ -43,21 +43,23 @@ editor thread (send-event), then the display is redrawn."))
   "Tear the editor down, then call FINALIZE with REPORT, which lets the
 frontend end (invoke returns, and launch with it). By then the editor is
 gone: a launch called next starts an editor rather than giving its
-arguments to this one (*in-the-editor*). A failure of the teardown is
-logged with its backtrace, not signalled, and the frontend is finalized
-whatever way the teardown is left: a debugger in the editor thread would
-wait on a display that is going away."
-  (unwind-protect
-       (handler-case
-           (handler-bind ((error (lambda (condition)
-                                   (ignore-errors
-                                    (log:error "Tearing down the editor failed: ~A~%~A"
-                                               condition
-                                               (lem/common/backtrace:safe-backtrace))))))
-             (teardown))
-         (error () nil))
-    (setf *in-the-editor* nil)
-    (when finalize (funcall finalize report))))
+arguments to this one (*in-the-editor*). A failure of the teardown, any
+serious condition, is logged with its backtrace and not signalled: the
+frontend must end anyway, and a debugger in the editor thread would wait on
+a display that is going away. FINALIZE is not called when the teardown is
+left by a non-local exit (the process quitting)."
+  (handler-case
+      (handler-bind ((serious-condition
+                       (lambda (condition)
+                         (handler-case
+                             (log:error "Tearing down the editor failed: ~A~%~A"
+                                        condition
+                                        (lem/common/backtrace:safe-backtrace))
+                           (serious-condition () nil)))))
+        (teardown))
+    (serious-condition () nil))
+  (setf *in-the-editor* nil)
+  (when finalize (funcall finalize report)))
 
 (defun get-preferred-init-file-path ()
   "Returns the full path to the preferred init file"

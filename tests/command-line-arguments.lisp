@@ -15,6 +15,19 @@ tearing the editor down fails."))
   (setf *delete-view-failed* t)
   (error "This view cannot be deleted"))
 
+(define-condition teardown-trouble (serious-condition) ()
+  (:documentation "A serious condition that is not an error, as a
+storage-condition."))
+
+(defclass troubled-interface (lem-fake-interface:fake-interface) ()
+  (:documentation "A fake interface whose views cannot be deleted, with a
+serious condition that is not an error."))
+
+(defmethod lem-if:delete-view ((implementation troubled-interface) view)
+  (declare (ignore view))
+  (setf *delete-view-failed* t)
+  (error 'teardown-trouble))
+
 (defun command-line-arguments-equal (arg1 arg2)
   (and (equal (lem-core::command-line-arguments-help arg2)
               (lem-core::command-line-arguments-help arg1))
@@ -162,15 +175,24 @@ tearing the editor down fails."))
                                       seen)))))
     (ok (equal '((:report nil nil)) seen))))
 
-(deftest the-frontend-ends-also-when-the-teardown-fails
+(defun finalized-after-a-failing-teardown (interface-class)
+  "End an editor whose teardown fails in an INTERFACE-CLASS, and return
+whether the teardown failed and what the finalize saw."
   (let ((seen '())
         (*delete-view-failed* nil))
     (lem-fake-interface:with-fake-interface ()
       (let ((lem-core::*in-the-editor* t))
-        (lem:with-implementation (make-instance 'failing-interface)
+        (lem:with-implementation (make-instance interface-class)
           (lem-core::end-editor :report
                                 (lambda (report)
                                   (push (list report lem-core::*in-the-editor*)
                                         seen))))))
-    (ok *delete-view-failed*)
-    (ok (equal '((:report nil)) seen))))
+    (list *delete-view-failed* seen)))
+
+(deftest the-frontend-ends-also-when-the-teardown-fails
+  (testing "with an error"
+    (ok (equal '(t ((:report nil)))
+               (finalized-after-a-failing-teardown 'failing-interface))))
+  (testing "with a serious condition that is not an error"
+    (ok (equal '(t ((:report nil)))
+               (finalized-after-a-failing-teardown 'troubled-interface)))))
