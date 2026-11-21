@@ -74,6 +74,12 @@ Written only in the editor thread.")
 (defvar *recorder-lock* (bt2:make-lock :name "incident recorder")
   "Guards the counters: a crash can be reported from another thread.")
 
+(defvar *lem-source-root*
+  (ignore-errors (namestring (asdf:system-source-directory :lem)))
+  "The Lem source tree this image was built from, taken at load time (so
+at build time for a saved binary): the tree whose absolute paths appear in
+the names of lambdas defined at the top level of a file.")
+
 (defun incident-directory ()
   "Return the directory incidents are written under."
   (uiop:ensure-directory-pathname
@@ -178,11 +184,37 @@ Used instead of sxhash, which may change between Lisp versions."
           :do (setf hash (ldb (byte 32 0) (* (logxor hash octet) #x01000193))))
     (format nil "~(~8,'0x~)" hash)))
 
+(defun normalize-source-path (path)
+  "Return PATH relative to *lem-source-root* if it is under it, else its
+file name: the same file gives the same text in every checkout."
+  (let ((root *lem-source-root*))
+    (if (and root
+             (> (length path) (length root))
+             (string= root path :end2 (length root)))
+        (subseq path (length root))
+        (let ((slash (position #\/ path :from-end t)))
+          (if slash (subseq path (1+ slash)) path)))))
+
+(defun normalize-frame-name (name)
+  "Return NAME without what changes from one build or checkout to another:
+the counters of gensyms, (LAMBDA (#:CONDITION0) ...) from a macro, and the
+absolute path of a lambda defined at the top level of a file,
+(LAMBDA () :IN \"/home/u/lem/src/lem.lisp\")."
+  (ppcre:regex-replace-all
+   ":IN \"((?:[^\"\\\\]|\\\\.)*)\""
+   (ppcre:regex-replace-all "(#:[^\\s()|]*?)[0-9]+(?=[\\s()]|$)" name "\\1")
+   (lambda (match path)
+     (declare (ignore match))
+     (format nil ":IN \"~A\"" (normalize-source-path path)))
+   :simple-calls t))
+
 (defun incident-fingerprint (condition backtrace)
   "Return a short string that is the same for errors of the same type
 signalled from the same place: the condition type and the names of the
 topmost frames below the error machinery. Frame arguments and the error
-message are left out, since they change from one occurrence to the next."
+message are left out, since they change from one occurrence to the next,
+and the names are normalized (normalize-frame-name), since they change from
+one build to the next."
   ;; The lines are read whole: sanitize-backtrace could cut a long name.
   (let ((names (with-input-from-string (in (or backtrace ""))
                  (loop :for line := (read-line in nil)
@@ -190,10 +222,10 @@ message are left out, since they change from one occurrence to the next."
                        :for name := (frame-function-name line)
                        :when (and name
                                   (not (ppcre:scan *machinery-frame-regex* name)))
-                         :collect name))))
+                         :collect (normalize-frame-name name)))))
     ;; With *package* bound to KEYWORD every symbol is printed with its
     ;; package, whatever package was current when the error was signalled.
-    ;; uiop:print-backtrace already binds *package* to CL for the frames.
+    ;; safe-backtrace already binds *package* to CL for the frames.
     (fnv-1a (format nil "~A~{|~A~}"
                     (let ((*package* (find-package :keyword)))
                       (prin1-to-string (type-of condition)))

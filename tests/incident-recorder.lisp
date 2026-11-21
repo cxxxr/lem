@@ -277,3 +277,46 @@ backtrace taken where it was signalled, as the editor's handlers do."
 (deftest parens-in-strings-of-a-frame-name-do-not-count
   (ok (equal "(LAMBDA () :IN \"/a (b.lisp\")"
              (ir::frame-function-name "4: ((LAMBDA () :IN \"/a (b.lisp\") 1 \"x)\")"))))
+
+(deftest frame-names-are-normalized-across-builds
+  ;; gensym counters change when a file compiled earlier gains a gensym
+  (ok (equal (ir::normalize-frame-name "(LAMBDA (#:CONDITION0) :IN LEM-CORE::BAR)")
+             (ir::normalize-frame-name "(LAMBDA (#:CONDITION7) :IN LEM-CORE::BAR)")))
+  (ok (equal "(LAMBDA (#:G X) :IN FOO)" (ir::normalize-frame-name "(LAMBDA (#:G123 X) :IN FOO)")))
+  ;; a top-level lambda is named by the absolute path of its file: two
+  ;; checkouts, each a binary built from its own tree, give the same name
+  (flet ((in-checkout (root)
+           (let ((ir::*lem-source-root* root))
+             (ir::normalize-frame-name
+              (format nil "(LAMBDA () :IN \"~Asrc/lem.lisp\")" root)))))
+    (ok (equal (in-checkout "/home/a/src/lem/") (in-checkout "/tmp/worktree-1234/")))
+    (ok (equal "(LAMBDA () :IN \"src/lem.lisp\")" (in-checkout "/home/a/src/lem/"))))
+  ;; a file outside the tree (init.lisp) keeps its file name only
+  (let ((ir::*lem-source-root* "/home/a/src/lem/"))
+    (ok (equal "(LAMBDA (BUFFER) :IN \"init.lisp\")"
+               (ir::normalize-frame-name "(LAMBDA (BUFFER) :IN \"/home/a/.lem/init.lisp\")")))))
+
+;; a lambda whose lambda list has a gensym, running when the error is signalled
+(defun call-with-value (function)
+  (declare (optimize (debug 3)))
+  (funcall function 1)
+  nil)
+
+(defmacro with-gensym-lambda (() &body body)
+  (let ((value (gensym "CONDITION")))
+    `(call-with-value (lambda (,value)
+                        (declare (ignore ,value) (optimize (debug 3)))
+                        ,@body
+                        nil))))
+
+(deftest a-gensym-lambda-frame-gives-a-stable-fingerprint
+  (multiple-value-bind (condition backtrace)
+      (signal-and-capture
+       (lambda () (with-gensym-lambda () (fail-in-place-a "gensym"))))
+    (let ((line (find-if (lambda (line) (search "(#:CONDITION" line))
+                         (uiop:split-string backtrace :separator '(#\Newline)))))
+      ;; the frame of the macro's lambda is in the backtrace with its gensym
+      (ok line)
+      (let ((other (ppcre:regex-replace "#:CONDITION[0-9]+" backtrace "#:CONDITION99999")))
+        (ok (equal (ir:incident-fingerprint condition backtrace)
+                   (ir:incident-fingerprint condition other)))))))
