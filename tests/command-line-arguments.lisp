@@ -3,6 +3,14 @@
         :rove))
 (in-package :lem-tests/command-line-arguments)
 
+(defclass failing-interface (lem-fake-interface:fake-interface) ()
+  (:documentation "A fake interface whose views cannot be deleted, so that
+tearing the editor down fails."))
+
+(defmethod lem-if:delete-view ((implementation failing-interface) view)
+  (declare (ignore view))
+  (error "This view cannot be deleted"))
+
 (defun command-line-arguments-equal (arg1 arg2)
   (and (equal (lem-core::command-line-arguments-help arg2)
               (lem-core::command-line-arguments-help arg1))
@@ -149,3 +157,14 @@
                                             (lem-core:all-frames))
                                       seen)))))
     (ok (equal '((:report nil nil)) seen))))
+
+(deftest the-frontend-ends-also-when-the-teardown-fails
+  (let ((seen '()))
+    (lem-fake-interface:with-fake-interface ()
+      (let ((lem-core::*in-the-editor* t))
+        (lem:with-implementation (make-instance 'failing-interface)
+          (lem-core::end-editor :report
+                                (lambda (report)
+                                  (push (list report lem-core::*in-the-editor*)
+                                        seen))))))
+    (ok (equal '((:report nil)) seen))))
