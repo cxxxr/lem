@@ -64,28 +64,42 @@ up to the repository."
 
 (defun verify-load-file-system (file)
   "Load the system of FILE when it is not loaded yet (lem-tests does not load
-every system, e.g. the frontends), so that FILE's packages exist."
-  (let ((system (verify-file-system file)))
-    (when (and system (not (asdf:component-loaded-p system)))
-      (format t "~&loading ~a for ~a~%" system file)
-      (ql:quickload system :silent t))))
+every system, e.g. the frontends), so that FILE's packages exist.
+Returns NIL, after printing why, when the system cannot be loaded here (a
+frontend whose foreign library is missing, say); T otherwise."
+  (handler-case
+      (let ((system (verify-file-system file)))
+        (when (and system (not (asdf:component-loaded-p system)))
+          (format t "~&loading ~a for ~a~%" system file)
+          (ql:quickload system :silent t))
+        t)
+    (error (condition)
+      (format t "~&FAILED to load the system of ~a:~%  ~a~%" file condition)
+      nil)))
 
 (let ((count 0))
   (dolist (file (verify-env-list "VERIFY_FILES"))
-    (verify-load-file-system file)
-    (handler-bind ((warning
-                     (lambda (condition)
-                       (unless (or (typep condition 'sb-kernel:redefinition-warning)
-                                   (verify-own-fasl-warning-p condition))
-                         (incf count)
-                         (format t "~&WARNING in ~a:~%  ~a~%" file condition))
-                       (muffle-warning condition))))
-      (let ((fasl (compile-file file
-                                :output-file (ensure-directories-exist
-                                              (verify-fasl-path file)))))
-        (if fasl
-            (load fasl)
-            (progn (incf count)
-                   (format t "~&FAILED to compile ~a~%" file))))))
+    (if (not (verify-load-file-system file))
+        (incf count)
+        (handler-bind ((warning
+                         (lambda (condition)
+                           (unless (or (typep condition 'sb-kernel:redefinition-warning)
+                                       (verify-own-fasl-warning-p condition))
+                             (incf count)
+                             (format t "~&WARNING in ~a:~%  ~a~%" file condition))
+                           (muffle-warning condition))))
+          ;; An error (an IN-PACKAGE of a package that does not exist here)
+          ;; fails this file only, not the whole run.
+          (handler-case
+              (let ((fasl (compile-file file
+                                        :output-file (ensure-directories-exist
+                                                      (verify-fasl-path file)))))
+                (if fasl
+                    (load fasl)
+                    (progn (incf count)
+                           (format t "~&FAILED to compile ~a~%" file))))
+            (error (condition)
+              (incf count)
+              (format t "~&FAILED to compile ~a:~%  ~a~%" file condition))))))
   (format t "~&~d warning~:p~%" count)
   (uiop:quit (if (zerop count) 0 1)))

@@ -166,9 +166,12 @@ case "${1:-}" in
                 checks=$(printf '%s\n%s' "$checks" "$statuses" | sed '/^$/d')
             fi
             # A workflow run completes only after all its jobs, also the ones
-            # created late because they need another job.
+            # created late because they need another job.  Only the newest run
+            # of each workflow and event counts: a run started again (reopened
+            # PR, workflow_dispatch) replaces an older failed or stuck one.
             runs=$(gh api "repos/$repo/actions/runs?head_sha=$sha&per_page=100" \
-                --jq '.workflow_runs[] | "\(.status)/\(.conclusion)\tworkflow \(.name)"' 2>"$err") || return 1
+                --jq '.workflow_runs | group_by([.workflow_id, .event]) | map(max_by(.run_number))[]
+                      | "\(.status)/\(.conclusion)\tworkflow \(.name)"' 2>"$err") || return 1
         }
         while :; do
             if ! read_ci; then
