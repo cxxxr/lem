@@ -58,12 +58,15 @@ base_branch() {
 }
 
 changed_lisp_files() {
+    # Not scripts/: they build and save an image, which is what `verify build`
+    # is for.  `verify compile scripts/x.lisp` still compiles one.
     base=$1
     {
         git -C "$repo" diff --name-only --diff-filter=d "$base"...HEAD
         git -C "$repo" diff --name-only --diff-filter=d HEAD
         git -C "$repo" ls-files --others --exclude-standard
-    } | grep '\.lisp$' | grep -v '^frontends/clysm/' | grep -v '^\.claude/' | sort -u
+    } | grep '\.lisp$' | grep -v '^frontends/clysm/' | grep -v '^\.claude/' \
+      | grep -v '^scripts/' | sort -u
 }
 
 case "${1:-}" in

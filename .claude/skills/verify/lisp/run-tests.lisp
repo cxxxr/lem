@@ -1,11 +1,24 @@
 ;;; Run Rove test packages (VERIFY_SUITES) of lem-tests, or the whole system.
 ;;; Exits with 0 when every test passed, 1 otherwise.
 
-(ql:quickload '(:lem-fake-interface :lem-tests) :silent t)
+(defun verify-load-or-fail (function)
+  "Call FUNCTION, which loads systems.  When it signals an error (a file that
+fails to compile, with SBCL's default *compile-file-failure-behaviour*
+:error), print it and quit with a failure, so that the last line is still
+VERIFY: tests failed."
+  (handler-case (funcall function)
+    (error (condition)
+      (format t "~&VERIFY: could not load the tests:~%  ~a~%VERIFY: tests failed~%"
+              condition)
+      (uiop:quit 1))))
+
+(verify-load-or-fail
+ (lambda () (ql:quickload '(:lem-fake-interface :lem-tests) :silent t)))
 
 (when (plusp (length (uiop:getenv "VERIFY_FRESH")))
   ;; Compile the files of lem-tests again even if their fasls look newer.
-  (asdf:load-system :lem-tests :force '(:lem-tests)))
+  (verify-load-or-fail
+   (lambda () (asdf:load-system :lem-tests :force '(:lem-tests)))))
 
 (defun verify-rove-function (name)
   "The function NAME of Rove's internal package rove/core/suite/package.

@@ -1,11 +1,51 @@
 ;;; Load Lem, then compile the files in VERIFY_FILES again and report their
-;;; warnings.  Redefinition warnings are expected and not reported.
-;;; Exits with 0 when no file had a warning, 1 otherwise.
+;;; warnings and the files that failed to compile or to load.  Redefinition
+;;; warnings are expected and not reported.
+;;; Exits with 0 when no file had a warning or failed, 1 otherwise.
 
-;; Loading compiles the changed files of these systems first: a warning there
-;; must not end the run, so that the compile below reports it.
-(let ((uiop:*compile-file-failure-behaviour* :warn))
-  (ql:quickload '(:lem-fake-interface :lem-tests) :silent t))
+(defvar *verify-count* 0
+  "The number of warnings and failures reported so far.")
+
+(defvar *verify-failed-fasls* '()
+  "The output files under VERIFY_CACHE of files whose compilation failed while
+`verify-quickload' loaded them.")
+
+(defmethod asdf:perform :around ((operation asdf:compile-op) (component asdf:cl-source-file))
+  ;; With *compile-file-failure-behaviour* :warn, a file that fails to compile
+  ;; (a "caught ERROR" in a form, say) keeps its fasl in VERIFY_CACHE, newer
+  ;; than its source.  `verify build' and `verify tests' would then load that
+  ;; fasl without compiling the file and without failing.  Note its output
+  ;; files so that `verify-quickload' can delete them.
+  (handler-bind ((uiop:compile-failed-warning
+                   (lambda (condition)
+                     (declare (ignore condition))
+                     (setf *verify-failed-fasls*
+                           (append (asdf:output-files operation component)
+                                   *verify-failed-fasls*)))))
+    (call-next-method)))
+
+(defun verify-quickload (systems)
+  "Quickload SYSTEMS, letting a file that fails to compile fail only itself:
+the compile below reports it.  Afterwards delete the fasls of the files that
+failed, so that the next load compiles them again.  Returns T when the load
+succeeded; otherwise prints the error and returns NIL."
+  (unwind-protect
+       (handler-case
+           (let ((uiop:*compile-file-failure-behaviour* :warn))
+             (ql:quickload systems :silent t)
+             t)
+         (error (condition)
+           (format t "~&FAILED to load ~{~(~a~)~^, ~}:~%  ~a~%"
+                   (uiop:ensure-list systems) condition)
+           nil))
+    (mapc #'uiop:delete-file-if-exists *verify-failed-fasls*)
+    (setf *verify-failed-fasls* '())))
+
+;; A file of these systems that does not load (unbalanced parentheses, a
+;; top-level form that signals an error) must not end the run: the files are
+;; reported one by one below.
+(unless (verify-quickload '(:lem-fake-interface :lem-tests))
+  (incf *verify-count*))
 
 (defun verify-absolute-file (file)
   "FILE (relative to the repository, the current directory) as an absolute pathname."
@@ -40,12 +80,43 @@ configuration, and is reported."
     (asdf:parent-component (mapcan #'verify-component-files
                                    (copy-list (asdf:component-children component))))))
 
+(defun verify-defined-package-name (source)
+  "The name of the package that the first form of the file SOURCE defines,
+as a string, or NIL when that form is no DEFPACKAGE or UIOP:DEFINE-PACKAGE."
+  (let ((form (ignore-errors
+               (with-open-file (stream source)
+                 (uiop:with-safe-io-syntax (:package :cl-user)
+                   (read stream nil nil))))))
+    (and (consp form)
+         (symbolp (first form))
+         (member (symbol-name (first form)) '("DEFPACKAGE" "DEFINE-PACKAGE")
+                 :test #'string=)
+         (typep (second form) '(or string symbol))
+         (string (second form)))))
+
+(defun verify-inferred-system (system source)
+  "The name of the system SOURCE is in as a file of the package-inferred-system
+SYSTEM that is not one of its components, or NIL.  Such a file is a system
+SYSTEM/PATH (PATH relative to SYSTEM's directory, without the type) when its
+first form defines a package of that name; ASDF finds it only by that name."
+  (when (and (typep system 'asdf:package-inferred-system)
+             (uiop:subpathp source (asdf:component-pathname system)))
+    (let* ((relative (uiop:enough-pathname source (asdf:component-pathname system)))
+           (name (format nil "~a/~a" (asdf:component-name system)
+                         (namestring (make-pathname :type nil :defaults relative)))))
+      (and (string-equal name (verify-defined-package-name source))
+           (string-downcase name)))))
+
 (defun verify-file-system (file)
-  "The name of the ASDF system that has FILE as a component, or NIL.
-Looks at the .asd files of FILE's directory and of the directories above it,
-up to the repository."
+  "The name of the ASDF system that has FILE as a component or, in a
+package-inferred-system, that FILE defines (see `verify-inferred-system'), or
+NIL.  Looks at the .asd files of FILE's directory and of the directories above
+it, up to the repository.
+The second value is a list of (ASD . ERROR) for the .asd files that could not
+be loaded on the way: they are skipped, as the system may be in another one."
   (let ((source (uiop:truenamize (verify-absolute-file file)))
-        (repo (uiop:truenamize (uiop:getcwd))))
+        (repo (uiop:truenamize (uiop:getcwd)))
+        (failed '()))
     (loop :for directory := (uiop:pathname-directory-pathname source)
             :then (uiop:pathname-parent-directory-pathname directory)
           :while (uiop:subpathp directory repo)
@@ -55,57 +126,87 @@ up to the repository."
                                      (let ((system (asdf:registered-system name)))
                                        (and system (asdf:system-source-file system))))
                               :test #'equal)
-                  (asdf:load-asd asd))
+                  (handler-case (asdf:load-asd asd)
+                    (error (condition)
+                      (push (cons asd condition) failed))))
                 (dolist (name (asdf:registered-systems))
                   (let ((system (asdf:registered-system name)))
-                    (when (and system
-                               (equal (asdf:system-source-file system) asd)
-                               (member source (verify-component-files system)
-                                       :test #'uiop:pathname-equal))
-                      (return-from verify-file-system name))))))
-    nil))
+                    (when (and system (equal (asdf:system-source-file system) asd))
+                      (let ((found (if (member source (verify-component-files system)
+                                               :test #'uiop:pathname-equal)
+                                       name
+                                       (verify-inferred-system system source))))
+                        (when found
+                          (return-from verify-file-system (values found failed)))))))))
+    (values nil (nreverse failed))))
 
 (defun verify-load-file-system (file)
   "Load the system of FILE when it is not loaded yet (lem-tests does not load
 every system, e.g. the frontends), so that FILE's packages exist.
-Returns NIL, after printing why, when the system cannot be loaded here (a
-frontend whose foreign library is missing, say); T otherwise."
+Returns :NONE when FILE is in no system, NIL, after printing why, when the
+system cannot be found or loaded here (a frontend whose foreign library is
+missing, say), and T otherwise."
   (handler-case
-      (let ((system (verify-file-system file)))
-        (when (and system (not (asdf:component-loaded-p system)))
-          (format t "~&loading ~a for ~a~%" system file)
-          ;; The system's load compiles FILE too: a warning there must not
-          ;; fail the load, so that the compile below reports it.
-          (let ((uiop:*compile-file-failure-behaviour* :warn))
-            (ql:quickload system :silent t)))
-        t)
+      (multiple-value-bind (system failed-asds) (verify-file-system file)
+        (cond (system
+               (if (asdf:component-loaded-p system)
+                   t
+                   (progn
+                     (format t "~&loading ~a for ~a~%" system file)
+                     (verify-quickload system))))
+              (failed-asds
+               ;; FILE may be in one of these.
+               (format t "~&FAILED to find the system of ~a:~
+                          ~:{~%  could not load ~a:~%    ~a~}~%"
+                       file (mapcar (lambda (failure)
+                                      (list (enough-namestring (car failure) (uiop:getcwd))
+                                            (cdr failure)))
+                                    failed-asds))
+               nil)
+              (t :none)))
     (error (condition)
       (format t "~&FAILED to load the system of ~a:~%  ~a~%" file condition)
       nil)))
 
-(let ((count 0))
-  (dolist (file (verify-env-list "VERIFY_FILES"))
-    (if (not (verify-load-file-system file))
-        (incf count)
-        (handler-bind ((warning
-                         (lambda (condition)
-                           (unless (or (typep condition 'sb-kernel:redefinition-warning)
-                                       (verify-own-fasl-warning-p condition))
-                             (incf count)
-                             (format t "~&WARNING in ~a:~%  ~a~%" file condition))
-                           (muffle-warning condition))))
-          ;; An error (an IN-PACKAGE of a package that does not exist here)
-          ;; fails this file only, not the whole run.
-          (handler-case
-              (let ((fasl (compile-file file
-                                        :output-file (ensure-directories-exist
-                                                      (verify-fasl-path file)))))
-                (if fasl
-                    (load fasl)
-                    (progn (incf count)
-                           (format t "~&FAILED to compile ~a~%" file))))
-            (error (condition)
-              (incf count)
-              (format t "~&FAILED to compile ~a:~%  ~a~%" file condition))))))
-  (format t "~&~d warning~:p~%" count)
-  (uiop:quit (if (zerop count) 0 1)))
+(defun verify-compile-file (file load)
+  "Compile FILE into VERIFY_FASL_DIR and report its warnings and errors.
+Load the fasl when LOAD is true."
+  (let ((before *verify-count*))
+    (handler-bind ((warning
+                     (lambda (condition)
+                       (unless (or (typep condition 'sb-kernel:redefinition-warning)
+                                   (verify-own-fasl-warning-p condition))
+                         (incf *verify-count*)
+                         (format t "~&WARNING in ~a:~%  ~a~%" file condition))
+                       (muffle-warning condition))))
+      ;; An error (an IN-PACKAGE of a package that does not exist here)
+      ;; fails this file only, not the whole run.
+      (handler-case
+          (multiple-value-bind (fasl warnings-p failure-p)
+              (compile-file file :output-file (ensure-directories-exist
+                                               (verify-fasl-path file)))
+            (declare (ignore warnings-p))
+            (cond ((not fasl)
+                   (incf *verify-count*)
+                   (format t "~&FAILED to compile ~a~%" file))
+                  ;; The warnings are muffled above, so this is an error
+                  ;; the compiler caught ("caught ERROR" in its output).
+                  ((and failure-p (= before *verify-count*))
+                   (incf *verify-count*)
+                   (format t "~&FAILED to compile ~a: an error in a form, ~
+                              see \"caught ERROR\" above~%" file))
+                  (load (load fasl))))
+        (error (condition)
+          (incf *verify-count*)
+          (format t "~&FAILED to compile ~a:~%  ~a~%" file condition))))))
+
+(dolist (file (verify-env-list "VERIFY_FILES"))
+  (let ((loaded (verify-load-file-system file)))
+    (if (not loaded)
+        (incf *verify-count*)
+        ;; A file in no system (a script under scripts/, say) is compiled
+        ;; in what is loaded, and not loaded: its top-level forms may build
+        ;; and save an image, or load other systems.
+        (verify-compile-file file (not (eq loaded :none))))))
+(format t "~&~d warning~:p~%" *verify-count*)
+(uiop:quit (if (zerop *verify-count*) 0 1))

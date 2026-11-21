@@ -105,3 +105,21 @@ anything. Keep the list short enough to read before each commit.
   a wrapped line, and see that redisplay signals no error.
 - **Origin:** cxxxr/lem#46 ("The value 108 is not of type (INTEGER 0 101)" at
   each redisplay), cxxxr/lem#36.
+
+## The verify skill
+
+### Loading code in the verify scripts
+- **Trigger:** changes to how `.claude/skills/verify/lisp/*.lisp` load systems
+  or files (`ql:quickload`, `asdf:load-system`, `asdf:load-asd`,
+  `*compile-file-failure-behaviour*`, what is loaded after `compile-file`).
+- **Check:** with throwaway edits, see that each run ends in its own last line
+  (`N warnings` or `VERIFY: tests ...`) with exit status 1, not a backtrace:
+  unbalanced parentheses in a `src/` file, a top-level `(error ...)`, a form
+  the compiler catches as an error (`(let ((1 2)) nil)`) in a `src/` and in a
+  `tests/` file, and a broken `.asd` (`:defsystem-depends-on` a missing
+  system) in a directory between a file and its system's `.asd`. After
+  `verify compile` of such a file, `verify tests` must fail too (no fasl of
+  the failed file is left in the cache). Revert the edits afterwards.
+- **Origin:** the reviews of cxxxr/lem#62 (`verify compile` ended in a
+  backtrace on a load error, and left fasls of failed files that later runs
+  took as up to date).
