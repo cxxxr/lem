@@ -65,7 +65,7 @@ jobs:
             // job's name ("builds ...") is read below.
             let skip = false;
             if (context.eventName === 'schedule') {
-              // On an API error, build rather than fail: a failed run would build nothing.
+              // On an API error (passed is null), build rather than fail: a failed run would build nothing.
               let passed;
               try {
                 const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
@@ -99,12 +99,13 @@ jobs:
                   if (await built(run)) { passed = run; break; }
                 }
               } catch (error) {
-                core.warning(`Could not look up the runs of ${context.sha}: ${error.message}`);
+                core.warning(`Could not look up the runs of ${context.sha}, building: ${error.message}`);
+                passed = null;
               }
               if (passed) {
                 console.log(`${context.sha} already passed in run ${passed.html_url} (${passed.event}): skipping.`);
                 skip = true;
-              } else {
+              } else if (passed === undefined) {
                 console.log(`${context.sha} has no successful push, manual or scheduled build on every OS yet: building.`);
               }
             }

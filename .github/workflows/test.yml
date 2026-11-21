@@ -55,7 +55,7 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            // On an API error, test rather than fail: a failed run would test nothing.
+            // On an API error (passed is null), test rather than fail: a failed run would test nothing.
             let passed;
             try {
               const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
@@ -90,10 +90,11 @@ jobs:
                 if (await tested(run)) { passed = run; break; }
               }
             } catch (error) {
-              core.warning(`Could not look up the runs of ${context.sha}: ${error.message}`);
+              core.warning(`Could not look up the runs of ${context.sha}, testing: ${error.message}`);
+              passed = null;
             }
             if (passed) console.log(`${context.sha} already passed in run ${passed.html_url} (${passed.event}): skipping.`);
-            else console.log(`${context.sha} has no successful push, manual or scheduled test run yet: testing.`);
+            else if (passed === undefined) console.log(`${context.sha} has no successful push, manual or scheduled test run yet: testing.`);
             core.setOutput('skip', String(Boolean(passed)));
 
       - uses: actions/checkout@v7
