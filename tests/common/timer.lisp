@@ -121,3 +121,14 @@ can delay by much more than the timer's own interval.")
       (testing "it counts from the next idle time"
         (with-idle-timers ()
           (ok (= 10 (get-next-timer-timing-ms))))))))
+
+(deftest an-idle-timer-started-again-outside-of-idle-time-waits-for-it
+  (with-testing-timer-manager ()
+    (let ((timer (make-idle-timer (lambda ()) :name "started again")))
+      (with-idle-timers ()
+        (start-timer timer 10))
+      (stop-timer timer)
+      (setf *current-time* 100)
+      (start-timer timer 10)
+      (testing "its time of the earlier idle time is not counted from"
+        (ok (null (get-next-timer-timing-ms)))))))

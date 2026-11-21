@@ -96,7 +96,9 @@ function, cancels that function rather than reporting a failure: it is not
 given to the timer's handle-function nor wrapped in a timer-error, and the
 timer's function just returns, so that the code around the timer (other
 timers, a command waiting in sit-for) is not interrupted by it. The editor
-says so for an abort (C-g in a prompt the timer opened).")
+says so for an abort (C-g in a prompt the timer opened). A repeating timer
+goes on: one whose function prompts and should stop on C-g handles the
+abort itself.")
   (:method (condition)
     (declare (ignore condition))
     nil))
@@ -274,8 +276,10 @@ says so for an abort (C-g in a prompt the timer opened).")
 (defmethod start-timer ((timer idle-timer) ms &key repeat)
   (setf (timer-ms timer) ms)
   (setf (timer-repeat-p timer) repeat)
-  (when *idle-p*
-    (setf (timer-last-time timer)
+  ;; Not idle: no time to count from until the next with-idle-timers, also
+  ;; for a timer started again, whose last time is of an earlier idle time.
+  (setf (timer-last-time timer)
+        (when *idle-p*
           (get-microsecond-time *timer-manager*)))
   (push timer *idle-timer-list*)
   timer)

@@ -37,7 +37,7 @@
   (:default-initargs :message nil))
 
 (defmethod cancels-timer-function-p ((condition editor-abort))
-  "C-g in a prompt a timer opened cancels the timer's function quietly, as
-it cancels a command's prompt: no *EDITOR ERROR*, no incident, and the
-command or the timers around it go on."
+  "C-g in a prompt a timer opened cancels the timer's function quietly: no
+*EDITOR ERROR*, no incident, no message (also for an abort that has one),
+and the command or the timers around it go on."
   t)

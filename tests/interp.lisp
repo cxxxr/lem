@@ -142,6 +142,9 @@ condition that left the timer: TIMER-ERROR, EDITOR-ABORT or NIL."
           (ok (null escaped)))))))
 
 (deftest an-abort-in-a-prompt-of-an-idle-timer-leaves-the-other-timers-running
+  ;; The idle timer state, the editor's timer manager and the toplevel flag
+  ;; are internal: lem exports no way to make two idle timers due now in a
+  ;; test, outside of a running command loop.
   (lem-fake-interface:with-fake-interface ()
     (lem:with-current-buffers ()
       (let* ((ran '())
@@ -159,7 +162,7 @@ condition that left the timer: TIMER-ERROR, EDITOR-ABORT or NIL."
         ;; Both due now; update-idle-timers calls the timers in list order.
         (dolist (timer (list other prompting))
           (lem:start-timer timer 1)
-          (setf (lem/common/timer::timer-last-time timer) 0))
+          (setf (lem/common/timer::timer-last-time timer) 1))
         (lem:unread-key (lem:make-key :ctrl t :sym "g"))
         (ok (lem/common/timer:update-idle-timers))
         (ok (equal '(:other :prompting) ran))))))
