@@ -171,7 +171,8 @@ is left; callers that need a buffer must handle that."
 The first error is not caught: it is signalled where it happens, with its
 stack.  While it unwinds, FUNCTION is called on the rest of LIST, and their
 errors are logged (log:error), not signalled: a condition signalled then
-would replace the first error, or let a handler that exits skip the rest."
+would replace the first error, or let a handler that exits skip the rest.
+Only errors are contained so: other conditions FUNCTION signals pass through."
   (loop :for (element . rest) :on list
         :do (let ((done nil))
               (unwind-protect
@@ -182,7 +183,10 @@ would replace the first error, or let a handler that exits skip the rest."
                   (dolist (other rest)
                     (handler-case (funcall function other)
                       (error (condition)
-                        (log:error "~A also failed: ~A" other condition)))))))))
+                        ;; Reporting CONDITION may fail too (its report reads
+                        ;; what was torn down).
+                        (ignore-errors
+                         (log:error "~A also failed: ~A" other condition))))))))))
 
 (defun teardown-frames ()
   "Tear down every frame: the ones made (all-frames), such as the hidden tabs of

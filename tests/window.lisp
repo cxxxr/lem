@@ -552,7 +552,7 @@
       (ok (= 1 (count-if (lambda (c) (typep c 'error)) conditions)))
       (ok (notany (lambda (c) (typep c 'warning)) conditions)))))
 
-(deftest map-protected/a-warning-handler-that-exits-skips-nothing
+(deftest map-protected/nested-failures-signal-nothing-that-skips-the-rest
   ;; map-protected is internal: a helper of teardown-frames and teardown-windows.
   (let ((called '()))
     (block exit
@@ -566,7 +566,9 @@
                (case n
                  (0 (error "0"))
                  ;; As teardown-windows inside teardown-frames: a nested
-                 ;; map-protected whose two calls fail warns about the second.
+                 ;; map-protected whose two calls fail.  Nothing is signalled
+                 ;; for the second, so the handler of warnings above, which
+                 ;; exits, does not run.
                  (1 (lem-core::map-protected (lambda (x) (error "~A" x)) '(a b)))))
              '(0 1 2))
           (error () nil))))
