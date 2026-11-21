@@ -1,0 +1,126 @@
+#!/bin/sh
+# The fixed steps of shipping a branch: open its PR, wait for CI, merge the
+# commit that was verified.  The judgement (verify, review, fixes) is in
+# SKILL.md next to this script.
+#
+#   ship preflight              check the branch can be shipped; fetch the base
+#   ship pr BODY-FILE [TITLE]   push the branch and open its PR (or find the open one);
+#                               prints the PR number (TITLE: the first commit's subject)
+#   ship head PR                the commit SHA at the head of the PR
+#   ship comment PR FILE        add FILE as a comment on the PR
+#   ship wait PR                wait for CI: 0 passed, 1 a check failed, 3 timed out
+#   ship merge PR SHA           merge the PR if its head is still SHA, then fetch the base
+#
+# Exit status: 0 done, 1 failed, 2 usage error, 3 CI timed out.
+#
+# Environment:
+#   SHIP_REPO        repository of the PR (default: cxxxr/lem)
+#   SHIP_REMOTE      git remote of that repository (default: cxxxr)
+#   SHIP_BASE        base branch (default: staging)
+#   SHIP_CI_TIMEOUT  seconds to wait for CI (default: 2400)
+#   SHIP_CI_SLOW     checks allowed to be still pending at the timeout, as an
+#                    extended regexp on their names (default: macos; those runners
+#                    are often queued for a long time)
+set -eu
+
+repo=${SHIP_REPO:-cxxxr/lem}
+remote=${SHIP_REMOTE:-cxxxr}
+base=${SHIP_BASE:-staging}
+top=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+cd "$top"
+
+usage() {
+    sed -n '2,/^[^#]/{/^#/p}' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+}
+
+current_branch() {
+    git symbolic-ref -q --short HEAD || { echo "not on a branch" >&2; exit 1; }
+}
+
+case "${1:-}" in
+    preflight)
+        branch=$(current_branch)
+        case "$branch" in
+            "$base"|main|master)
+                echo "on $branch: make a branch for the change first" >&2; exit 1 ;;
+        esac
+        if ! git diff --quiet HEAD; then
+            echo "uncommitted changes to tracked files: commit them first" >&2
+            git status --short --untracked-files=no >&2
+            exit 1
+        fi
+        git fetch -q "$remote" "$base"
+        ahead=$(git rev-list --count "$remote/$base..HEAD")
+        behind=$(git rev-list --count "HEAD..$remote/$base")
+        if [ "$ahead" -eq 0 ]; then echo "nothing to ship: no commits over $remote/$base" >&2; exit 1; fi
+        echo "branch $branch: $ahead commit(s) over $remote/$base, $behind behind it"
+        git log --oneline "$remote/$base..HEAD"
+        if [ "$behind" -gt 0 ] && ! git merge-tree --write-tree "$remote/$base" HEAD >/dev/null 2>&1; then
+            echo "conflicts with $remote/$base: merge or rebase first" >&2; exit 1
+        fi
+        ;;
+    pr)
+        body=${2:?usage: ship pr BODY-FILE [TITLE]}
+        branch=$(current_branch)
+        git push -q -u "$remote" "$branch"
+        number=$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '.[0].number // empty')
+        if [ -z "$number" ]; then
+            title=${3:-$(git log --reverse --format=%s "$remote/$base..HEAD" | head -1)}
+            url=$(gh pr create --repo "$repo" --base "$base" --head "$branch" \
+                --title "$title" --body-file "$body")
+            number=${url##*/}
+        fi
+        echo "$number"
+        echo "https://github.com/$repo/pull/$number" >&2
+        ;;
+    head)
+        # gh prints hints on stderr; an error still fails the command.
+        gh pr view "${2:?usage: ship head PR}" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null
+        ;;
+    comment)
+        gh pr comment "${2:?usage: ship comment PR FILE}" --repo "$repo" \
+            --body-file "${3:?usage: ship comment PR FILE}" >/dev/null
+        ;;
+    wait)
+        number=${2:?usage: ship wait PR}
+        timeout=${SHIP_CI_TIMEOUT:-2400}
+        slow=${SHIP_CI_SLOW:-macos}
+        waited=0
+        pending=
+        while :; do
+            checks=$(gh pr checks "$number" --repo "$repo" --json name,bucket \
+                --jq '.[] | "\(.bucket)\t\(.name)"' 2>/dev/null || true)
+            if [ -n "$checks" ]; then
+                if echo "$checks" | grep -q '^fail'; then
+                    echo "$checks" | grep '^fail' >&2; exit 1
+                fi
+                pending=$(echo "$checks" | grep '^pending' || true)
+                if [ -z "$pending" ]; then echo "CI passed"; exit 0; fi
+            fi
+            if [ "$waited" -ge "$timeout" ]; then
+                if [ -n "$checks" ] && ! echo "$pending" | cut -f2 | grep -qvE "$slow"; then
+                    echo "CI passed except checks still pending:" >&2
+                    echo "$pending" | cut -f2 | sed 's/^/  /' >&2
+                    exit 0
+                fi
+                echo "CI timed out after ${timeout}s; pending:" >&2
+                echo "${pending:-  (no checks reported)}" | cut -f2 >&2
+                exit 3
+            fi
+            sleep 30
+            waited=$((waited + 30))
+        done
+        ;;
+    merge)
+        number=${2:?usage: ship merge PR SHA}
+        sha=${3:?usage: ship merge PR SHA}
+        gh pr merge "$number" --repo "$repo" --merge --match-head-commit "$sha"
+        git fetch -q "$remote" "$base"
+        gh pr view "$number" --repo "$repo" --json state,mergeCommit \
+            --jq '"\(.state) \(.mergeCommit.oid)"' 2>/dev/null
+        ;;
+    *)
+        usage
+        ;;
+esac

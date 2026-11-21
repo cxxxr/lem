@@ -85,6 +85,8 @@ This project uses code-contractor for automated PR review. code-contractor is a 
 - Do not make a flaky test pass with sleeps, retries or skips; find out why it
   depends on timing or on other tests.
 - Reviews follow `REVIEW.md`.
+- To open a PR and merge it once it passes verify, the review and CI, use the
+  `ship` skill (`.claude/skills/ship/`).
 
 ## Configuration
 
