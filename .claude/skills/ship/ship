@@ -120,6 +120,16 @@ case "${1:-}" in
                 checks=$(gh api "repos/$repo/commits/$sha/check-runs?per_page=100" \
                     --jq '.check_runs[] | "\(.status)/\(.conclusion)\t\(.name)"' 2>/dev/null) || {
                     echo "cannot read the checks of $sha" >&2; exit 1; }
+                # Commit statuses (the older API some integrations use), in the
+                # same form: success passes, failure and error fail, pending runs.
+                statuses=$(gh api "repos/$repo/commits/$sha/status" \
+                    --jq '.statuses[] | (if .state == "success" then "completed/success"
+                                         elif .state == "pending" then "in_progress/null"
+                                         else "completed/failure" end) + "\t" + .context' 2>/dev/null) || {
+                    echo "cannot read the statuses of $sha" >&2; exit 1; }
+                if [ -n "$statuses" ]; then
+                    checks=$(printf '%s\n%s' "$checks" "$statuses" | sed '/^$/d')
+                fi
             fi
             if [ -n "$checks" ]; then
                 failed=$(echo "$checks" | grep -E '^completed/(failure|cancelled|timed_out|action_required|startup_failure|stale)' || true)
