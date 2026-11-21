@@ -78,12 +78,14 @@ $V stop
 - frame-multiplexer is on: the first line is the tab bar (`C-z c` new tab,
   `C-z n` / `C-z p` switch). While a prompt or popup is open, the current tab's
   label shows its buffer (`*prompt*`, `*popup menu*`).
-- `C-g` closes a prompt. For a popup list, send `Escape` then `C-g`.
+- `C-g` closes a prompt or a popup list. In a list such as `C-x C-b`
+  (list-buffers), typed letters filter the list; `q` does not close it.
 - Do what the change is for and the cases around it (another tab, a split
   window `C-x 2`, the filer side window `M-x filer`, an empty buffer, the prompt
   open), and read the screen each time.
-- Known gap: popup lists such as `C-x C-b` (list-buffers) do not appear in
-  `$V screen`. Check those through tests, and say they were not seen.
+- Read the whole screen, or `grep` it for the text you expect. Popups are not
+  all at the top: `C-x C-b` (list-buffers) is centered, around lines 15-19 of
+  the default 30, so `$V screen | head` misses it.
 
 Other frontends, when the change is theirs:
 
