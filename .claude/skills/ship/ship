@@ -34,7 +34,7 @@
 #   ship merge PR SHA           merge the PR if its head is still SHA, then fetch the base
 #
 # Exit status: 0 done, 1 failed, 2 usage error (wait: also a SHA not in this
-# clone nor at the PR's head); wait also 3, 4 and 5 (above).
+# clone nor at the PR's head, or no jq); wait also 3, 4 and 5 (above).
 #
 # Environment:
 #   SHIP_REPO        repository of the PR (default: cxxxr/lem)
@@ -387,6 +387,9 @@ case "${1:-}" in
             fi
             errors=0
             if [ "$head" = "$sha" ]; then
+                # A head read before (a stale read, or one undone) is looked
+                # at again when it comes back.
+                moved=
                 replaced=
             elif [ "$head" != "$moved" ]; then
                 replaced=
@@ -456,6 +459,10 @@ case "${1:-}" in
                 fi
             fi
             if [ "$waited" -ge "$timeout" ]; then
+                # A head that moved, seen once: decided at the next poll.
+                if [ -n "$replaced" ] && [ "$waited" -lt $((timeout + 120)) ]; then
+                    sleep 30; waited=$((waited + 30)); continue
+                fi
                 # The same two-poll rule holds at the timeout: a list of checks
                 # seen once may still lack the jobs created late.
                 if [ -n "$checks" ] && [ "$waited" -lt $((timeout + 120)) ] &&
@@ -495,11 +502,22 @@ case "${1:-}" in
         esac
         # GitHub re-runs only a completed run: wait for the jobs still running
         # (wait exits at the first failed check).
+        # Not read at the first try: a wrong ID (a job's, not the run's) or
+        # GitHub, at once; later, 3 polls in a row, as for wait.
         waited=0
+        errors=0
         while :; do
-            # A wrong ID (a job's, not the run's) or GitHub not read: at once.
-            state=$(gh api "repos/$repo/actions/runs/$run" --jq .status) || {
-                echo "cannot read workflow run $run of $repo" >&2; exit 4; }
+            if ! state=$(gh api "repos/$repo/actions/runs/$run" --jq .status); then
+                errors=$((errors + 1))
+                if [ "$waited" -eq 0 ] || [ "$errors" -ge 3 ]; then
+                    echo "cannot read workflow run $run of $repo" >&2
+                    exit 4
+                fi
+                sleep 30
+                waited=$((waited + 30))
+                continue
+            fi
+            errors=0
             [ "$state" != completed ] || break
             if [ "$waited" -ge "${SHIP_CI_TIMEOUT:-2400}" ]; then
                 echo "run $run still not completed after ${waited}s" >&2
@@ -513,14 +531,14 @@ case "${1:-}" in
         gh run rerun "$run" --failed --repo "$repo"
         # Until the new attempt shows, with its own start time (ship wait drops
         # the check runs that completed before it), the run and its check runs
-        # are still the failed ones.
+        # are still the failed ones.  The attempt may have completed already
+        # (a job that fails at once): wait reads it.
         tries=0
         while [ "$tries" -lt 24 ]; do
             now=$(gh api "repos/$repo/actions/runs/$run" \
                       --jq '"\(.run_attempt) \(.run_started_at) \(.status)"' 2>/dev/null || true)
             if [ -n "$now" ] && [ "${now%% *}" -gt "${before%% *}" ] &&
-                   [ "$(echo "$now" | cut -d' ' -f2)" != "${before#* }" ] &&
-                   [ "${now##* }" != completed ]; then
+                   [ "$(echo "$now" | cut -d' ' -f2)" != "${before#* }" ]; then
                 echo "run $run: attempt ${now%% *}, ${now##* }"
                 exit 0
             fi

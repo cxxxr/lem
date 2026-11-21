@@ -122,7 +122,7 @@ macOS job (`build-terminal-shared-object.yml`, for changes to
 |------|---------|------|
 | 0 | passed; or only slow (macOS) checks still pending at the timeout, and every run not completed waits for one of them (it names them); or no CI applies: every `pull_request` workflow in `.github/workflows` skips all the changed files by its `paths` or `paths-ignore` (e.g. only `.claude/`, `docs/`, `*.md`) | step 6; note the pending checks for step 8 |
 | 1 | a check, status or workflow run failed or was cancelled; each is printed with its URL, whose number after `/runs/` is the run ID (a commit status of another app links to that app instead) | read the log of the failed job (`gh run view --job <job-id> --repo cxxxr/lem --log`, the number after `/job/`; `gh run view <run-id> --repo cxxxr/lem --log-failed` once the whole run completed). Caused by the change: fix it as an Important finding (step 4) and wait again on the new SHA. A failure of the infrastructure (a runner lost, the network, a download): re-run it once (below); a second failure is for the user. A test that fails though the change does not touch it is a flaky test, not something to re-run: add it to Todoist (step 4) and tell the user |
-| 2 | `<SHA>` is neither in this clone nor at the PR's head | give the SHA of `git rev-parse HEAD` after the push |
+| 2 | `<SHA>` is neither in this clone nor at the PR's head; or `jq` is not installed (it says `ship wait needs jq`) | give the SHA of `git rev-parse HEAD` after the push; for jq, tell the user |
 | 3 | timed out on other checks, or `<SHA>` never became the PR's head | stop and tell the user |
 | 4 | GitHub could not be read three polls in a row (network, `gh auth`, a wrong PR number), or the fetch of the PR's head failed when `<SHA>` is not in this clone; it prints the error | not a CI failure: fix the cause if it is yours (the PR number), else stop and tell the user |
 | 5 | the PR's head moved past `<SHA>`, or a later commit replaced it (a rebase pushed over it) | first check that `<SHA>` is `git rev-parse HEAD` (an older SHA of your own, from before an amend, also gives 5); else someone pushed to the branch: stop and tell the user |
@@ -141,8 +141,9 @@ exit 1 at once. Its exit status: 0 started; 1 gh refused the re-run (it prints
 why) or no new attempt showed in 2 minutes: look at the run on GitHub, and if
 it did start, go on with `$S wait`, else tell the user; 2 not a workflow run
 (a commit status of another app); 3 the run did not complete within
-`SHIP_CI_TIMEOUT`: as `$S wait` exit 3; 4 the run could not be read (a job ID
-given instead of the run ID, or GitHub): as `$S wait` exit 4.
+`SHIP_CI_TIMEOUT`: as `$S wait` exit 3; 4 the run could not be read (at the
+first read: a job ID given instead of the run ID, or GitHub; later, three
+polls in a row): as `$S wait` exit 4.
 
 ## 6. Record the evidence
 

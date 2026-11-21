@@ -7,7 +7,7 @@ on:
   # is tested by the daily scheduled run below, not at each merge.
   push:
     branches: [main]
-    # Keep in sync with SHIP_CI_IGNORED in .claude/skills/ship/ship.
+    # The same list as for pull_request below.
     paths-ignore:
       - '.claude/**'
       - '**.md'
@@ -17,7 +17,8 @@ on:
     # PRs such as sdl3/foo) are tested too; "*" does not match "/".
     branches: ["**"]
     # Changes only to the Claude Code skills or to documents need no test run.
-    # Keep in sync with SHIP_CI_IGNORED in .claude/skills/ship/ship.
+    # ship wait (.claude/skills/ship/ship) reads this list to pass a PR that
+    # no workflow runs for: keep it a list of globs without "!".
     paths-ignore:
       - '.claude/**'
       - '**.md'
