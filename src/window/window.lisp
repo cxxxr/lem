@@ -823,15 +823,22 @@ You can pass in the optional argument WINDOW-LIST to replace the default
 ;;; buffers
 (defun get-buffer-windows (buffer &key (frame (current-frame))
                                        (include-floating-windows nil))
-  (loop :for window :in (append (window-list frame)
-                                (when include-floating-windows
-                                  (frame-floating-windows frame))
-                                (when include-floating-windows
-                                  (uiop:ensure-list (frame-leftside-window frame)))
-                                (when include-floating-windows
-                                  (uiop:ensure-list (frame-rightside-window frame))))
+  "Return the windows of FRAME that show BUFFER, each once.
+With INCLUDE-FLOATING-WINDOWS, the floating windows and the side windows
+(left, right and bottom) are included too."
+  ;; A side window is a floating window, so it is usually in
+  ;; frame-floating-windows as well: remove-duplicates keeps it once.
+  (loop :for window :in (remove-duplicates
+                         (append (window-list frame)
+                                 (when include-floating-windows
+                                   (append (frame-floating-windows frame)
+                                           (remove nil
+                                                   (list (frame-leftside-window frame)
+                                                         (frame-rightside-window frame)
+                                                         (frame-bottomside-window frame))))))
+                         :from-end t)
         :when (eq buffer (window-buffer window))
-        :collect window))
+          :collect window))
 
 (defun other-buffer ()
   (let ((buffer-list (frame-buffer-list)))
