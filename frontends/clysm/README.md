@@ -200,6 +200,19 @@ session starts in; `M-x claude-restart` starts the session again with
 the options as they are, and its last conversation.
 `make test-clysm` talks with `tests/fake-claude.mjs`.
 
+**Terminal** (`src/terminal.lisp`, `lem-clysm-terminal.asd`, in the
+desktop application). `M-x terminal` is Lem's terminal
+(`extensions/terminal/`): its commands, keys and copy mode
+(`extensions/terminal/terminal-mode.lisp`) are loaded as they are, and what
+it does with libvterm and CFFI there is done in the page by node-pty (the
+pseudo-terminal, a native module of Node-API, which `build.sh` installs with
+Electron and builds where it has no prebuilt one) and `@xterm/headless`
+(xterm.js's terminal without a display), both driven from Lisp with the
+`js:` package (the key sequences, colours and rows of the screen are made
+in Lisp). The shell is `$SHELL` in the
+directory of the buffer; the buffer follows the shell's directory on Linux
+only (`/proc`).
+
 **From outside** (`src/remote.lisp`, `tools/lem-remote`, in the desktop
 application). `M-x remote-start` makes the application answer HTTP on
 127.0.0.1, so that a program of the computer, an agent such as Claude Code
@@ -289,7 +302,7 @@ Integration gets a page that says so.
 
 | Path | Contents |
 |---|---|
-| `lem-clysm.asd`, `lem-clysm-lisp.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `image` (images, text of other sizes), `markdown` (Markdown as it reads), `claude` (Claude Code), `remote` (seen from outside), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
+| `lem-clysm.asd`, `lem-clysm-lisp.asd`, `lem-clysm-terminal.asd`, `src/` | the frontend: `single-thread`, `files` (file times), `display`, `input`, `frontend` (the `lem-if` protocol), `browser` (files of the computer), `image` (images, text of other sizes), `markdown` (Markdown as it reads), `claude` (Claude Code), `terminal` (M-x terminal), `remote` (seen from outside), `micros` (the server of the Lisp mode), `extensions` (loaded when first used) |
 | `setup.lisp` | finds the stubs, Clysm's worlds and usocket for a page, and `lem-clysm`, for ASDF |
 | `stubs/` | the libraries that Lem on Clysm does without: tree-sitter, subprocesses, an HTTP client, log4cl, deploy |
 | `clysm/` | Clysm (submodule) |

@@ -20,6 +20,10 @@
   "scripts": {
     "start": "electron ."
   },
+  "dependencies": {
+    "@xterm/headless": "6.0.0",
+    "node-pty": "1.1.0"
+  },
   "devDependencies": {
     "electron": "45.3.1"
   }

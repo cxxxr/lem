@@ -73,7 +73,19 @@ CLYSM_SAVE_IMAGE=1 node host/run.mjs "$out/lem.wasm" "$out/save-image.lisp" > "$
 # its modules linked into one (host/link.mjs)
 node "$out/link-image.mjs" "$out/lem.image"
 if [ -n "$LEM_NO_ELECTRON" ]; then echo "built $out (without Electron)"; exit 0; fi
-[ -d "$out/node_modules/electron" ] || (cd "$out" && npm install --no-audit --no-fund)
+# Electron, and node-pty and @xterm/headless for M-x terminal (src/terminal.lisp)
+[ -d "$out/node_modules/electron" ] && [ -d "$out/node_modules/@xterm/headless" ] &&
+  [ -d "$out/node_modules/node-pty" ] || (cd "$out" && npm install --no-audit --no-fund --ignore-scripts)
+# (without the packages' install scripts, so that node-pty failing to build
+# does not fail the whole build: Electron's is run below, node-pty's here)
+# node-pty is a native module (Node-API, so the same for Electron): its
+# install script takes a prebuilt one, or builds it (Linux has none, and
+# needs python3, make and a C++ compiler)
+(cd "$out" && node -e "require('node-pty')" 2>/dev/null) ||
+  (cd "$out/node_modules/node-pty" &&
+     { node scripts/prebuild.js || npx --yes node-gyp rebuild; } &&
+     node scripts/post-install.js) ||
+  echo "(node-pty could not be built: M-x terminal will not work)"
 # (npm may have left the download of Electron itself to its first start)
 [ -d "$out/node_modules/electron/dist" ] || (cd "$out" && node node_modules/electron/install.js)
 # compilation hints: the functions that run when Lem starts are compiled

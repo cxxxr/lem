@@ -41,7 +41,9 @@
     '(("lem-clysm-lisp" "LEM-LISP-MODE" "START-LISP-REPL" nil)
       ("lem-clysm-lisp" "LEM-LISP-MODE" "LISP-EVAL-STRING" "M-:")
       ("lem-clysm-lisp" "LEM-CLYSM" "WORLD-START" nil)
-      ("lem-clysm-lisp" "LEM-CLYSM" "WORLD-KILL" nil))
+      ("lem-clysm-lisp" "LEM-CLYSM" "WORLD-KILL" nil)
+      ;; Lem's terminal, with node-pty and xterm.js (lem-clysm-terminal.asd)
+      ("lem-clysm-terminal" "LEM-TERMINAL/TERMINAL-MODE" "TERMINAL" nil))
     "Commands of the extensions, besides their modes, that load them."))
 
 (defparameter *theme-system* "lem-base16-themes"
@@ -49,7 +51,10 @@
 
 (defun extension-systems ()
   "The names of the systems of all the extensions (build-web.sh packs their fasls)."
-  (cons *theme-system* (mapcar #'first *extensions*)))
+  (cons *theme-system*
+        (remove-duplicates (append (mapcar #'first *extensions*)
+                                   (mapcar #'first *extension-commands*))
+                           :test #'string= :from-end t)))
 
 (sys::%defvar-host *show-before-loading*
   (js:eval "() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)))"))
