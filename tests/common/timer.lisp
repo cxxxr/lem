@@ -170,14 +170,35 @@ can delay by much more than the timer's own interval.")
 
 (deftest a-repeating-idle-timer-that-fired-comes-back-after-a-failure
   (with-testing-timer-manager ()
-    (let* ((repeating (due-idle-timer (lambda ()) :repeat t :name "repeating")))
-      ;; Started last: called after the repeating one.
-      (due-idle-timer (lambda () (error "An idle timer failed")) :name "failing")
+    ;; Started first, so called after the repeating one, started last.
+    (due-idle-timer (lambda () (error "An idle timer failed")) :name "failing")
+    (let* ((fired nil)
+           (repeating (due-idle-timer (lambda () (setf fired t))
+                                      :repeat t :name "repeating")))
       (ignore-errors
        (with-idle-timers ()
          (setf *current-time* 100)
          (update-idle-timers)))
+      (ok fired)
       (ok (member repeating lem/common/timer::*idle-timer-list*)))))
+
+(deftest a-repeating-idle-timer-stopped-by-its-handle-function-stays-stopped
+  (with-testing-timer-manager ()
+    (let ((timer nil))
+      (setf timer (make-idle-timer (lambda () (error "An idle timer failed"))
+                                   :name "stopping on failure"
+                                   :handle-function (lambda (condition)
+                                                      (declare (ignore condition))
+                                                      (stop-timer timer))))
+      (start-timer timer 10 :repeat t)
+      (dotimes (i 2)
+        (ignore-errors
+         (with-idle-timers ()
+           (setf *current-time* (* 100 (1+ i)))
+           (update-idle-timers))))
+      (ok (not (member timer lem/common/timer::*idle-timer-list*)))
+      (ok (not (member timer lem/common/timer::*processed-idle-timer-list*)))
+      (ok (timer-expired-p timer)))))
 
 (deftest an-idle-timer-stopped-or-postponed-by-one-called-before-is-not-called
   (with-testing-timer-manager ()

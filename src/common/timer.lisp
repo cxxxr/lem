@@ -289,7 +289,11 @@ abort itself.")
 
 (defun stop-idle-timer (timer)
   (expire-timer timer)
-  (setf *idle-timer-list* (delete timer *idle-timer-list*)))
+  ;; Also out of the processed timers: a repeating timer stopped while it
+  ;; runs (by its handle-function) must not be put back when the idle time
+  ;; ends.
+  (setf *idle-timer-list* (delete timer *idle-timer-list*)
+        *processed-idle-timer-list* (delete timer *processed-idle-timer-list*)))
 
 (defun start-idle-timers ()
   (flet ((update-last-time-in-idle-timers ()
@@ -302,7 +306,9 @@ abort itself.")
     (inspire-idle-timers)))
 
 (defun stop-idle-timers ()
-  (setf *idle-timer-list* (nconc *processed-idle-timer-list* *idle-timer-list*))
+  ;; The timers that fired go after the others: one that fails every time
+  ;; is then not called first in every idle time, ahead of the others.
+  (setf *idle-timer-list* (nconc *idle-timer-list* *processed-idle-timer-list*))
   (setf *processed-idle-timer-list* '()))
 
 (defun call-with-idle-timers (function)
@@ -325,8 +331,9 @@ timer ran in before that loop enters with-idle-timers again."
 
 (defun idle-timer-due-p (timer tick-time)
   "Return true if the idle TIMER is to be called at TICK-TIME."
+  ;; <=, as get-next-timer-timing-ms waits until next time - now <= 0.
   (and (timer-started-p timer)
-       (< (timer-next-time timer) tick-time)))
+       (<= (timer-next-time timer) tick-time)))
 
 (defun take-due-timer (timer tick-time)
   "Take the due idle TIMER out of the idle timers just before it is called:
