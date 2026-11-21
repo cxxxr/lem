@@ -595,8 +595,15 @@ tests/frame-multiplexer.lisp does)."
       (lem/frame-multiplexer::enable-frame-multiplexer)
       ;; lay the windows out below the tab bar, as the next redisplay would
       (lem:redraw-display)
-      (unwind-protect (funcall function)
-        (lem/frame-multiplexer::disable-frame-multiplexer)))))
+      (let ((first (lem:current-frame)))
+        (unwind-protect (funcall function)
+          ;; Turning the tabs off keeps the tab shown: the first one, which
+          ;; has the window of CALL-WITH-WHEEL-TERMINAL, also when FUNCTION
+          ;; failed in another tab.
+          (when (and (lem/frame-multiplexer::enabled-frame-multiplexer-p)
+                     (not (eq first (lem:current-frame))))
+            (ignore-errors (lem/frame-multiplexer:frame-multiplexer-switch 0)))
+          (lem/frame-multiplexer::disable-frame-multiplexer))))))
 
 (deftest wheel-in-another-tab-leaves-this-tab-in-the-history
   (call-with-wheel-terminal
@@ -685,3 +692,26 @@ tab's WINDOW, while a second tab, the current one, reads its history."
      ;; turning the tabs off keeps the first tab, the one shown
      (lem:call-command 'lem/frame-multiplexer:toggle-frame-multiplexer nil)
      (ok (not (copy-mode-p buffer)) "the terminal runs on"))))
+
+(deftest the-tab-that-was-the-only-reader-going-away-lets-the-terminal-run-on
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     (ok (wait-for-output buffer))
+     (call-with-frame-multiplexer
+      (lambda ()
+        (lem-terminal/terminal-mode::resize-terminal (buffer-terminal buffer) window)
+        (ok (wait-for-output buffer))
+        ;; only the second tab shows the terminal
+        (lem:switch-to-buffer (lem:make-buffer "*not the terminal*" :temporary t))
+        (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+        (lem:switch-to-buffer buffer)
+        (let ((reader (lem:current-window)))
+          (lem-terminal/terminal-mode::show-screen-top
+           reader (- (lem:buffer-nlines buffer)
+                     (lem-terminal/terminal::terminal-rows (buffer-terminal buffer))))
+          (wheel reader 1))
+        (ok (copy-mode-p buffer) "the second tab reads the history")
+        (lem:call-command 'lem/frame-multiplexer:frame-multiplexer-delete nil)
+        (ok (null (lem:get-buffer-windows buffer)) "no window shows the terminal")
+        (ok (not (copy-mode-p buffer)) "the terminal runs on"))))))

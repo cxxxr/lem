@@ -455,19 +455,21 @@ windows of different sizes."
           'on-window-size-change)
 
 (defun release-read-terminals ()
-  "Let each terminal the wheel froze run on again once it is shown and every
-window showing it is on its screen.  The window that read the history may
-have gone with its tab (frame-multiplexer-delete, or frame-multiplexer
-turned off), and no wheel in the others would let it run on: a window on the
-screen does not scroll down.  Cheap per command: only frozen terminals look
-at their windows."
+  "Let each terminal the wheel froze run on again once no window showing it
+reads its history: every window is on its screen, or none shows it.  The
+window that read the history may have gone with its tab
+(frame-multiplexer-delete, or frame-multiplexer turned off), and no wheel in
+the others would let it run on: a window on the screen does not scroll down.
+A terminal no window shows is not being read either, and a window showing it
+again would start at the oldest line of the history.  Cheap per command:
+only frozen terminals look at their windows."
   (dolist (buffer (buffer-list))
     (alexandria:when-let* ((terminal (buffer-terminal buffer))
                            (lines (and (typep (ensure-mode-object (buffer-major-mode buffer))
                                               'terminal-mode)
-                                       (terminal:frozen-scrollback-lines terminal)))
-                           (windows (terminal:buffer-windows buffer)))
-      (when (every (lambda (window) (> (view-line window) lines)) windows)
+                                       (terminal:frozen-scrollback-lines terminal))))
+      (when (every (lambda (window) (> (view-line window) lines))
+                   (terminal:buffer-windows buffer))
         (stop-scrolling terminal)))))
 
 (add-hook *post-command-hook*
