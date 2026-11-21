@@ -88,10 +88,17 @@ case "${1:-}" in
         if [ -z "$files" ]; then
             base=$(base_branch)
             echo "changed from $base (fetch it if it is behind):" >&2
-            files=$(changed_lisp_files "$base")
+            changed=$(changed_lisp_files "$base")
+            # Not scripts/: they are in no system, so they would be compiled
+            # without what they load first (lem-sdl2, say).  Named, as in
+            # `verify compile scripts/x.lisp`, one is compiled, not loaded.
+            files=$(echo "$changed" | grep -v '^scripts/' || true)
+            scripts=$(echo "$changed" | grep '^scripts/' || true)
             [ -z "$files" ] || echo "$files" | sed 's/^/  /' >&2
+            [ -z "$scripts" ] || { echo "not checked (name them to compile them):" >&2
+                                   echo "$scripts" | sed 's/^/  /' >&2; }
         fi
-        if [ -z "$files" ]; then echo "no changed .lisp files"; exit 0; fi
+        if [ -z "$files" ]; then echo "no changed .lisp files to compile"; exit 0; fi
         VERIFY_FILES="$files" VERIFY_FASL_DIR="$dir/fasl/" lisp compile-check.lisp
         ;;
     build)

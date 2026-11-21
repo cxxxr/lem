@@ -37,10 +37,17 @@ $V compile src/x.lisp
 
 It loads Lem and `lem-tests`, then for each file the system it belongs to
 (found from the `.asd` files above it, e.g. `lem-ncurses` for
-`frontends/ncurses/`), compiles the files again and prints their warnings (not
-redefinitions). Expect `0 warnings`; fix any undefined function or variable.
+`frontends/ncurses/`; for a file of the directory of a package-inferred
+system such as `lem-ollama`, or below it, that is not one of its components
+and has a package definition, the system ASDF finds by its path:
+`lem-ollama/sub/foo` for `sub/foo.lisp`), compiles the files again
+and prints their warnings (not redefinitions) and the files that failed to
+compile or load. Expect `0 warnings`; fix any undefined function or variable.
 A file in no system is compiled in what is loaded, so its own packages may be
-missing.
+missing, and is not loaded. `scripts/` is left out of the changed files, as
+its files load their frontend before they run: a changed script is listed as
+not checked, and is compiled only when you name it (`verify build` does not
+run it).
 
 ## 3. Run the tests
 
