@@ -155,8 +155,9 @@ and returning to the same terminal would do nothing."
 
 (defun restart-failed-p (buffer)
   "True when BUFFER's terminal was destroyed by a `terminal-restart' that then
-could not start a new one."
-  (buffer-value buffer 'restart-failed))
+could not start a new one, and BUFFER is still a terminal buffer."
+  (and (buffer-value buffer 'restart-failed)
+       (member (buffer-major-mode buffer) '(terminal-mode terminal-copy-mode))))
 
 (define-command terminal-restart () ()
   "Start the terminal's command again in the current terminal buffer, after
@@ -194,7 +195,9 @@ process has already exited, or did not start (a failed `terminal-restart'),
 so there is nothing to send input to."
   (let ((terminal (get-current-terminal)))
     (unless terminal
-      (editor-error "Terminal did not start (M-x terminal-restart to try again)"))
+      (if (restart-failed-p (current-buffer))
+          (editor-error "Terminal did not start (M-x terminal-restart to try again)")
+          (editor-error "Not a terminal buffer")))
     (when (terminal:process-exited-p terminal)
       (editor-error "Terminal process has exited"))
     terminal))

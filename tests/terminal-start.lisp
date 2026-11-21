@@ -117,8 +117,10 @@ it in a test process, not in a Lem in use."
             (ok condition "terminal-restart signals editor-error")
             (ok (null (lem-terminal/terminal-mode::buffer-terminal buffer))
                 "the buffer keeps no reference to the destroyed terminal")
-            (ok (signals (lem-terminal/terminal-mode::terminal-input) 'lem:editor-error)
-                "typing says there is no process instead of failing on NIL")
+            (ok (search "did not start"
+                        (handler-case (progn (lem-terminal/terminal-mode::terminal-input) "")
+                          (lem:editor-error (c) (princ-to-string c))))
+                "typing says the terminal did not start instead of failing on NIL")
             (lem-terminal/terminal-mode::terminal-restart)
             (let ((new (lem-terminal/terminal-mode::buffer-terminal buffer)))
               (unwind-protect
