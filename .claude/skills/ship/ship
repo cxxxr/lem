@@ -15,11 +15,13 @@
 #   ship comment PR FILE        add FILE as a comment on the PR
 #   ship wait PR SHA            wait for the CI of commit SHA, once it is the PR's head:
 #                               0 passed, 1 a check failed or was cancelled (printed with
-#                               its URL: the run ID follows /runs/), 3 timed out, 4 GitHub
-#                               could not be read (3 polls in a row; or once, the fetch
-#                               of the PR's head for a SHA not in this clone), 5 the head
-#                               moved past SHA, or was replaced by a later commit (a
-#                               rebase pushed over it)
+#                               its URL: the run ID follows /runs/), 3 timed out (also
+#                               with no workflow run at all) or the PR conflicts with
+#                               its base, 4 GitHub could not be read (3 polls in a row;
+#                               the PR's merge: 3 polls without a read, only without
+#                               SHIP_CI_IGNORED; or once, the fetch of the PR's head for
+#                               a SHA not in this clone), 5 the head moved past SHA, or
+#                               was replaced by a later commit (a rebase pushed over it)
 #   ship rerun RUN              re-run the failed jobs of workflow run RUN (an ID or a
 #                               URL from wait) once it completed, and wait until the new
 #                               attempt started, so that a wait right after it does not
@@ -51,10 +53,10 @@
 #   SHIP_CI_START    seconds with no workflow run before wait decides that no CI
 #                    applies, or that the PR conflicts with its base (default: 180)
 #   SHIP_CI_IGNORED  unset (the default): no CI applies when no workflow run
-#                    appeared for SHIP_CI_START seconds and every pull_request
-#                    workflow in .github/workflows of the PR's merge with its
-#                    base (GitHub's) skips all the changed files by its paths or
-#                    paths-ignore; set: an extended regexp of the files no
+#                    appeared for SHIP_CI_START seconds, the checks of other apps
+#                    completed, and every pull_request workflow in
+#                    .github/workflows of the PR's merge with its base (GitHub's)
+#                    skips all the changed files by its paths or paths-ignore; set: an extended regexp of the files no
 #                    workflow runs for, used instead; empty: never decide that no
 #                    CI applies
 set -eu
@@ -508,9 +510,11 @@ case "${1:-}" in
                     }
                 fi
             fi
+            # At every poll, so that the timeout names what this poll saw
+            # (a run queued before any of its jobs exists has no check).
+            pending=$(printf '%s\n' "$checks" | grep -v '^completed/' | sed '/^$/d' || true)
+            running=$(printf '%s\n' "$runs" | grep -v '^completed/' | sed '/^$/d' || true)
             if [ -n "$checks" ]; then
-                pending=$(echo "$checks" | grep -v '^completed/' || true)
-                running=$(echo "$runs" | grep -v '^completed/' || true)
                 # Workflows create some check runs late (jobs that need another
                 # job): done only when there is a workflow run, every one
                 # completed and two polls in a row found every check
