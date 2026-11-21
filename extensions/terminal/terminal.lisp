@@ -315,10 +315,14 @@ point is kept for manual/REPL use and tests."
              ;; instance, no I/O thread.
              (when (cffi:null-pointer-p viscus)
                (editor-error "Cannot start the terminal: ~A"
-                             (cffi:foreign-funcall
-                              "strerror"
-                              :int (cffi:foreign-funcall "terminal_last_error" :int)
-                              :string)))
+                             ;; A terminal.so built before terminal_last_error
+                             ;; cannot say why.
+                             (if (cffi:foreign-symbol-pointer "terminal_last_error")
+                                 (cffi:foreign-funcall
+                                  "strerror"
+                                  :int (cffi:foreign-funcall "terminal_last_error" :int)
+                                  :string)
+                                 "unknown error")))
              viscus))
          (terminal
            (make-instance 'terminal

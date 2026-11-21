@@ -18,15 +18,17 @@ build aborts in forkpty when it is out of file descriptors."
 (defun strerror (errno)
   (cffi:foreign-funcall "strerror" :int errno :string))
 
-(defun terminal-thread-names ()
-  (loop :for thread :in (bt2:all-threads)
-        :for name := (bt2:thread-name thread)
-        :when (and (stringp name) (alexandria:starts-with-subseq "Terminal " name))
-          :collect name))
+(defun terminal-thread-p (id)
+  "True when the I/O thread of the terminal with ID is running."
+  (let ((name (format nil "Terminal ~D" id)))
+    (some (lambda (thread) (equal name (bt2:thread-name thread)))
+          (bt2:all-threads))))
 
 (defun call-with-no-free-fd (function)
   "Call FUNCTION while every file descriptor below a lowered soft
-RLIMIT_NOFILE is in use, so that any pipe or open fails with EMFILE."
+RLIMIT_NOFILE is in use, so that any pipe or open fails with EMFILE.
+The limit is the process's: other threads get EMFILE meanwhile too, so run
+it in a test process, not in a Lem in use."
   (cffi:with-foreign-object (limit :unsigned-long 2)
     (assert (zerop (cffi:foreign-funcall "getrlimit" :int +rlimit-nofile+
                                                      :pointer limit :int)))
@@ -54,7 +56,6 @@ RLIMIT_NOFILE is in use, so that any pipe or open fails with EMFILE."
   (if (library-available-p)
       (let ((buffer (lem:make-buffer "*terminal start test*" :temporary t))
             (terminals (length lem-terminal/terminal::*terminals*))
-            (threads (terminal-thread-names))
             (terminal nil)
             (condition nil))
         (unwind-protect
@@ -75,5 +76,6 @@ RLIMIT_NOFILE is in use, so that any pipe or open fails with EMFILE."
               (format nil "the message gives the reason: ~A" condition)))
         (ok (= terminals (length lem-terminal/terminal::*terminals*))
             "no terminal is registered")
-        (ok (equal threads (terminal-thread-names)) "no I/O thread is started"))
+        (ok (not (terminal-thread-p lem-terminal/terminal::*terminal-id-counter*))
+            "no I/O thread is started"))
       (skip "terminal.so is not built or is older than its failure handling")))
