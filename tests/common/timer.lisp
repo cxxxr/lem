@@ -214,3 +214,17 @@ can delay by much more than the timer's own interval.")
         (setf *current-time* 100)
         (update-idle-timers))
       (ok (null ran)))))
+
+(deftest a-repeating-idle-timer-is-called-once-in-an-update
+  ;; A due timer's prompt runs read loops whose stop-idle-timers put the
+  ;; repeating timers that fired back in the list.
+  (with-testing-timer-manager ()
+    (let* ((count 0)
+           (last (due-idle-timer (lambda ()) :name "last")))
+      (declare (ignore last))
+      (due-idle-timer (lambda () (with-idle-timers ())) :name "prompting")
+      (due-idle-timer (lambda () (incf count)) :repeat t :name "repeating")
+      (with-idle-timers ()
+        (setf *current-time* 100)
+        (update-idle-timers))
+      (ok (= 1 count)))))

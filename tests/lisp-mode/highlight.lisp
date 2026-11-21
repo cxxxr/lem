@@ -3,8 +3,10 @@
 (in-package :lem-tests/lisp-mode/highlight)
 
 (deftest the-highlight-timer-stops-when-it-fails
-  ;; Its timer and lisp-highlight are internal. The timer is run as the editor
-  ;; runs it (with-idle-timers, update-idle-timers), with lisp-highlight
+  ;; Its timer and lisp-highlight are internal, and so are the idle timer
+  ;; lists, the editor's timer manager and timer-last-time, which the test
+  ;; binds and sets to run the timer as the editor runs it (with-idle-timers,
+  ;; update-idle-timers) outside of a running editor. lisp-highlight is
   ;; replaced by a failing function, so that its handle-function is called
   ;; with the condition.
   (let ((lem-lisp-mode/highlight::*timer* nil)
@@ -18,10 +20,9 @@
                  (lambda () (error "lisp-highlight failed")))
            (lem-lisp-mode/highlight::init-highlight-timer)
            (let ((timer lem-lisp-mode/highlight::*timer*))
-             ;; Due now.
-             (setf (lem/common/timer::timer-last-time timer) 1)
              (let ((signalled (handler-case
                                   (lem/common/timer:with-idle-timers ()
+                                    ;; Due now.
                                     (setf (lem/common/timer::timer-last-time timer) 1)
                                     (lem/common/timer:update-idle-timers)
                                     nil)

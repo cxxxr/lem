@@ -352,8 +352,11 @@ They are taken and called one at a time: if one fails, the ones after it
 are still in the idle timers, for a later idle time, and none of their
 failures is lost."
   (let* ((tick-time (get-microsecond-time *timer-manager*))
-         (due-timers (remove-if-not (lambda (timer) (idle-timer-due-p timer tick-time))
-                                    *idle-timer-list*))
+         ;; A fresh list: remove-if-not may share the tail of the idle
+         ;; timers, which a prompt's stop-idle-timers extends with nconc.
+         (due-timers (loop :for timer :in *idle-timer-list*
+                           :when (idle-timer-due-p timer tick-time)
+                             :collect timer))
          (called nil))
     (dolist (timer due-timers)
       ;; Checked again: a timer called before may have stopped it or
