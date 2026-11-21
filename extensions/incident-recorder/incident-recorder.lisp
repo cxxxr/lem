@@ -32,7 +32,8 @@ errors can be triaged and fixed later (.claude/skills/triage/)."))
   "Characters kept of the condition's message, which may hold user text.")
 
 (defparameter *max-frame-length* 400
-  "Characters kept of each backtrace frame.")
+  "Characters kept of each backtrace frame, at least its whole function
+name (cut-frame).")
 
 (defparameter *max-backtrace-lines* 120
   "Lines kept of the backtrace.")
@@ -69,11 +70,12 @@ Written only in the editor thread.")
   "Incidents written in this session.")
 
 (defvar *last-written-times* (make-hash-table :test 'equal)
-  "Fingerprint -> universal time it was last written.")
+  "Fingerprint -> universal time it was last written, or last tried to be.")
 
 (defvar *suppressed-counts* (make-hash-table :test 'equal)
   "Fingerprint -> errors not written since the last write, because of
-*same-fingerprint-interval*.")
+*same-fingerprint-interval* or *max-incidents-per-session*, or because the
+write failed.")
 
 (defvar *recorder-lock* (bt2:make-lock :name "incident recorder")
   "Guards the counters: a crash can be reported from another thread.")
@@ -104,15 +106,17 @@ the names of lambdas defined at the top level of a file.")
   (reverse (copy-list *recent-commands*)))
 
 (defun text-key-p (key)
-  "Return true if KEY types or deletes a character: one character, Space,
-Return, Tab, Backspace or Delete, with no modifier other than shift (which
-some frontends set on named keys). Recording Space or Backspace would tell
-the length of the words of a typed password."
-  (and (not (or (key-ctrl key) (key-meta key) (key-super key) (key-hyper key)))
-       (let ((sym (key-sym key)))
-         (or (= 1 (length sym))
-             (member sym '("Space" "Return" "Tab" "Backspace" "Delete")
-                     :test #'string=)))))
+  "Return true if KEY types or deletes a character: one character or Space,
+with no modifier other than shift (which some frontends set on Space),
+Return, Tab, Backspace or Delete with no modifier, or C-h, which a terminal
+sends for Backspace. Recording Space or Backspace would tell the length of
+the words of a typed password."
+  (let ((sym (key-sym key)))
+    (or (and (not (or (key-ctrl key) (key-meta key) (key-super key) (key-hyper key)))
+             (or (= 1 (length sym)) (string= sym "Space")))
+        (some (lambda (named) (match-key key :sym named))
+              '("Return" "Tab" "Backspace" "Delete"))
+        (match-key key :ctrl t :sym "h"))))
 
 (defun recorded-keys (keys)
   "Return KEYS as a string, or NIL when every key of them types or deletes a
@@ -282,10 +286,10 @@ one build to the next."
     ;; The frame names are printed by safe-backtrace, with *package* bound
     ;; to CL.
     (fnv-1a (format nil "~A~{|~A~}"
-                    (let ((*package* (find-package :keyword))
-                          (*print-case* :upcase)
-                          (*print-gensym* t))
-                      (prin1-to-string (type-of condition)))
+                    (with-standard-io-syntax
+                      (let ((*package* (find-package :keyword))
+                            (*print-readably* nil))
+                        (prin1-to-string (type-of condition))))
                     (subseq names 0 (min *fingerprint-frame-count* (length names)))))))
 
 (defun utc-timestamp (universal-time &key compact)
@@ -392,6 +396,8 @@ SUPPRESSED ones its claim-slot took, as dropped: the next one written says
 so. The slot itself stays taken, so that a directory that cannot be written
 is tried once per fingerprint and interval, not on every error."
   (bt2:with-lock-held (*recorder-lock*)
+    ;; not counted toward *max-incidents-per-session*, which is for files
+    (decf *incident-count*)
     (incf (gethash fingerprint *suppressed-counts* 0) (1+ suppressed))))
 
 (defun write-incident-file (table directory name)

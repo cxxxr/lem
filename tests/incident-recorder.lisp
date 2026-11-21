@@ -391,16 +391,21 @@ backtrace taken where it was signalled, as the editor's handlers do."
     (let ((fingerprint (ir:incident-fingerprint condition backtrace)))
       (ok (equal fingerprint
                  (let ((*print-case* :downcase)
-                       (*print-gensym* nil))
+                       (*print-gensym* nil)
+                       (*readtable* (copy-readtable nil)))
+                   (setf (readtable-case *readtable*) :invert)
                    (ir:incident-fingerprint condition backtrace)))))))
 
 (deftest space-return-tab-and-backspace-are-not-recorded
   (dolist (sym '("Space" "Return" "Tab" "Backspace" "Delete"))
     (ok (null (ir::recorded-keys (list (lem:make-key :sym "p") (lem:make-key :sym sym))))
-        sym)
-    ;; some frontends set shift on named keys
-    (ok (null (ir::recorded-keys (list (lem:make-key :shift t :sym sym))))
         sym))
+  ;; some frontends set shift on Space; a terminal sends C-h for Backspace
+  (ok (null (ir::recorded-keys (list (lem:make-key :shift t :sym "Space")))))
+  (ok (null (ir::recorded-keys (list (lem:make-key :ctrl t :sym "h")))))
+  ;; Shift-Tab and Shift-Delete run commands, they type nothing
+  (ok (equal "Shift-Tab" (ir::recorded-keys (list (lem:make-key :shift t :sym "Tab")))))
+  (ok (equal "Shift-Delete" (ir::recorded-keys (list (lem:make-key :shift t :sym "Delete")))))
   (ok (equal "C-x Return" (ir::recorded-keys (list (lem:make-key :ctrl t :sym "x")
                                                    (lem:make-key :sym "Return"))))))
 
@@ -454,7 +459,9 @@ backtrace taken where it was signalled, as the editor's handlers do."
       ;; the next one written counts the failed one and the suppressed one
       (let ((path (ir:record-incident condition backtrace :command)))
         (ok path)
-        (ok (= 2 (gethash "suppressed_since_last" (read-incident path))))))))
+        (ok (= 2 (gethash "suppressed_since_last" (read-incident path))))
+        ;; only the written one counts toward *max-incidents-per-session*
+        (ok (= 1 ir::*incident-count*))))))
 
 (deftest a-failed-write-leaves-no-temporary-file
   (with-recorder (directory)
