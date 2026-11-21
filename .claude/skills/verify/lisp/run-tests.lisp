@@ -1,16 +1,17 @@
 ;;; Run Rove test packages (VERIFY_SUITES) of lem-tests, or the whole system.
 ;;; Exits with 0 when every test passed, 1 otherwise.
 
+(load (merge-pathnames "failing-file.lisp" *load-truename*))
+
 (defun verify-load-or-fail (function)
   "Call FUNCTION, which loads systems.  When it signals an error (a file that
 fails to compile, with SBCL's default *compile-file-failure-behaviour*
 :error), print it and quit with a failure, so that the last line is still
 VERIFY: tests failed."
-  (setf *verify-failing-file* nil)
   (handler-case (funcall function)
     (error (condition)
       (format t "~&VERIFY: could not load the tests:~%  ~a~%" condition)
-      (verify-print-failing-file)
+      (verify-print-failing-file condition)
       (format t "~&VERIFY: tests failed~%")
       (uiop:quit 1))))
 

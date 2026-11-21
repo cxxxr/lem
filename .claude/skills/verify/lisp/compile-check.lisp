@@ -3,18 +3,21 @@
 ;;; warnings are expected and not reported.
 ;;; Exits with 0 when no file had a warning or failed, 1 otherwise.
 
+(load (merge-pathnames "failing-file.lisp" *load-truename*))
+
 (defvar *verify-count* 0
   "The number of warnings and failures reported so far.")
 
 (defvar *verify-failed-fasls* '()
   "The output files under VERIFY_CACHE of files whose compilation failed while
-`verify-quickload' loaded them.")
+`verify-quickload' loaded them; deleted at exit.")
 
 (defvar *verify-lem-loaded* nil
   "True when lem-fake-interface and lem-tests loaded.")
 
 (defvar *verify-failed-systems* '()
-  "The systems that `verify-load-file-system' could not load.")
+  "The primary systems of the systems that `verify-load-file-system' could not
+load: their other subsystems would fail the same way.")
 
 (defun verify-cache-file-p (file)
   "True when FILE is under VERIFY_CACHE."
@@ -25,7 +28,7 @@
   ;; (a "caught ERROR" in a form, say) keeps its fasl in VERIFY_CACHE, newer
   ;; than its source.  `verify build' and `verify tests' would then load that
   ;; fasl without compiling the file and without failing.  Note its output
-  ;; files so that `verify-quickload' can delete them.  Not the fasls of
+  ;; files so that `verify-delete-failed-fasls' deletes them.  Not the fasls of
   ;; other caches: other builds use them.
   (handler-bind ((uiop:compile-failed-warning
                    (lambda (condition)
@@ -41,7 +44,6 @@
 a \"caught ERROR\" go on: the compile below reports it.  Returns T when the
 load succeeded; otherwise prints the error, with the file that signalled it,
 and returns NIL."
-  (setf *verify-failing-file* nil)
   (handler-case
       (let ((uiop:*compile-file-failure-behaviour* :warn))
         (ql:quickload systems :silent t)
@@ -49,14 +51,21 @@ and returns NIL."
     (error (condition)
       (format t "~&FAILED to load ~{~(~a~)~^, ~}:~%  ~a~%"
               (uiop:ensure-list systems) condition)
-      (verify-print-failing-file)
+      (verify-print-failing-file condition)
       nil)))
 
+(defun verify-delete-failed-fasls ()
+  "Delete the fasls of the files that failed to compile, so that the next load
+compiles them again.  Not after each load: each later load in this run would
+then compile them and every later file of their systems again."
+  (mapc #'uiop:delete-file-if-exists *verify-failed-fasls*))
+
+;; At every exit, also one through an error that nothing here handles (an
+;; interrupt, a stack exhaustion) or a uiop:quit in a loaded file.
+(push 'verify-delete-failed-fasls sb-ext:*exit-hooks*)
+
 (defun verify-quit ()
-  "Print the count, delete the fasls of the files that failed to compile (so
-that the next load compiles them again; not before, as each load in this run
-would compile them and every later file of their systems again), and quit."
-  (mapc #'uiop:delete-file-if-exists *verify-failed-fasls*)
+  "Print the count and quit."
   (format t "~&~d warning~:p~%" *verify-count*)
   (uiop:quit (if (zerop *verify-count*) 0 1)))
 
@@ -127,9 +136,10 @@ be a primary system: its subsystems have the same .asd and directory."
              (uiop:subpathp source (asdf:component-pathname system))
              (verify-defpackage-file-p source))
     (let ((relative (uiop:enough-pathname source (asdf:component-pathname system))))
+      ;; Joined by hand: NAMESTRING would escape a dot in the name.
       (string-downcase
-       (format nil "~a/~a" (asdf:component-name system)
-               (namestring (make-pathname :type nil :defaults relative)))))))
+       (format nil "~a/~{~a/~}~a" (asdf:component-name system)
+               (cdr (pathname-directory relative)) (pathname-name relative))))))
 
 (defun verify-file-system (file)
   "The name of the ASDF system that has FILE as a component or, in a
@@ -146,18 +156,23 @@ whatever its own .asd says."
     (loop :for directory := (uiop:pathname-directory-pathname source)
             :then (uiop:pathname-parent-directory-pathname directory)
           :while (uiop:subpathp directory repo)
-          :do (dolist (asd (uiop:directory-files directory "*.asd"))
-                (unless (find asd (asdf:registered-systems)
-                              :key (lambda (name)
-                                     (let ((system (asdf:registered-system name)))
-                                       (and system (asdf:system-source-file system))))
-                              :test #'equal)
-                  (handler-case (asdf:load-asd asd)
-                    (error (condition)
-                      (push (cons asd condition) failed))))
+          :do (let ((asds (uiop:directory-files directory "*.asd")))
+                (dolist (asd asds)
+                  (unless (find asd (asdf:registered-systems)
+                                :key (lambda (name)
+                                       (let ((system (asdf:registered-system name)))
+                                         (and system (asdf:system-source-file system))))
+                                :test #'equal)
+                    (handler-case (asdf:load-asd asd)
+                      (error (condition)
+                        (push (cons asd condition) failed)))))
+                ;; The systems of every .asd of the directory, so that a
+                ;; component of one wins over an inferred system of another.
                 (let ((systems (remove-if-not
                                 (lambda (system)
-                                  (and system (equal (asdf:system-source-file system) asd)))
+                                  (and system
+                                       (member (asdf:system-source-file system) asds
+                                               :test #'equal)))
                                 (mapcar #'asdf:registered-system (asdf:registered-systems)))))
                   (dolist (system systems)
                     (when (member source (verify-component-files system)
@@ -188,8 +203,8 @@ whatever its own .asd says."
 every system, e.g. the frontends), so that FILE's packages exist.
 Returns :NONE when FILE is in no system, NIL, after printing why, when the
 system cannot be found or loaded here (a frontend whose foreign library is
-missing, say), and T otherwise.  A system that failed to load is not loaded
-again for the next file of it."
+missing, say), and T otherwise.  A system that failed to load, or another
+of its primary system, is not loaded again for the next file."
   (handler-case
       (multiple-value-bind (system failed-asds) (verify-file-system file)
         (cond (system
@@ -197,7 +212,8 @@ again for the next file of it."
                  ;; Not FILE's system: noted, as nothing else checks them.
                  (format t "~&note: skipped .asd files that do not load, looking for ~a:~%" file)
                  (verify-print-failed-asds failed-asds))
-               (cond ((member system *verify-failed-systems* :test #'string=)
+               (cond ((member (asdf:primary-system-name system) *verify-failed-systems*
+                              :test #'string=)
                       (format t "~&FAILED: ~a of ~a did not load, see above~%"
                               system file)
                       nil)
@@ -205,7 +221,8 @@ again for the next file of it."
                      (t
                       (format t "~&loading ~a for ~a~%" system file)
                       (or (verify-quickload system)
-                          (progn (push system *verify-failed-systems*) nil)))))
+                          (progn (push (asdf:primary-system-name system) *verify-failed-systems*)
+                                 nil)))))
               (failed-asds
                ;; FILE may be in one of these.
                (format t "~&FAILED to find the system of ~a:~%" file)

@@ -37,8 +37,9 @@ $V compile src/x.lisp
 
 It loads Lem and `lem-tests`, then for each file the system it belongs to
 (found from the `.asd` files above it, e.g. `lem-ncurses` for
-`frontends/ncurses/`, or `lem-ollama/foo` for a file of a package-inferred
-system that defines the package `lem-ollama/foo`), compiles the files again
+`frontends/ncurses/`, or `lem-ollama/foo` for a file `foo.lisp` with a
+package definition in the directory of the package-inferred system
+`lem-ollama`, as ASDF finds it), compiles the files again
 and prints their warnings (not redefinitions) and the files that failed to
 compile or load. Expect `0 warnings`; fix any undefined function or variable.
 A file in no system is compiled in what is loaded, so its own packages may be

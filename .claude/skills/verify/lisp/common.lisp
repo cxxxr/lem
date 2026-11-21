@@ -40,25 +40,3 @@
          (remove "" (uiop:split-string value :separator '(#\Space #\Newline #\Tab))
                  :test #'string=))))
 
-(defvar *verify-failing-file* nil
-  "The source file whose compile or load signalled the error being handled,
-or NIL.  Set by the :around method on `asdf:perform' below.")
-
-(defmethod asdf:perform :around ((operation asdf:operation) (component asdf:cl-source-file))
-  ;; Note the file of an error, so that a failed load can name it: a
-  ;; top-level (error ...) says nothing of where it is.  The innermost file
-  ;; wins (a file that loads another system at load time is not the one at
-  ;; fault), and an error the file handles itself is forgotten when its
-  ;; perform returns.
-  (handler-bind ((error (lambda (condition)
-                          (declare (ignore condition))
-                          (unless *verify-failing-file*
-                            (setf *verify-failing-file*
-                                  (asdf:component-pathname component))))))
-    (multiple-value-prog1 (call-next-method)
-      (setf *verify-failing-file* nil))))
-
-(defun verify-print-failing-file ()
-  "Print the file of the error being handled, if one is known."
-  (when *verify-failing-file*
-    (format t "~&  in ~a~%" (enough-namestring *verify-failing-file* (uiop:getcwd)))))
