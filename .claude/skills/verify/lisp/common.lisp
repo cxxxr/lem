@@ -15,7 +15,10 @@
 ;; does it, because Rove maps a fasl back to its source by removing a cache
 ;; root that it finds by translating /rove--fasl-probe/probe.lisp.  That probe
 ;; is translated into VERIFY_CACHE too.  Without both, Rove finds no package of
-;; lem-tests and `rove:run :lem-tests` runs 0 tests.
+;; lem-tests and `rove:run :lem-tests` runs 0 tests (run-tests.lisp then fails
+;; with "no test package of lem-tests found").  The probe's path is internal to
+;; Rove (effective-fasl-cache-root in core/suite/file.lisp of the Rove that
+;; qlfile.lock pins): check it there when updating Rove.
 (let ((repo (uiop:ensure-directory-pathname (uiop:getenv "VERIFY_REPO")))
       (cache (uiop:ensure-directory-pathname (uiop:getenv "VERIFY_CACHE"))))
   (flet ((under-cache (directory)

@@ -35,8 +35,12 @@ $V compile                # the .lisp files of $V diff
 $V compile src/x.lisp
 ```
 
-It loads Lem, compiles the files again and prints their warnings (not
+It loads Lem and `lem-tests`, then for each file the system it belongs to
+(found from the `.asd` files above it, e.g. `lem-ncurses` for
+`frontends/ncurses/`), compiles the files again and prints their warnings (not
 redefinitions). Expect `0 warnings`; fix any undefined function or variable.
+A file in no system is compiled in what is loaded, so its own packages may be
+missing.
 
 ## 3. Run the tests
 
@@ -46,8 +50,9 @@ $V tests                               # all of lem-tests, about 5 minutes
 ```
 
 - Run the packages that cover the change while working, and all of
-  `lem-tests` once before opening a PR. The last line is
-  `VERIFY: tests passed` or `VERIFY: tests failed`.
+  `lem-tests` once before opening a PR. Every package given runs, also after
+  one failed. The last line is `VERIFY: tests passed` or
+  `VERIFY: tests failed`.
 - A bug fix gets a regression test. See it fail on the code before the fix:
   `$V worktree <commit-before-the-fix>` makes a worktree of that commit; copy
   the new test file (and its `lem-tests.asd` line) there, run that worktree's
@@ -84,8 +89,10 @@ $V stop
   window `C-x 2`, the filer side window `M-x filer`, an empty buffer, the prompt
   open), and read the screen each time.
 - Read the whole screen, or `grep` it for the text you expect. Popups are not
-  all at the top: `C-x C-b` (list-buffers) is centered, around lines 15-19 of
-  the default 30, so `$V screen | head` misses it.
+  all at the top: `C-x C-b` (list-buffers) is centered, and its height grows
+  with the number of buffers (up to the screen height less 4), so
+  `$V screen | head` misses it. Right after starting with one file it is on
+  lines 15-19 of the default 30; with 19 buffers, lines 6-27.
 
 Other frontends, when the change is theirs:
 
