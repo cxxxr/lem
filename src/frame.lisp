@@ -163,8 +163,20 @@ is left; callers that need a buffer must handle that."
   (setup-frame-windows frame buffer))
 
 (defun teardown-frame (frame)
+  "Free the windows of FRAME and forget it: it leaves all-frames, and a display
+it is mapped to has no frame afterwards (current-frame is NIL there) rather
+than a frame whose windows were freed.  The frontends whose events can come
+after exit (SDL2, SDL3, the server) already check current-frame for NIL, as
+they do for an event before the first frame is made."
   (alexandria:deletef *frames* frame)
-  (teardown-windows frame))
+  (unwind-protect (teardown-windows frame)
+    (let ((displays '()))
+      (maphash (lambda (display mapped)
+                 (when (eq mapped frame)
+                   (push display displays)))
+               *display-frame-map*)
+      (dolist (display displays)
+        (remhash display *display-frame-map*)))))
 
 (defun map-protected (function list)
   "Call FUNCTION on each element of LIST, on all of them even if one signals.

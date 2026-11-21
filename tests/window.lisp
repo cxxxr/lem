@@ -573,3 +573,23 @@
              '(0 1 2))
           (error () nil))))
     (ok (equal '(0 1 2) (reverse called)))))
+
+(deftest teardown-frame/unmaps-the-frame
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let ((hidden (lem:make-frame (lem:current-frame))))
+        (lem:setup-frame hidden (lem:make-buffer "hidden"))
+        (testing "a frame not mapped leaves the mapped one alone"
+          (lem:teardown-frame hidden)
+          (ok (lem:current-frame)))
+        (testing "the mapped frame leaves its display"
+          (lem:teardown-frame (lem:current-frame))
+          (ok (null (lem:current-frame)))
+          (ok (null (lem:get-frame (lem:implementation)))))))))
+
+(deftest teardown-frames/no-display-keeps-a-torn-down-frame
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (lem:teardown-frames)
+      (ok (null (lem:all-frames)))
+      (ok (null (lem:current-frame))))))
