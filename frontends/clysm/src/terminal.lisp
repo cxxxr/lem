@@ -423,13 +423,23 @@ first, which COPY-MODE-OFF could not do right once the notice is appended."
     (kill-process terminal)))
 
 (defgeneric copy-mode-on (terminal)
-  (:documentation "Freeze rendering and show the scrollback above the screen."))
+  (:documentation "Freeze rendering and show the scrollback above the screen.
+Returns the number of scrollback lines put in the buffer."))
 (defgeneric copy-mode-off (terminal)
   (:documentation "Remove the scrollback and render the screen again."))
 
 (defmethod copy-mode-on ((terminal terminal))
+  "Returns the number of scrollback lines it put in the buffer."
+  ;; Render what xterm.js parsed since the last render first: the lines it
+  ;; pushed off the screen are above it already, and would show twice.  Not
+  ;; when the scrollback is shown already: RENDER would take it away.
+  (when (and (live-p terminal)
+             (not (terminal-copy-mode terminal))
+             (not (terminal-scrollback-active terminal))
+             (not (deleted-buffer-p (terminal-buffer terminal))))
+    (render terminal))
   (setf (terminal-copy-mode terminal) t)
-  (activate-scrollback terminal))
+  (or (activate-scrollback terminal) 0))
 
 (defmethod copy-mode-off ((terminal terminal))
   (setf (terminal-copy-mode terminal) nil)
@@ -715,7 +725,8 @@ the point at the cursor."))
 
 (defun activate-scrollback (terminal)
   "Insert the lines above the screen into the buffer, keeping the cursor and
-the windows on what they showed."
+the windows on what they showed.  Returns how many, or NIL when it inserts
+none."
   (unless (or (terminal-scrollback-active terminal)
               (terminal-dead terminal))
     (let ((text (scrollback-text terminal)))
@@ -728,7 +739,9 @@ the windows on what they showed."
             (with-point ((start (buffer-point buffer)))
               (buffer-start start)
               (insert-string start text)))
-          (shift-points-by-lines points positions (count #\Newline text)))))))
+          (let ((count (count #\Newline text)))
+            (shift-points-by-lines points positions count)
+            count))))))
 
 (defun snap-to-bottom (terminal)
   "Show the screen in every window of the terminal's buffer."

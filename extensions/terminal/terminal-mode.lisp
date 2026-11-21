@@ -51,6 +51,7 @@ dependency on the TRAMP extension is needed."
   (setf (variable-value 'line-wrap :buffer (current-buffer)) nil)
   (setf (variable-value 'lem/show-paren:enable :buffer (current-buffer)) nil)
   (add-hook (variable-value 'kill-buffer-hook :buffer (current-buffer)) 'on-kill-buffer)
+  (setf (buffer-value (current-buffer) 'scrollback-lines) nil)
   (alexandria:when-let (terminal (get-current-terminal))
     (terminal:copy-mode-off terminal)))
 
@@ -161,6 +162,8 @@ its process has exited.  The old output is discarded."
     (unless (terminal:process-exited-p old)
       (editor-error "Terminal process is still running"))
     (terminal:destroy old)
+    ;; The old process may have exited while the buffer was scrolled.
+    (setf (buffer-value buffer 'scrollback-lines) nil)
     (with-buffer-read-only buffer nil
       (erase-buffer buffer))
     (destructuring-bind (&optional program argv)
@@ -223,6 +226,7 @@ character with its modifiers."
 (define-command terminal-input () ()
   "Send the keys that invoked this command to the terminal."
   (let ((terminal (get-current-live-terminal)))
+    (back-to-screen (current-buffer))
     (dolist (key (last-read-key-sequence))
       (send-key terminal key))))
 
@@ -231,6 +235,7 @@ character with its modifiers."
 in Lem (e.g. C-x for nano, or C-q itself)."
   (let ((terminal (get-current-live-terminal))
         (key (read-key)))
+    (back-to-screen (current-buffer))
     (send-key terminal key)))
 
 (defmacro define-terminal-key-command (name keyspec vterm-key)
@@ -239,6 +244,7 @@ in Lem (e.g. C-x for nano, or C-q itself)."
        (define-key *terminal-mode-keymap* ,keyspec ',name)
        (define-command ,name () ()
          (let ((,terminal (get-current-live-terminal)))
+           (back-to-screen (current-buffer))
            (terminal:input-key ,terminal ,vterm-key))))))
 
 (define-terminal-key-command terminal-key-return "Return" ffi::vterm_key_enter)
@@ -288,9 +294,53 @@ find-file start where the shell is."
     (unless (equal directory (buffer-directory buffer))
       (setf (buffer-directory buffer) directory))))
 
+(defun start-scrolling (terminal buffer)
+  "Freeze TERMINAL with its scrollback shown above the screen in BUFFER, unless
+it already is, so output arriving while one reads the history does not take
+it away.  Returns the number of scrollback lines in BUFFER."
+  (or (buffer-value buffer 'scrollback-lines)
+      (setf (buffer-value buffer 'scrollback-lines)
+            (terminal:copy-mode-on terminal))))
+
+(defun stop-scrolling (terminal buffer)
+  "Undo START-SCROLLING: remove the scrollback and show the whole screen again."
+  (when (buffer-value buffer 'scrollback-lines)
+    (setf (buffer-value buffer 'scrollback-lines) nil)
+    (terminal:copy-mode-off terminal)
+    (terminal:snap-to-bottom terminal)))
+
+(defun back-to-screen (buffer)
+  "Show the screen of BUFFER's terminal again, for input sent to it: what the
+program does with it is to be seen.  Not in terminal-copy-mode, which keeps
+the history until one leaves it."
+  (alexandria:when-let ((terminal (buffer-terminal buffer)))
+    (when (eq (buffer-major-mode buffer) 'terminal-mode)
+      (stop-scrolling terminal buffer)
+      (terminal:deactivate-scrollback terminal))))
+
+(defun call-with-scrollback (terminal window downward-p scroll)
+  "Call SCROLL, a scroll of WINDOW (towards the end when DOWNWARD-P), with
+TERMINAL's scrollback shown; once WINDOW is back on the screen, the terminal
+runs on as before.  Scrolling down from the screen does nothing: there is
+nothing below it."
+  (let ((buffer (window-buffer window)))
+    (unless (and downward-p (not (buffer-value buffer 'scrollback-lines)))
+      (let ((lines (start-scrolling terminal buffer)))
+        (funcall scroll)
+        (when (> (line-number-at-point (window-view-point window)) lines)
+          (stop-scrolling terminal buffer))))))
+
 (defmethod execute ((mode terminal-mode) command argment)
   (sync-buffer-directory (current-buffer))
   (cond
+    ;; Before the bypass commands: the mouse wheel scrolls from within
+    ;; <mouse-event>, and scrolls up with SCROLL-DOWN by a negative count.
+    ((and (typep command '(or scroll-up scroll-down))
+          (alexandria:when-let ((terminal (get-current-terminal)))
+            (not (terminal:process-exited-p terminal))))
+     (call-with-scrollback (get-current-terminal) (current-window)
+                           (eq (typep command 'scroll-down) (plusp (or argment 1)))
+                           (lambda () (call-next-method))))
     (*running-bypass-command*
      (call-next-method))
     ((member command *bypass-commands* :test #'typep)
@@ -309,9 +359,8 @@ find-file start where the shell is."
        (terminal:process-exited-p terminal))
      (call-next-method))
     (t
-     ;; Any other command (typing, etc.) — remove scrollback from buffer
-     (alexandria:when-let ((terminal (get-current-terminal)))
-       (terminal:deactivate-scrollback terminal))
+     ;; Any other command (typing, etc.) goes to the terminal, which shows its
+     ;; screen again (see BACK-TO-SCREEN).
      (terminal-input))))
 
 (defun resize-terminal (terminal window)
@@ -328,13 +377,18 @@ windows of different sizes."
                         (window (current-window)))
     (resize-terminal terminal window)))
 
+(defun paste (string)
+  (let ((terminal (get-current-live-terminal)))
+    (back-to-screen (current-buffer))
+    (terminal:paste-string terminal string)))
+
 (defmethod lem-core:paste-using-mode ((mode terminal-mode) string)
-  (terminal:paste-string (get-current-live-terminal) string))
+  (paste string))
 
 (define-command terminal-yank () ()
   "Paste the latest kill (or the clipboard) into the terminal."
   (alexandria:when-let ((string (yank-from-clipboard-or-killring)))
-    (terminal:paste-string (get-current-live-terminal) string)))
+    (paste string)))
 
 (defun on-window-size-change (window)
   (alexandria:when-let (terminal (buffer-terminal (window-buffer window)))

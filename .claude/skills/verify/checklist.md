@@ -160,3 +160,19 @@ anything. Keep the list short enough to read before each commit.
   took as up to date); cxxxr/lem#70 and #75 (a failed dependency loaded again
   for each changed file); cxxxr/lem#77 (a missing sibling component taken as a
   failed system).
+
+## Terminal
+
+### Scrolling a terminal buffer
+- **Trigger:** changes to `extensions/terminal/` (`execute` of `terminal-mode`,
+  scrollback, copy mode, rendering) or to `*bypass-commands*`.
+- **Check:** with output still coming (a loop printing a character every 0.1 s,
+  as Claude Code's spinner does), turn the mouse wheel up and down and see that
+  the history stays shown, that the wheel down to the bottom shows the whole
+  screen again, and that typing returns to it. The wheel runs `scroll-down` by
+  a negative count from inside `<mouse-event>`, so `M-x scroll-up` passing is
+  not enough. `$V build` does not build `terminal.so`: run `make terminal-lib
+  LISP="sbcl --non-interactive --load .qlot/setup.lisp"` first. tmux cannot
+  send the ncurses Lem a wheel; bind a key in `*terminal-mode-keymap*` (and
+  `*bypass-commands*`) in `init.lisp` that calls `lem-core::receive-mouse-wheel`.
+- **Origin:** the wheel could not scroll Claude Code's output in `M-x terminal`.

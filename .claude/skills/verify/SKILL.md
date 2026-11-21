@@ -108,9 +108,12 @@ Other frontends, when the change is theirs:
 - **Server (browser):** `sbcl --load .qlot/setup.lisp --load scripts/build-server.lisp`,
   run `./lem-server --port N --host 127.0.0.1`, drive it with Playwright.
   Delete `.playwright-mcp/` from the repository afterwards.
-- **Lem on Clysm:** `make test-clysm` (expect `lem: ok` and
-  `lem (browser): ok`); `frontends/clysm/tools/lem-remote` looks at a running
-  one.
+- **Lem on Clysm:** `frontends/clysm/build.sh` (about 2 minutes) after every
+  source change, then `make test-clysm` (expect `lem: ok` and
+  `lem (browser): ok`). `make test-clysm` builds only when there is no build
+  yet: without `build.sh` it tests the old image. Run `build-web.sh` too when the
+  browser version is changed. `frontends/clysm/tools/lem-remote` looks at a
+  running one.
 - **SDL2:** there is no tool to drive it here; say that it was not run.
 
 ## 5. When a check fails

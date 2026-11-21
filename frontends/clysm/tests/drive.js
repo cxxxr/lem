@@ -441,6 +441,21 @@ module.exports = (win, app) => {
         check('terminal: colours', await until(async () => (await lisp(red)).includes('ATTRIBUTE')), await lisp(red));
         const rows = await lisp('(lem-terminal/terminal::terminal-rows (lem-terminal/terminal-mode::get-current-terminal))');
         check('terminal: fits its window', rows === await lisp('(1- (lem:window-height (lem:current-window)))'), rows);
+        // the wheel shows the history while output goes on, and C-x [ keeps the place
+        await type('seq 1 200; while :; do printf x; sleep 0.05; done'); await key('Return');
+        check('terminal: output goes on', await until(async () => (await terminalText()).includes('200\nx'), 10000));
+        const viewLine = () => lisp('(lem:line-number-at-point (lem:window-view-point (lem:current-window)))');
+        // the history is in the buffer, above the screen's rows
+        const historyShown = async () => Number(await lisp('(lem:buffer-nlines (lem:current-buffer))')) > Number(rows);
+        await lisp('(let ((w (lem:current-window))) (lem:receive-mouse-wheel (lem:window-x w) (lem:window-y w) 0 0 0 1))');
+        await sleep(500);
+        const scrolledTo = await viewLine();
+        check('terminal: the wheel shows the history', (await historyShown()) && Number(scrolledTo) > 1, scrolledTo);
+        await key('x', ['control']); await key('['); await sleep(500);
+        check('terminal: C-x [ keeps the place', (await viewLine()) === scrolledTo && (await historyShown()),
+              `${await viewLine()} ${scrolledTo}`);
+        await key('Escape'); await sleep(300);
+        await key('c', ['control']); await sleep(300);
         await type('exit'); await key('Return');
         check('terminal: exit', await until(async () => (await terminalText()).includes('[Process exited'), 10000), await terminalText());
         await lisp('(lem:send-event (lambda () (lem:kill-buffer (lem:current-buffer))))');
