@@ -226,6 +226,7 @@ character with its modifiers."
 (define-command terminal-input () ()
   "Send the keys that invoked this command to the terminal."
   (let ((terminal (get-current-live-terminal)))
+    (back-to-screen (current-buffer))
     (dolist (key (last-read-key-sequence))
       (send-key terminal key))))
 
@@ -243,6 +244,7 @@ in Lem (e.g. C-x for nano, or C-q itself)."
        (define-key *terminal-mode-keymap* ,keyspec ',name)
        (define-command ,name () ()
          (let ((,terminal (get-current-live-terminal)))
+           (back-to-screen (current-buffer))
            (terminal:input-key ,terminal ,vterm-key))))))
 
 (define-terminal-key-command terminal-key-return "Return" ffi::vterm_key_enter)
@@ -297,10 +299,8 @@ find-file start where the shell is."
 it already is, so output arriving while one reads the history does not take
 it away.  Returns the number of scrollback lines in BUFFER."
   (or (buffer-value buffer 'scrollback-lines)
-      (let ((nlines (buffer-nlines buffer)))
-        (terminal:copy-mode-on terminal)
-        (setf (buffer-value buffer 'scrollback-lines)
-              (- (buffer-nlines buffer) nlines)))))
+      (setf (buffer-value buffer 'scrollback-lines)
+            (terminal:copy-mode-on terminal))))
 
 (defun stop-scrolling (terminal buffer)
   "Undo START-SCROLLING: remove the scrollback and show the whole screen again."
@@ -357,8 +357,8 @@ nothing below it."
        (terminal:process-exited-p terminal))
      (call-next-method))
     (t
-     ;; Any other command (typing, etc.) — remove scrollback from buffer
-     (back-to-screen (current-buffer))
+     ;; Any other command (typing, etc.) goes to the terminal, which shows its
+     ;; screen again (see BACK-TO-SCREEN).
      (terminal-input))))
 
 (defun resize-terminal (terminal window)

@@ -371,3 +371,26 @@ as a command of its own: the flags of the previous one are not carried on."
      (ok (= 1 (lem:line-number-at-point (lem:window-view-point window))))
      (ok (not (lem-terminal/terminal::terminal-copy-mode (buffer-terminal buffer)))
          "the terminal renders again"))))
+
+(deftest wheel-before-the-first-render-does-not-freeze
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore rows))
+     ;; the buffer has one line yet, and nothing has scrolled off the screen
+     (wheel window 1)
+     (ok (not (lem-terminal/terminal::terminal-copy-mode (buffer-terminal buffer)))
+         "nothing to show above the screen, so the terminal renders on")
+     (ok (wait-for-output buffer (format nil "1~%2~%")) "output is rendered"))
+   :script "sleep 0.3; seq 1 3; sleep 30"))
+
+(deftest a-key-sent-from-m-x-while-scrolled-shows-the-screen
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (ok (wait-for-output buffer))
+     (wheel window 1)
+     ;; M-x runs the command through execute-command, a bypass command
+     (let ((lem-terminal/terminal-mode::*running-bypass-command* t))
+       (lem:call-command 'lem-terminal/terminal-mode::terminal-key-return nil))
+     (ok (= rows (lem:buffer-nlines buffer)) "the scrollback is gone")
+     (ok (not (lem-terminal/terminal::terminal-copy-mode (buffer-terminal buffer)))
+         "the terminal renders again"))))
