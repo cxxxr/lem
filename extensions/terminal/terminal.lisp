@@ -22,6 +22,7 @@
            :activate-scrollback
            :deactivate-scrollback
            :snap-to-bottom
+           :frozen-scrollback-lines
            :terminal-render-throttle-ms))
 (in-package :lem-terminal/terminal)
 
@@ -160,17 +161,6 @@ Avoids an O(rows) scan in the hot update loop.")
                      :type fixnum
                      :documentation "Number of scrollback lines above the screen
 in the buffer while SCROLLBACK-ACTIVE (the rows may change meanwhile).")
-   (scrollback-pushes :initform 0
-                      :accessor terminal-scrollback-pushes
-                      :type fixnum
-                      :documentation "Lines pushed into the ring less lines popped
-from it, since the start: tells which ring lines came after a moment.")
-   (frozen-pushes :initform 0
-                  :accessor terminal-frozen-pushes
-                  :type fixnum
-                  :documentation "SCROLLBACK-PUSHES when copy mode froze the
-screen.  The ring lines pushed since are not rendered: the frozen screen in
-the buffer still shows some of them.")
    (attribute-cache :initform (make-hash-table :test #'eql)
                     :accessor terminal-attribute-cache
                     :documentation "Cache of packed-fixnum-key -> attribute.")
@@ -410,33 +400,21 @@ latter case the exit is reported to the editor thread via FINISH-PROCESS."
 (defun finish-process (terminal status)
   "Editor-thread handler for the child process exiting.  Flushes the final
 output, freezes the terminal (see EXIT-STATUS) and appends an exit notice.
-When the scrollback is shown, one is reading it: it stays above the final
-screen as it was, followed by the lines that went into the ring since the
-screen was frozen, and the windows, the cursor and the mark stay where they
-were."
+Scrolling through the scrollback (and copy mode) ends there: the final
+output is what is to be seen, and the windows show it."
   (unless (or (terminal-dead terminal)
               (process-exited-p terminal))
-    (let* ((buffer (terminal-buffer terminal))
-           (history (and (terminal-scrollback-active terminal)
-                         (terminal-scrollback-shown terminal)))
-           (history-text (and history (first-lines-text buffer history)))
-           (points (buffer-points-to-keep buffer))
-           (positions (point-positions points)))
+    (let ((scrolled (terminal-scrollback-active terminal)))
+      (setf (terminal-copy-mode terminal) nil)
       ;; The I/O thread has stopped, so nothing else touches vterm now; the
       ;; lock is taken only to honour RENDER's contract.  RENDER removes the
       ;; scrollback.
-      (let ((unrendered
-              (bt2:with-lock-held ((terminal-io-lock terminal))
-                (prog1 (and history (unrendered-ring-text terminal))
-                  (render terminal)))))
-        (setf (terminal-exit-status terminal) status)
-        (append-exit-notice terminal status)
-        (when history
-          (insert-scrollback terminal (concatenate 'string history-text unrendered))
-          ;; After the notice, which moves the cursor to its end.
-          (keep-points-in-history points positions history
-                                  (count #\Newline unrendered))
-          (keep-cursors-in-windows buffer)))
+      (bt2:with-lock-held ((terminal-io-lock terminal))
+        (render terminal))
+      (setf (terminal-exit-status terminal) status)
+      (append-exit-notice terminal status)
+      (when scrolled
+        (snap-to-bottom terminal))
       (redraw-display))))
 
 (defmethod destroy ((terminal terminal))
@@ -652,95 +630,6 @@ that may be edited by the user or watched by other features."
             (line-start point)
             (character-offset point (min charpos (length (line-string point))))))
 
-(defun buffer-points-to-keep (buffer)
-  "The points of BUFFER that are to stay on their text when the scrollback is
-put back: those of BUFFER-VIEW-POINTS, the mark and the other windows' points."
-  (remove-duplicates
-   (remove nil (append (buffer-view-points buffer)
-                       (list (buffer-mark buffer))
-                       (mapcar #'window-point (get-buffer-windows buffer))))))
-
-(defun keep-cursors-in-windows (buffer)
-  "Move the point of each window showing BUFFER into what the window shows,
-if lines put above it moved it below: redisplay would move the window to it."
-  (dolist (window (get-buffer-windows buffer))
-    (let ((point (window-point window))
-          (last (+ (line-number-at-point (window-view-point window))
-                   (window-height window)
-                   -2)))
-      (when (> (line-number-at-point point) last)
-        (move-to-line point last)
-        (line-start point)))))
-
-(defun keep-points-in-history (points positions history unrendered)
-  "Move each of POINTS back to its entry of POSITIONS, taken when HISTORY
-lines were above the screen, now that UNRENDERED more lines follow them: a
-line of the history keeps its number, and a row of the screen moves down
-with the screen (to the last line, when the buffer got shorter)."
-  (loop :for point :in points
-        :for (line-number . charpos) :in positions
-        :do (move-to-line point (min (buffer-nlines (point-buffer point))
-                                     (if (<= line-number history)
-                                         line-number
-                                         (+ line-number unrendered))))
-            (line-start point)
-            (character-offset point (min charpos (length (line-string point))))))
-
-(defun first-lines-text (buffer n)
-  "The first N lines of BUFFER, each ended by a newline."
-  (with-point ((start (buffer-point buffer))
-               (end (buffer-point buffer)))
-    (buffer-start start)
-    (move-to-line end (1+ n))
-    (line-start end)
-    (points-to-string start end)))
-
-(defun ring-text (terminal start end)
-  "The ring lines from START below END (0 is the oldest), each ended by a
-newline, or NIL when there are none.  The caller holds IO-LOCK."
-  (when (< start end)
-    (let* ((ring (terminal-scrollback-ring terminal))
-           (count (scrollback-count terminal))
-           (head (terminal-scrollback-head terminal))
-           (limit (length ring)))
-      (with-output-to-string (s)
-        (loop :for i :from start :below end
-              :for line := (aref ring (mod (+ (- head count) i) limit))
-              :do (when line (write-string line s))
-                  (write-char #\newline s))))))
-
-(defun unrendered-count (terminal)
-  "How many of the newest ring lines were pushed since copy mode froze the
-screen (none out of copy mode).  The caller holds IO-LOCK."
-  (if (terminal-copy-mode terminal)
-      (max 0 (min (scrollback-count terminal)
-                  (- (terminal-scrollback-pushes terminal)
-                     (terminal-frozen-pushes terminal))))
-      0))
-
-(defun unrendered-ring-text (terminal)
-  "The ring lines pushed since copy mode froze the screen, as a string (empty
-when there are none).  The caller holds IO-LOCK."
-  (let ((count (scrollback-count terminal)))
-    (or (ring-text terminal (- count (unrendered-count terminal)) count) "")))
-
-(defun insert-scrollback (terminal text)
-  "Put TEXT, lines of the scrollback, above the screen in the buffer, keeping
-the cursor and every window on the rows they showed, so the history appears
-above the screen instead of replacing it.  Returns the number of lines."
-  (let* ((buffer (terminal-buffer terminal))
-         (points (buffer-view-points buffer))
-         (positions (point-positions points))
-         (count (count #\Newline text)))
-    (with-buffer-read-only buffer nil
-      (with-point ((start (buffer-point buffer)))
-        (buffer-start start)
-        (insert-string start text)))
-    (setf (terminal-scrollback-active terminal) t
-          (terminal-scrollback-shown terminal) count)
-    (shift-points-by-lines points positions count)
-    count))
-
 (defun deactivate-scrollback (terminal)
   "Remove scrollback lines from the buffer, keeping only terminal rows.
 Called when transitioning from scrollback-active to normal view.  Not once the
@@ -753,8 +642,8 @@ its end, and keeps it."
           (shown (terminal-scrollback-shown terminal)))
       (when (plusp shown)
         (with-buffer-read-only buffer nil
-          ;; Delete the lines above the screen (the rows may have changed
-          ;; since they were put in: count them as they were).
+          ;; Delete the lines above the screen, counted as they were put in:
+          ;; the rows may have changed since.
           (with-point ((start (buffer-point buffer))
                        (end (buffer-point buffer)))
             (buffer-start start)
@@ -767,26 +656,53 @@ its end, and keeps it."
 terminal rows, and return how many, or NIL when it puts in none.  With
 CATCH-UP, first render the output not rendered yet, so the rows the buffer
 shows are the ones the ring continues: lines parsed since the last render are
-in the ring and would show twice otherwise.  Not in copy mode, where the
-screen is frozen: the lines pushed since it froze are left out instead."
+in the ring and would show twice otherwise.  Not in copy mode, whose screen
+is frozen (the point and region put on it would move): lines that left the
+screen since it froze show twice then."
   (unless (terminal-scrollback-active terminal)
     ;; The scrollback ring is mutated by cb-sb-pushline/popline on the I/O
     ;; thread during parsing; snapshot it into a string under IO-LOCK, then
     ;; insert into the buffer (editor-thread-only) outside the lock.
     (let ((combined
             (bt2:with-lock-held ((terminal-io-lock terminal))
-              (unless (terminal-copy-mode terminal)
-                (when (and catch-up
-                           (not (terminal-dead terminal))
-                           (not (process-exited-p terminal)))
-                  (render terminal))
-                ;; The screen in the buffer is the one copy mode freezes.
-                (setf (terminal-frozen-pushes terminal)
-                      (terminal-scrollback-pushes terminal)))
-              (ring-text terminal 0 (- (scrollback-count terminal)
-                                       (unrendered-count terminal))))))
+              (when (and catch-up
+                         (not (terminal-dead terminal))
+                         (not (process-exited-p terminal))
+                         (not (terminal-copy-mode terminal)))
+                (render terminal))
+              (let ((count (scrollback-count terminal)))
+                (when (plusp count)
+                  (let* ((ring (terminal-scrollback-ring terminal))
+                         (head (terminal-scrollback-head terminal))
+                         (limit (length ring)))
+                    (with-output-to-string (s)
+                      (loop :for i :from 0 :below count
+                            :for idx := (mod (- head count (- i)) limit)
+                            :for line := (aref ring idx)
+                            :do (when line (write-string line s))
+                                (write-char #\newline s)))))))))
       (when combined
-        (insert-scrollback terminal combined)))))
+        (setf (terminal-scrollback-active terminal) t
+              (terminal-scrollback-shown terminal) (count #\Newline combined))
+        (let* ((buffer (terminal-buffer terminal))
+               (points (buffer-view-points buffer))
+               (positions (point-positions points))
+               (count (count #\Newline combined)))
+          (with-buffer-read-only buffer nil
+            (with-point ((start (buffer-point buffer)))
+              (buffer-start start)
+              (insert-string start combined)))
+          ;; Keep the cursor and every window on the rows they showed, so the
+          ;; history appears above the screen instead of replacing it.
+          (shift-points-by-lines points positions count)
+          count)))))
+
+(defun frozen-scrollback-lines (terminal)
+  "The number of scrollback lines above the screen in the buffer while copy
+mode freezes TERMINAL with them shown, or NIL."
+  (and (terminal-copy-mode terminal)
+       (terminal-scrollback-active terminal)
+       (terminal-scrollback-shown terminal)))
 
 (defun snap-to-bottom (terminal)
   "Reset view of every window showing the terminal buffer to the terminal area."
@@ -852,6 +768,13 @@ screen is frozen: the lines pushed since it froze are left out instead."
                       (ffi::terminal-cursor-col viscus)))))
 
 (defmethod adjust-point ((terminal terminal))
+  ;; Not once the process has exited: the buffer holds the final text then,
+  ;; maybe with the scrollback above the screen, and the cursor row is not
+  ;; a line of it.
+  (unless (process-exited-p terminal)
+    (adjust-point-to-cursor terminal)))
+
+(defun adjust-point-to-cursor (terminal)
   (let* ((buffer (terminal-buffer terminal))
          (point (buffer-point buffer))
          (viscus (terminal-viscus terminal)))
@@ -1034,7 +957,6 @@ so only the final Lisp string is allocated here."
                            (cffi:foreign-string-to-lisp c-str :count len :encoding :iso-8859-1)))))
             (setf (aref ring head) text)))
         (setf (terminal-scrollback-head terminal) (mod (1+ head) limit))
-        (incf (terminal-scrollback-pushes terminal))
         (when (< (scrollback-count terminal) limit)
           (incf (scrollback-count terminal))))
       ;; Must mark all rows dirty because vterm scrolls content up internally
@@ -1053,7 +975,6 @@ so only the final Lisp string is allocated here."
                (new-head (mod (1- head) limit)))
           (setf (aref ring new-head) nil)
           (setf (terminal-scrollback-head terminal) new-head)
-          (decf (terminal-scrollback-pushes terminal))
           (decf (scrollback-count terminal))))
       (mark-all-rows-dirty terminal))))
 
