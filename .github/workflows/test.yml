@@ -1,8 +1,10 @@
 name: CI
 
 on:
-  # A PR's commits are tested by pull_request; a push to a PR's branch or a
-  # merge into staging would test the same code again.  On push, only main.
+  # A PR's commits are tested by pull_request; a push to a PR's branch would
+  # test the same code again.  On push, only main.  What gets merged into
+  # staging (which can differ from what its PR tested, when staging moved on)
+  # is tested by the daily scheduled run below, not at each merge.
   push:
     branches: [main]
     paths-ignore:
@@ -16,6 +18,10 @@ on:
       - '.claude/**'
       - '**.md'
       - 'docs/**'
+  # Once a day on the default branch (staging on the cxxxr/lem fork),
+  # skipped when that commit already passed.
+  schedule:
+    - cron: '30 19 * * *'   # 19:30 UTC, 04:30 JST
   workflow_dispatch:
 
 env:
@@ -28,11 +34,37 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read     # to find the last scheduled run
+      contents: read
 
     steps:
+      # A scheduled run tests nothing when the last successful scheduled run
+      # was for the same commit.
+      - name: Skip a commit that already passed
+        id: skip
+        if: github.event_name == 'schedule'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'test.yml',
+              event: 'schedule',
+              status: 'success',
+              per_page: 1,
+            });
+            const last = data.workflow_runs[0];
+            const skip = Boolean(last && last.head_sha === context.sha);
+            if (skip) console.log(`${context.sha} already passed in run ${last.html_url}: skipping.`);
+            core.setOutput('skip', String(skip));
+
       - uses: actions/checkout@v7
+        if: steps.skip.outputs.skip != 'true'
 
       - name: Lint - Check for internal symbol usage
+        if: steps.skip.outputs.skip != 'true'
         run: |
           if [ $(grep -r --include="*.lisp" 'lem::' | wc -l) -ne 0 ]; then
             echo 'using `lem::` internal symbols'
@@ -41,15 +73,19 @@ jobs:
           fi
 
       - name: Build test image
+        if: steps.skip.outputs.skip != 'true'
         run: docker build -f docker/Dockerfile.test -t lem-tests .
 
       - name: Run tests
+        if: steps.skip.outputs.skip != 'true'
         run: docker run --rm lem-tests
 
   push_image:
     name: Push Image to GHCR
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    # Not for the daily scheduled run: on a repository whose default branch
+    # is main, it would push an image every day.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'schedule'
     permissions:
       contents: read
       packages: write

@@ -28,6 +28,11 @@
 #   SHIP_CI_SLOW     checks allowed to be still pending at the timeout, as an
 #                    extended regexp on their names (default: macos; those runners
 #                    are often queued for a long time; empty: none)
+#   SHIP_CI_IGNORED  changed files no workflow runs for, as an extended regexp
+#                    (default: the paths-ignore of .github/workflows/test.yml and
+#                    ci.yml: .claude/, docs/, *.md); a PR changing only those
+#                    passes once no check and no run appeared for SHIP_CI_START
+#                    seconds (default: 180)
 set -eu
 
 repo=${SHIP_REPO:-cxxxr/lem}
@@ -134,6 +139,8 @@ case "${1:-}" in
         sha=${3:?usage: ship wait PR SHA}
         timeout=${SHIP_CI_TIMEOUT:-2400}
         slow=${SHIP_CI_SLOW-macos}
+        start=${SHIP_CI_START:-180}
+        ignored=${SHIP_CI_IGNORED:-'^(\.claude/|docs/)|\.md$'}
         err=$(mktemp)
         trap 'rm -f "$err"' EXIT
         waited=0
@@ -204,6 +211,20 @@ case "${1:-}" in
             failed=$(printf '%s\n%s\n' "$checks" "$runs" |
                          grep -E '^completed/(failure|cancelled|timed_out|action_required|startup_failure|stale)' || true)
             if [ -n "$failed" ]; then echo "$failed" >&2; exit 1; fi
+            # No CI applies: the workflows skip changes only to the paths in
+            # their paths-ignore (SHIP_CI_IGNORED mirrors that list).  Only when
+            # no check and no run appeared for a while and every changed file
+            # is such a path, so a workflow that failed to start is not taken
+            # for this.
+            if [ "$head" = "$sha" ] && [ -z "$checks" ] && [ -z "$runs" ] &&
+                   [ "$waited" -ge "$start" ]; then
+                if files=$(gh pr view "$number" --repo "$repo" --json files \
+                               --jq '.files[].path' 2>"$err") &&
+                       [ -n "$files" ] && ! echo "$files" | grep -qvE "$ignored"; then
+                    echo "no CI applies to PR $number: it changes only files the workflows skip"
+                    exit 0
+                fi
+            fi
             if [ -n "$checks" ]; then
                 pending=$(echo "$checks" | grep -v '^completed/' || true)
                 running=$(echo "$runs" | grep -v '^completed/' || true)

@@ -107,7 +107,7 @@ completed, so jobs created late (`needs:`) are waited for too.
 
 | Exit | Meaning | Then |
 |------|---------|------|
-| 0 | passed, or only the slow macOS checks still pending at the timeout (it names them) | step 6; note the pending checks for step 8 |
+| 0 | passed; or only the slow macOS checks still pending at the timeout (it names them); or no CI applies (the PR changes only `.claude/`, `docs/` or `*.md`, which the workflows skip) | step 6; note the pending checks for step 8 |
 | 1 | a check, status or workflow run failed or was cancelled | read its log (`gh run view --repo cxxxr/lem --log-failed`), fix it as an Important finding (step 4), and wait again on the new SHA |
 | 3 | timed out on other checks, or `<SHA>` never became the PR's head | stop and tell the user |
 | 4 | GitHub could not be read three polls in a row (network, `gh auth`, a wrong PR number); it prints gh's error | not a CI failure: fix the cause if it is yours (the PR number), else stop and tell the user |
