@@ -1,14 +1,21 @@
 #!/bin/sh
 # frontends/clysm/tests/run.sh — Lem on Clysm: build the desktop
-# application and the page for a browser if needed, run each in Electron
+# application if there is none and the page for a browser if there is none
+# or it is older than the application's image, run each in Electron
 # without a display (the page in a window without Node.js, opened from its
 # file), and type into them (drive.js).
 here="$(cd "$(dirname "$0")/.." && pwd)"
 lem="$(cd "$here/../.." && pwd)"
 desktop=$lem/build/clysm/desktop
 web=$lem/build/clysm/web
-[ -x "$desktop/node_modules/electron/dist/electron" ] || "$here/build.sh" > /dev/null || exit 1
-[ -s "$web/lem.html" ] || "$here/build-web.sh" > /dev/null || exit 1
+# (also when an earlier build.sh failed before the image was saved)
+[ -x "$desktop/node_modules/electron/dist/electron" ] && [ -s "$desktop/lem.image" ] ||
+  "$here/build.sh" || exit 1
+# (the page embeds the image and the fasls of build.sh: it is made again
+# when build.sh has run since it was made; lem.image is written after the
+# fasls, at each build.sh)
+[ -s "$web/lem.html" ] && [ "$web/lem.html" -nt "$desktop/lem.image" ] ||
+  "$here/build-web.sh" || exit 1
 # (a short directory: the socket of a resident application is in it)
 dir=$(mktemp -d)
 trap 'rm -rf "$dir"' EXIT

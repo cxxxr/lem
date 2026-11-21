@@ -9,6 +9,36 @@
 broken timer, not on how soon a working one fires, which a loaded machine
 can delay by much more than the timer's own interval.")
 
+(defvar *current-time* 0)
+
+(defclass testing-timer-manager (timer-manager) ())
+
+(defmethod send-timer-notification ((timer-manager testing-timer-manager)
+                                    continue)
+  (funcall continue))
+
+(defclass named-timer-manager (timer-manager)
+  ((name :initarg :name :reader named-timer-manager-name)
+   (mailbox :initarg :mailbox :reader named-timer-manager-mailbox))
+  (:documentation "A timer manager that sends its name to MAILBOX for each
+notification, so that a test sees which manager a timer was given."))
+
+(defmethod send-timer-notification ((timer-manager named-timer-manager) continue)
+  (lem-mailbox:send-message (named-timer-manager-mailbox timer-manager)
+                            (named-timer-manager-name timer-manager))
+  (funcall continue))
+
+(defclass forwarding-timer-manager (timer-manager)
+  ((target :initarg :target :reader forwarding-timer-manager-target))
+  (:documentation "A timer manager that sends its notifications through TARGET
+(the editor's, when the tests run in a Lem), or runs them if TARGET is nil."))
+
+(defmethod send-timer-notification ((timer-manager forwarding-timer-manager) continue)
+  (let ((target (forwarding-timer-manager-target timer-manager)))
+    (if target
+        (send-timer-notification target continue)
+        (funcall continue))))
+
 (defun testing-timer ())
 
 ;;TODO: These tests do work indeed with CCL but for some reason when launching the tests
@@ -32,18 +62,12 @@ can delay by much more than the timer's own interval.")
          (value (timer-name timer)))
     (ok (string= "foo" value))))
 
-(defclass testing-timer-manager (timer-manager) ())
-
-(defmethod send-timer-notification ((timer-manager testing-timer-manager)
-                                    continue)
-  (funcall continue))
-
-(defvar *current-time* 0)
-
 (defmethod lem/common/timer::get-microsecond-time ((timer-manager testing-timer-manager))
   *current-time*)
 
 (defmacro with-testing-timer-manager (() &body body)
+  ;; Both lists of idle timers are bound: stop-idle-timers puts the processed
+  ;; ones back in the list, and the global ones are a running Lem's.
   `(with-timer-manager (make-instance 'testing-timer-manager)
      (let ((*current-time* 0)
            (lem/common/timer::*idle-timer-list* '())
@@ -153,3 +177,110 @@ can delay by much more than the timer's own interval.")
       (ok (not (member timer lem/common/timer::*idle-timer-list*)))
       (ok (not (member timer lem/common/timer::*processed-idle-timer-list*)))
       (ok (timer-expired-p timer)))))
+
+(defun manager-of-a-timer-started-now (mailbox)
+  "Start a timer in this thread and return the name of the manager that its
+notification went through."
+  (let ((timer (make-timer (lambda ()))))
+    (start-timer timer 1)
+    (multiple-value-prog1 (receive mailbox)
+      (join-timer-thread timer))))
+
+(deftest with-timer-manager-is-a-binding
+  (let* ((mailbox (lem-mailbox:make-mailbox))
+         (outer (make-instance 'named-timer-manager :name :outer :mailbox mailbox))
+         (inner (make-instance 'named-timer-manager :name :inner :mailbox mailbox)))
+    (with-timer-manager outer
+      (with-timer-manager inner
+        (ok (eq :inner (manager-of-a-timer-started-now mailbox)))
+        (testing "threads are given only the innermost one"
+          ;; (Clysm's bordeaux-threads binds every entry, the last one last.)
+          (ok (= 1 (count 'lem/common/timer::*timer-manager*
+                          bt2:*default-special-bindings* :key #'car)))))
+      (testing "the manager before is back after it"
+        (ok (eq :outer (manager-of-a-timer-started-now mailbox))))
+      (testing "also when it is left by a non-local exit"
+        (catch 'out
+          (with-timer-manager inner
+            (throw 'out nil)))
+        (ok (eq :outer (manager-of-a-timer-started-now mailbox))))
+      (testing "a thread made in it starts timers with its manager"
+        (ok (eq :outer
+                (bt2:join-thread
+                 (bt2:make-thread
+                  (lambda () (manager-of-a-timer-started-now mailbox))))))
+        (with-timer-manager inner
+          (ok (eq :inner
+                  (bt2:join-thread
+                   (bt2:make-thread
+                    (lambda () (manager-of-a-timer-started-now mailbox)))))))))))
+
+;; The global value of the manager is read and restored through the internal
+;; *timer-manager*: nothing exported reads it, as start-timer only hands it to
+;; a timer.
+#+sbcl
+(defun global-timer-manager ()
+  "Return the global value of the timer manager and whether it has one."
+  (handler-case
+      (values (sb-ext:symbol-global-value 'lem/common/timer::*timer-manager*) t)
+    (unbound-variable () (values nil nil))))
+
+#+sbcl
+(defun call-with-saved-global-timer-manager (function)
+  "Call FUNCTION with a function that makes a manager to set globally, and
+put the global manager back afterwards. The managers made forward to the
+global one before, so that a running Lem that the tests are run in (whose
+editor reads the global manager) goes on as before."
+  (multiple-value-bind (saved boundp) (global-timer-manager)
+    (unwind-protect
+         (funcall function
+                  (lambda ()
+                    (make-instance 'forwarding-timer-manager :target saved)))
+      (if boundp
+          (set-global-timer-manager saved)
+          (bt2:join-thread
+           (bt2:make-thread
+            (lambda ()
+              (sb-ext:without-package-locks
+                (makunbound 'lem/common/timer::*timer-manager*)))
+            :initial-bindings nil))))))
+
+(defun timer-manager-of-a-new-thread (&rest make-thread-arguments)
+  "Return the timer manager that a thread made now reads."
+  (bt2:join-thread
+   (apply #'bt2:make-thread
+          (lambda () lem/common/timer::*timer-manager*)
+          make-thread-arguments)))
+
+#+sbcl
+(deftest set-global-timer-manager-sets-the-global-value
+  (call-with-saved-global-timer-manager
+   (lambda (make-manager)
+     (let ((global (funcall make-manager))
+           (bound (make-instance 'testing-timer-manager)))
+       (with-timer-manager bound
+         (testing "also when called in with-timer-manager"
+           (set-global-timer-manager global)
+           (ok (eq bound lem/common/timer::*timer-manager*))
+           (ok (eq global (timer-manager-of-a-new-thread :initial-bindings nil)))))))))
+
+#+sbcl
+(deftest without-timer-manager-binding-gives-threads-the-global-manager
+  (call-with-saved-global-timer-manager
+   (lambda (make-manager)
+     (let ((global (funcall make-manager))
+           (next-global (funcall make-manager))
+           (bound (make-instance 'testing-timer-manager)))
+       (set-global-timer-manager global)
+       (with-timer-manager bound
+         (without-timer-manager-binding ()
+           (ok (eq global (timer-manager-of-a-new-thread)))
+           (testing "a thread made by such a thread reads the global manager of now"
+             ;; As a thread that the editor makes, after the editor is
+             ;; started again.
+             (ok (eq next-global
+                     (bt2:join-thread
+                      (bt2:make-thread
+                       (lambda ()
+                         (set-global-timer-manager next-global)
+                         (timer-manager-of-a-new-thread)))))))))))))
