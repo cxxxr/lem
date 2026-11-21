@@ -4,7 +4,20 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '.claude/**'
+      - '**.md'
+      - 'docs/**'
   pull_request:
+    # Changes only to the Claude Code skills or to documents need no build.
+    paths-ignore:
+      - '.claude/**'
+      - '**.md'
+      - 'docs/**'
+  # Every target, macOS included, once a day on the default branch (staging
+  # on the cxxxr/lem fork), skipped when that commit already passed.
+  schedule:
+    - cron: '0 19 * * *'   # 19:00 UTC, 04:00 JST
   # Trigger manually to optionally include heavier/unstable targets
   workflow_dispatch:
     inputs:
@@ -17,9 +30,13 @@ jobs:
   # 1. Job to generate the matrix dynamically based on inputs
   setup:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read     # to find the last scheduled run
+      contents: read
     outputs:
       os: ${{ steps.set-matrix.outputs.os }}
       backend: ${{ steps.set-matrix.outputs.backend }}
+      skip: ${{ steps.set-matrix.outputs.skip }}
     steps:
       - name: Generate Matrix JSON
         id: set-matrix
@@ -28,6 +45,33 @@ jobs:
           script: |
             // Default configuration (Stable & Lightweight targets)
             let osList = ["ubuntu-24.04", "ubuntu-24.04-arm", "macos-15"];
+
+            // macOS runners are often queued for a long time: pull requests
+            // build on Linux only; macOS is built by the daily scheduled run,
+            // on a push to main, and when triggered by hand.
+            if (context.eventName === 'pull_request') {
+              osList = osList.filter((os) => !os.startsWith("macos"));
+            }
+
+            // A scheduled run builds nothing when the last successful
+            // scheduled run was for the same commit.
+            let skip = false;
+            if (context.eventName === 'schedule') {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'ci.yml',
+                event: 'schedule',
+                status: 'success',
+                per_page: 1,
+              });
+              const last = data.workflow_runs[0];
+              if (last && last.head_sha === context.sha) {
+                console.log(`${context.sha} already passed in run ${last.html_url}: skipping.`);
+                skip = true;
+              }
+            }
+            core.setOutput('skip', String(skip));
             let backendList = ["lem-ncurses", "lem-webview"];
 
             // Check if optional targets should be included
@@ -44,6 +88,7 @@ jobs:
   # 2. Build job using the dynamically generated matrix
   build:
     needs: setup
+    if: needs.setup.outputs.skip != 'true'
     name: builds ${{ matrix.backend }} on ${{ matrix.os }}
     # The 'runs-on' key also uses the dynamic matrix
     runs-on: ${{ matrix.os }}
