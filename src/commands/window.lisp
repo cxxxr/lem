@@ -103,7 +103,7 @@
 
 (define-command previous-buffer () ()
   "Switches to the previous buffer."
-  (let ((buffers (frame-buffer-list)))
+  (alexandria:when-let ((buffers (frame-buffer-list)))
     (switch-to-buffer
      (if (eq (current-buffer) (car buffers))
          (alexandria:lastcar buffers)
@@ -115,7 +115,7 @@
 
 (define-command next-buffer () ()
   "Switches to the next buffer."
-  (let ((buffers (frame-buffer-list)))
+  (alexandria:when-let ((buffers (frame-buffer-list)))
     (switch-to-buffer (or (cadr (member (current-buffer) buffers))
                           (car buffers))
                       nil)))

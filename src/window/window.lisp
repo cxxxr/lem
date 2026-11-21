@@ -839,9 +839,9 @@ You can pass in the optional argument WINDOW-LIST to replace the default
       (setq buffer-list
             (remove (window-buffer win)
                     buffer-list)))
-    (if (null buffer-list)
+    (or (car buffer-list)
         (car (frame-buffer-list))
-        (car buffer-list))))
+        (current-buffer))))
 
 (defun change-buffer-p (window)
   (window-parameter window 'change-buffer))
@@ -1003,7 +1003,9 @@ You can pass in the optional argument WINDOW-LIST to replace the default
              ;; Take the next buffer from this frame's buffers, not from the
              ;; whole buffer list, so that a frame used as a workspace keeps
              ;; showing its own buffers.
-             (switch-to-buffer (car (frame-buffer-list)) nil)))
+             (switch-to-buffer (or (car (frame-buffer-list))
+                                   (primordial-buffer))
+                               nil)))
        (unless (deleted-window-p parent-window)
          (setf (current-window) parent-window))))))
 
