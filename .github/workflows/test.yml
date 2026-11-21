@@ -61,7 +61,10 @@ jobs:
               per_page: 100,
             });
             // Not the status: 'success' filter of the API: it can miss a run
-            // that finished minutes ago.
+            // that finished minutes ago.  A run still in progress does not
+            // count, so the commit of a push just before the schedule is
+            // tested twice: a skipped run ends as a success, and the later
+            // scheduled runs would skip on it if the run in progress failed.
             const passed = runs.find((run) =>
               run.conclusion === 'success' && run.event !== 'pull_request');
             if (passed) console.log(`${context.sha} already passed in run ${passed.html_url} (${passed.event}): skipping.`);

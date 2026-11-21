@@ -16,9 +16,9 @@ on:
       - '.claude/**'
       - '**.md'
       - 'docs/**'
-  # Every target, macOS included, once a day on the default branch (staging
-  # on the cxxxr/lem fork), skipped when that commit already passed on
-  # every OS (in a push, manual or scheduled run).
+  # Every default target (not SDL2), macOS included, once a day on the
+  # default branch (staging on the cxxxr/lem fork), skipped when that commit
+  # already passed on every OS (in a push, manual or scheduled run).
   schedule:
     - cron: '0 19 * * *'   # 19:00 UTC, 04:00 JST
   # Trigger manually to optionally include heavier/unstable targets
@@ -71,7 +71,10 @@ jobs:
                 per_page: 100,
               });
               // Not the status: 'success' filter of the API: it can miss a run
-              // that finished minutes ago.
+              // that finished minutes ago.  A run still in progress does not
+              // count, so the commit of a push just before the schedule is
+              // tested twice: a skipped run ends as a success, and the later
+              // scheduled runs would skip on it if the run in progress failed.
               const passed = runs.find((run) =>
                 run.conclusion === 'success' && run.event !== 'pull_request');
               if (passed) {
