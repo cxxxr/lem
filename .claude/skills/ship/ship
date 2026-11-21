@@ -16,7 +16,8 @@
 #   ship wait PR SHA            wait for the CI of commit SHA, once it is the PR's head:
 #                               0 passed, 1 a check failed or was cancelled (printed with
 #                               its URL: the run ID follows /runs/), 3 timed out, 4 GitHub
-#                               could not be read (3 polls in a row), 5 the PR's head
+#                               could not be read (3 polls in a row; or once, the fetch
+#                               of the PR's head for a SHA not in this clone), 5 the head
 #                               moved past SHA, or was replaced by a later commit (a
 #                               rebase pushed over it)
 #   ship rerun RUN              re-run the failed jobs of workflow run RUN (an ID or a
@@ -24,7 +25,8 @@
 #                               attempt started, so that a wait right after it does not
 #                               read the old one: 0 started, 1 gh refused the re-run or
 #                               no new attempt in 2 minutes, 2 not a workflow run, 3 the
-#                               run did not complete within SHIP_CI_TIMEOUT
+#                               run did not complete within SHIP_CI_TIMEOUT, 4 the run
+#                               could not be read (a wrong ID, GitHub)
 #   ship scheduled              the newest scheduled run of each workflow on the base
 #                               branch (CI and Nix CI test what was merged; also the
 #                               nightly builds and the stale bot): 1 if one failed,
@@ -284,6 +286,7 @@ case "${1:-}" in
         timeout=${SHIP_CI_TIMEOUT:-2400}
         slow=${SHIP_CI_SLOW-macos}
         start=${SHIP_CI_START:-180}
+        command -v jq >/dev/null || { echo "ship wait needs jq" >&2; exit 2; }
         tmp=$(mktemp -d)
         trap 'rm -rf "$tmp"' EXIT
         err=$tmp/err
@@ -392,24 +395,22 @@ case "${1:-}" in
                 # Looked at once the commit is here (else again at the next poll).
                 if git cat-file -e "$head^{commit}" 2>/dev/null; then
                     moved=$head
-                    # A newer commit on top of SHA: SHA will not be the head
-                    # again.  An older head that SHA is on top of is a push not
-                    # seen yet.
+                    # A newer commit on top of SHA, or one not related to it
+                    # and committed after it (a rebase pushed over it): SHA
+                    # will not be the head again.  An older head that SHA is on
+                    # top of, or one committed before SHA, is a push not seen
+                    # yet or a stale read.  Decided at the next poll, if the
+                    # head is still this one: right after a push that dropped
+                    # commits, one read can still give the old head.
                     if git merge-base --is-ancestor "$sha" "$head"; then
-                        echo "the head of PR $number moved past $sha to $head" >&2
-                        exit 5
-                    fi
-                    # Neither, and committed after SHA: it replaced SHA (a
-                    # rebase pushed over it).  Committed before: an older head,
-                    # not replaced yet by the push of SHA, or a stale read.
-                    # Decided at the next poll, if the head is still this one.
-                    if ! git merge-base --is-ancestor "$head" "$sha" &&
+                        replaced="moved past $sha to $head"
+                    elif ! git merge-base --is-ancestor "$head" "$sha" &&
                            [ "$(git show -s --format=%ct "$head")" -gt "$(git show -s --format=%ct "$sha")" ]; then
-                        replaced=$head
+                        replaced="is $head, which replaced $sha (a rebase or a force-push)"
                     fi
                 fi
             elif [ -n "$replaced" ]; then
-                echo "the head of PR $number is $head, which replaced $sha (a rebase or a force-push)" >&2
+                echo "the head of PR $number $replaced" >&2
                 exit 5
             fi
             # Also with no check at all: a run that failed to start (a broken
@@ -489,12 +490,17 @@ case "${1:-}" in
                     echo "not a workflow run of GitHub Actions: $run" >&2; exit 2 ;;
                 esac
                 run=${run##*/actions/runs/}
+                run=${run%%\?*}
                 run=${run%%/*} ;;
         esac
         # GitHub re-runs only a completed run: wait for the jobs still running
         # (wait exits at the first failed check).
         waited=0
-        while [ "$(gh api "repos/$repo/actions/runs/$run" --jq .status)" != completed ]; do
+        while :; do
+            # A wrong ID (a job's, not the run's) or GitHub not read: at once.
+            state=$(gh api "repos/$repo/actions/runs/$run" --jq .status) || {
+                echo "cannot read workflow run $run of $repo" >&2; exit 4; }
+            [ "$state" != completed ] || break
             if [ "$waited" -ge "${SHIP_CI_TIMEOUT:-2400}" ]; then
                 echo "run $run still not completed after ${waited}s" >&2
                 exit 3
@@ -503,7 +509,7 @@ case "${1:-}" in
             sleep 30
             waited=$((waited + 30))
         done
-        before=$(gh api "repos/$repo/actions/runs/$run" --jq '"\(.run_attempt) \(.run_started_at)"')
+        before=$(gh api "repos/$repo/actions/runs/$run" --jq '"\(.run_attempt) \(.run_started_at)"') || exit 4
         gh run rerun "$run" --failed --repo "$repo"
         # Until the new attempt shows, with its own start time (ship wait drops
         # the check runs that completed before it), the run and its check runs
@@ -513,7 +519,8 @@ case "${1:-}" in
             now=$(gh api "repos/$repo/actions/runs/$run" \
                       --jq '"\(.run_attempt) \(.run_started_at) \(.status)"' 2>/dev/null || true)
             if [ -n "$now" ] && [ "${now%% *}" -gt "${before%% *}" ] &&
-                   [ "$(echo "$now" | cut -d' ' -f2)" != "${before#* }" ]; then
+                   [ "$(echo "$now" | cut -d' ' -f2)" != "${before#* }" ] &&
+                   [ "${now##* }" != completed ]; then
                 echo "run $run: attempt ${now%% *}, ${now##* }"
                 exit 0
             fi
