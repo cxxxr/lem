@@ -115,7 +115,8 @@ same event (closing and reopening the PR), replaces an earlier failure. A
 Pull requests build on Linux only; macOS and what was merged into `staging`
 are tested by the daily scheduled runs (step 8). A workflow with its own
 macOS job (`build-terminal-shared-object.yml`, for changes to
-`extensions/terminal/terminal.c`, `ffi.lisp` or `scripts/build-terminal.lisp`) still runs on the PR: those are the slow checks
+`extensions/terminal/terminal.c`, `extensions/terminal/ffi.lisp`,
+`scripts/build-terminal.lisp` or the workflow itself) still runs on the PR: those are the slow checks
 (`SHIP_CI_SLOW`).
 
 | Exit | Meaning | Then |
