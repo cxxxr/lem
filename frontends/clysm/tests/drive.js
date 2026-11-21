@@ -35,6 +35,15 @@ module.exports = (win, app) => {
   const type = async (text) => { for (const c of text) await key(c); };
   const command = async (name) => { await key('x', ['alt']); await sleep(100); await type(name); await key('Return'); await sleep(500); };
   let failed = 0;
+  // Prints the last line once (the 'closed' handler and the test may both
+  // get here) and quits.
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    console.log(failed ? `${label}: ${failed} failed` : `${label}: ok`);
+    app.exit(failed ? 1 : 0);
+  };
   const check = (name, ok, detail = '') => {
     if (ok) console.log(`ok ${name}`);
     else { failed++; console.log(`FAIL ${name}${detail ? ': ' + detail : ''}`); }
@@ -515,16 +524,32 @@ module.exports = (win, app) => {
       check('resize', await until(async () => (await lisp('(lem:display-width)')) !== width));
 
       check('no errors on the console', errors.length === 0, errors.join(' | '));
-      const finish = () => { console.log(failed ? `${label}: ${failed} failed` : `${label}: ok`); app.exit(failed ? 1 : 0); };
-      win.on('closed', finish);
+      // C-x C-c closes the window, or (a browser may not let the page close)
+      // the page says that Lem has exited.  Once the window is closing, its
+      // page is going away: asking it would fail ("Render frame was
+      // disposed"), so the 'closed' handler ends the run instead.
+      let closing = false;
+      win.once('close', () => { closing = true; });
+      win.once('closed', () => { check('exit', true); finish(); });
       await key('x', ['control']); await key('c', ['control']);
-      // (a browser may not let the page close: then it says that Lem has exited)
-      const exited = await until(async () => win.isDestroyed() || (await js("document.body.innerText")).includes('Lem has exited'), 3000);
-      check('exit', exited, 'C-x C-c did not close the window');
-      finish();
+      const pageSaysExited = async () => {
+        if (closing) return false;
+        try {
+          return (await js("document.body.innerText")).includes('Lem has exited');
+        } catch (e) {
+          if (closing || win.isDestroyed()) return false;
+          throw e;
+        }
+      };
+      const exited = await until(pageSaysExited, 3000);
+      if (!closing) {
+        check('exit', exited, 'C-x C-c did not close the window');
+        finish();
+      }
     } catch (e) {
+      failed++;
       console.log('FAIL', e && e.stack || e);
+      finish();
     }
-    app.exit(1);
   });
 };
