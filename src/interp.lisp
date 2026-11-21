@@ -37,19 +37,20 @@ signals: the error being reported must not be replaced by that one."
       "#<error printing the condition>"))
 
 (defun already-reported-p (condition)
-  "Return true if CONDITION, or the error a timer-error CONDITION wraps, is
-*last-reported-condition*."
+  "Return true if CONDITION, or an error a timer-error CONDITION wraps (also
+through the timer-error of a timer that fired in another timer's prompt),
+is *last-reported-condition*."
   (and (boundp '*last-reported-condition*)
        *last-reported-condition*
-       (or (eq condition *last-reported-condition*)
-           (and (typep condition 'timer-error)
-                (eq (timer-error-condition condition)
-                    *last-reported-condition*)))))
+       (loop :for c := condition :then (timer-error-condition c)
+             :thereis (eq c *last-reported-condition*)
+             :while (typep c 'timer-error))))
 
 (defun report-error (condition backtrace context)
   "Run *error-report-hook* with CONDITION, BACKTRACE and CONTEXT, unless
 CONDITION, or the error a timer-error CONDITION wraps, was reported last in
-this command loop iteration. What a hook function signals is dropped, a
+the current with-error-handler (a toplevel command loop iteration, or the
+editor's initialization). What a hook function signals is dropped, a
 stack exhaustion included, so that reporting never makes the error it
 reports worse."
   (unless (already-reported-p condition)

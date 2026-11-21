@@ -59,9 +59,9 @@
     (ok (stringp report))
     (ok (< 150 (frame-line-count report)))))
 
-(deftest the-last-reported-condition-is-not-kept-outside-a-command-loop
+(deftest the-last-reported-condition-is-not-kept-outside-an-error-handler
   ;; In a thread of its own, with no binding of *last-reported-condition*:
-  ;; outside of a command loop also when the tests run in a Lem, whose
+  ;; outside of a with-error-handler also when the tests run in a Lem, whose
   ;; command loop binds it. (lem-core is locked, so progv cannot unbind it.)
   (let ((kept :not-run))
     (bt2:join-thread
@@ -82,6 +82,13 @@
       (lem-core::report-error (make-condition 'lem/common/timer:timer-error
                                               :timer nil :condition original)
                               nil :timer)
+      (testing "also through the timer-error of a timer whose prompt it fired in"
+        (lem-core::report-error
+         (make-condition 'lem/common/timer:timer-error
+                         :timer nil
+                         :condition (make-condition 'lem/common/timer:timer-error
+                                                    :timer nil :condition original))
+         nil :timer))
       (ok (equal '(:timer) contexts)))))
 
 (defun contexts-of-a-command-failing-in-a-prompt-of-a-timer (handle-function-p)

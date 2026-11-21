@@ -41,8 +41,10 @@ outside of call-outside-timer."
 (defun call-outside-timer (function)
   "Call FUNCTION with no timer running, as running-timer-p sees it: for a
 command loop entered from a timer's function (a prompt it opens), whose
-commands are not the timer's code. A timer that fires in FUNCTION is
-running again while its own function runs."
+commands are not the timer's code. The callbacks the timer gave that prompt
+(a completion function, a test function) run there too, so their errors
+are not the timer's either. A timer that fires in FUNCTION is running again
+while its own function runs."
   (let ((*running-timer* nil))
     (funcall function)))
 
