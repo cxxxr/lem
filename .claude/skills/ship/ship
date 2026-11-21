@@ -35,7 +35,8 @@
 #   ship merge PR SHA           merge the PR if its head is still SHA, then fetch the base
 #
 # Exit status: 0 done, 1 failed, 2 usage error (wait: also a SHA not in this
-# clone nor at the PR's head, or no jq); wait also 3, 4 and 5 (above).
+# clone nor at the PR's head, or no jq); wait also 3, 4 and 5, rerun 3 and 4,
+# scheduled 4 (above).
 #
 # Environment:
 #   SHIP_REPO        repository of the PR (default: cxxxr/lem)
@@ -50,10 +51,11 @@
 #   SHIP_CI_START    seconds with no check and no run before wait decides that no
 #                    CI applies (default: 180)
 #   SHIP_CI_IGNORED  unset (the default): no CI applies when every pull_request
-#                    workflow in .github/workflows of SHA skips all the changed
-#                    files by its paths or paths-ignore; set: an extended regexp of
-#                    the files no workflow runs for, used instead; empty: never
-#                    decide that no CI applies
+#                    workflow in .github/workflows, of SHA and of the PR's base
+#                    branch, skips all the changed files by its paths or
+#                    paths-ignore; set: an extended regexp of the files no
+#                    workflow runs for, used instead; empty: never decide that no
+#                    CI applies
 set -eu
 
 repo=${SHIP_REPO:-cxxxr/lem}
@@ -307,6 +309,7 @@ case "${1:-}" in
         moved=
         replaced=
         previous_head=
+        fresh=
         pending=
         running=
         previous=
@@ -393,6 +396,7 @@ case "${1:-}" in
             fi
             errors=0
             if [ "$waited" -lt "$timeout" ]; then previous_head=$head; fi
+            fresh=
             if [ "$head" = "$sha" ]; then
                 # A head read before (a stale read, or one undone) is looked
                 # at again when it comes back.
@@ -413,10 +417,10 @@ case "${1:-}" in
                     # head is still this one: right after a push that dropped
                     # commits, one read can still give the old head.
                     if git merge-base --is-ancestor "$sha" "$head"; then
-                        replaced="moved past $sha to $head"
+                        replaced="moved past $sha to $head"; fresh=1
                     elif ! git merge-base --is-ancestor "$head" "$sha" &&
                            [ "$(git show -s --format=%ct "$head")" -gt "$(git show -s --format=%ct "$sha")" ]; then
-                        replaced="is $head, which replaced $sha (a rebase or a force-push)"
+                        replaced="is $head, which replaced $sha (a rebase or a force-push)"; fresh=1
                     fi
                 fi
             elif [ -n "$replaced" ]; then
@@ -442,7 +446,13 @@ case "${1:-}" in
                     if [ -n "${SHIP_CI_IGNORED+set}" ]; then
                         ! grep -qvE "$SHIP_CI_IGNORED" "$tmp/files"
                     else
-                        ! ci_applies "$tmp/files" "$sha"
+                        # GitHub runs the workflows of the merge with the
+                        # base: also those added to the base since the PR
+                        # branched.  Base not fetched: CI applies.
+                        git fetch -q "$remote" "$target" 2>/dev/null &&
+                            tip=$(git rev-parse -q --verify FETCH_HEAD) &&
+                            ! ci_applies "$tmp/files" "$sha" &&
+                            ! ci_applies "$tmp/files" "$tip"
                     fi && {
                         echo "no CI applies to PR $number: it changes only files the workflows skip"
                         exit 0
@@ -467,9 +477,10 @@ case "${1:-}" in
             fi
             if [ "$waited" -ge "$timeout" ]; then
                 # A head other than SHA first seen at this poll (one that
-                # moved, or a stale read): decided at the next poll.
-                if [ "$head" != "$sha" ] && [ "$head" != "$previous_head" ] &&
-                       [ "$waited" -lt $((timeout + 120)) ]; then
+                # moved, or a stale read), or found to have moved only now
+                # (its commit came late): decided at the next poll.
+                if [ "$head" != "$sha" ] && [ "$waited" -lt $((timeout + 120)) ] &&
+                       { [ "$head" != "$previous_head" ] || [ -n "$fresh" ]; }; then
                     previous_head=$head
                     sleep 30; waited=$((waited + 30)); continue
                 fi
