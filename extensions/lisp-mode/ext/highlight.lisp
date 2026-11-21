@@ -63,7 +63,9 @@
 (defun init-highlight-timer ()
   (let ((timer (make-idle-timer 'lisp-highlight
                                 :name "lisp-highlight"
-                                :handle-function 'stop-highlight-timer)))
+                                :handle-function (lambda (condition)
+                                                   (declare (ignore condition))
+                                                   (stop-highlight-timer)))))
     (setf *timer* timer)
     (start-timer timer 100 :repeat t)))
 
