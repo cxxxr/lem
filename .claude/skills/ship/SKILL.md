@@ -27,9 +27,15 @@ $S preflight
 ```
 
 It refuses `staging` and `main`, uncommitted changes to tracked files, a branch
-with no commits over `cxxxr/staging`, and one that conflicts with it. If the
-change is not committed yet, commit it first (one commit per logical change,
-messages like the existing history).
+with no commits over `cxxxr/staging`, and one that conflicts with it (it lists
+the files). If the change is not committed yet, commit it first (one commit per
+logical change, messages like the existing history).
+
+A conflict is for the user (see the end). Once the branch is rebased on
+`cxxxr/staging`, verify it again: the code under the change is not the one
+verified. `$S pr` pushes a rebased branch over the one already pushed
+(`--force-with-lease`: only if nobody else pushed to it since); the commits
+reviewed before the rebase are gone, so review the new ones too.
 
 ## 2. Verify
 
@@ -53,6 +59,9 @@ Then:
 $S pr <scratch>/body.md     # prints <PR>; title: the first commit's subject, or give one
 ```
 
+When the PR exists already (a later round), `$S pr` pushes and replaces the
+PR's body with the file: update the Verification section in it first.
+
 ## 4. Review
 
 Run `/code-review high https://github.com/cxxxr/lem/pull/<PR>` (the full URL: a
@@ -61,47 +70,68 @@ its findings. Then, by severity:
 
 - **Important**: fix it, verify the fix (the checks it touches, plus a
   regression test that fails before the fix, see `verify worktree`), commit,
-  push (`$S pr <scratch>/body.md` again pushes and finds the same PR), and
-  review again. A later round starts from the earlier findings: check they
-  were fixed, then look at what the fixes changed.
+  update the Verification section of `<scratch>/body.md`, push
+  (`$S pr <scratch>/body.md` again pushes, finds the same PR and sets its
+  body), and review again. A later round starts from the earlier findings:
+  check they were fixed, then look at what the fixes changed.
 - **Pre-existing** and **Nit**: do not fix them in this PR. Add each to the
   Todoist `lem` project without asking, with the details and the PR in the
   description and one of two labels:
   `todoist add "..." -P lem -l ai --desc "..."` when the cause and the fix are
   clear and an agent can fix it and check it with `verify`;
-  `-l human` when it needs a choice of design, of feature or of process, or
-  work that cannot be done here (a real macOS, the user's own setup).
-  Do not add a finding that is already a task (`todoist list -f '#lem'`).
+  `todoist add "..." -P lem -l human --desc "..."` when it needs a choice of
+  design, of feature or of process, or work that cannot be done here (a real
+  macOS, the user's own setup). No `@` in the title: the CLI takes `@word` as a
+  label.
+  Do not add a finding that is already a task. The titles alone miss the same
+  finding worded another way: read the descriptions too, e.g.
+  `todoist list -f '#lem' --json | jq -r '.[] | "\(.id)\t\(.content)\t\(.description)"'`,
+  and look for the same file, command or function. Note the ID of each task
+  that matched instead.
 
 When a finding is wrong, say why in the PR (`$S comment`) instead of changing
 the code. After three review rounds that still have Important findings, stop
 and bring them to the user.
 
-## 5. Record the evidence
-
-Post what the PR was judged on, for the reader of the PR:
-
-```sh
-$S comment <PR> <scratch>/evidence.md
-```
-
-The comment lists the commit SHA (`git rev-parse HEAD`), the checks run on it and
-their results, the review rounds and what was fixed, and the Todoist tasks
-added.
-
-## 6. CI
+## 5. CI
 
 ```sh
 git rev-parse HEAD          # <SHA>: the commit you verified and pushed, not $S head
 $S wait <PR> <SHA>
 ```
 
-It waits until `<SHA>` is the PR's head and reads the checks of that commit
-(right after a push, the PR may still show the previous commit and its
-checks). 0: passed (or only the slow macOS runners still queued at the timeout; say
-so). 1: a check failed or was cancelled: read its log (`gh run view --repo cxxxr/lem --log-failed`),
-fix it as an Important finding (step 4), and wait again. 3: timed out on other
-checks: stop and tell the user.
+It waits until `<SHA>` is the PR's head and reads the checks, the commit
+statuses and the workflow runs of that commit (right after a push, the PR may
+still show the previous commit and its checks). Every workflow run must have
+completed, so jobs created late (`needs:`) are waited for too.
+
+| Exit | Meaning | Then |
+|------|---------|------|
+| 0 | passed, or only the slow macOS checks still pending at the timeout (it names them) | step 6; note the pending checks for step 8 |
+| 1 | a check, status or workflow run failed or was cancelled | read its log (`gh run view --repo cxxxr/lem --log-failed`), fix it as an Important finding (step 4), and wait again on the new SHA |
+| 3 | timed out on other checks, or `<SHA>` never became the PR's head | stop and tell the user |
+| 4 | GitHub could not be read three polls in a row (network, `gh auth`, a wrong PR number); it prints gh's error | not a CI failure: fix the cause if it is yours (the PR number), else stop and tell the user |
+| 5 | the PR's head moved past `<SHA>` to a newer commit | someone pushed to the branch: stop and tell the user |
+
+A run that failed for a reason outside the change (a flaky runner) is retried
+with GitHub's "Re-run jobs" (`gh run rerun <run-id> --failed --repo cxxxr/lem`),
+which makes a new attempt of the same run. A new run of the workflow
+(`workflow_dispatch`, closing and reopening the PR) does not replace the
+failed one: `$S wait` keeps reading the failed run and exits 1 again.
+
+## 6. Record the evidence
+
+After CI passed and just before the merge, so that it describes the SHA that
+is merged, post what the PR was judged on, for the reader of the PR:
+
+```sh
+$S comment <PR> <scratch>/evidence.md
+```
+
+The comment lists the commit SHA (the `<SHA>` of step 5), the checks run on it
+and their results (with CI, and the slow checks still pending), the review
+rounds and what was fixed, each Todoist task added with its label, and each
+finding not added because a task had it already, with that task's ID.
 
 ## 7. Merge
 
@@ -113,12 +143,34 @@ $S merge <PR> <SHA>         # the SHA that was verified, reviewed and waited for
 
 It refuses if the PR's head moved since. Then report to the user: the PR
 link, the merge commit, what was verified, what the review found and what was
-fixed, the Todoist tasks added, and anything not verified.
+fixed, the Todoist tasks added (with their labels) and the findings that were
+tasks already (their IDs), the slow checks left pending (step 8), and anything
+not verified.
+
+## 8. Slow checks left pending
+
+When step 5 passed with slow checks still pending, their result comes after
+the merge; nobody would read it. Wait for them in the background (the PR's
+head stays `<SHA>` after the merge):
+
+```sh
+SHIP_CI_SLOW= $S wait <PR> <SHA>     # run_in_background: none counts as slow now
+```
+
+- 0: say in the report that they passed.
+- 1: the failure is on `staging` now. Add a task,
+  `todoist add "..." -P lem -l ai --desc "..."` with the check, the SHA, the
+  PR and the log (`gh run view --repo cxxxr/lem --log-failed`), and tell the
+  user.
+- 3 (still pending), or the session ends first: add a task to look at them
+  later, `todoist add "..." -P lem -l ai --desc "..."` with the PR, the SHA and
+  the command above.
 
 ## Stop and ask the user instead of merging when
 
 - a check or review finding still fails after three rounds of fixes;
 - a fix would change what the user asked for, or a finding needs their choice;
 - preflight finds a conflict with `staging`;
-- CI times out on checks other than the slow ones, or fails for a reason
-  outside the change (a runner, the network).
+- CI times out on checks other than the slow ones (`$S wait` exit 3), fails
+  for a reason outside the change (a runner, the network), cannot be read
+  (exit 4), or the PR's head moved past the commit (exit 5).
