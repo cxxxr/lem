@@ -244,3 +244,36 @@ backtrace taken where it was signalled, as the editor's handlers do."
           (let ((incident (read-incident (first files))))
             (ok (equal "timer" (gethash "context" incident)))
             (ok (search "FAIL-IN-PLACE-B" (gethash "backtrace" incident)))))))))
+
+(defun incident-test-function-with-a-long-name-for-the-fingerprint-check (text)
+  (declare (optimize (debug 3)))
+  (labels ((handle-response-callback-with-another-rather-long-name (value)
+             (declare (optimize (debug 3)))
+             (error "failed on ~A" value)))
+    (declare (notinline handle-response-callback-with-another-rather-long-name))
+    (handle-response-callback-with-another-rather-long-name text)
+    nil))
+
+(deftest a-long-frame-name-is-kept-whole
+  (flet ((capture (text)
+           (multiple-value-list
+            (signal-and-capture
+             (lambda ()
+               (incident-test-function-with-a-long-name-for-the-fingerprint-check text))))))
+    (destructuring-bind (condition-1 backtrace-1) (capture "first argument")
+      (destructuring-bind (condition-2 backtrace-2) (capture "another (argument")
+        (let ((line (find-if (lambda (line) (search "HANDLE-RESPONSE-CALLBACK" line))
+                             (uiop:split-string backtrace-1 :separator '(#\Newline)))))
+          (ok (> (length (ir::frame-function-name line)) 120))
+          (ok (equal (ir::frame-function-name line)
+                     ;; printed in CL, as safe-backtrace prints names
+                     (let ((*package* (find-package :cl)))
+                       (format nil "(LABELS ~S :IN ~S)"
+                               'handle-response-callback-with-another-rather-long-name
+                               'incident-test-function-with-a-long-name-for-the-fingerprint-check)))))
+        (ok (equal (ir:incident-fingerprint condition-1 backtrace-1)
+                   (ir:incident-fingerprint condition-2 backtrace-2)))))))
+
+(deftest parens-in-strings-of-a-frame-name-do-not-count
+  (ok (equal "(LAMBDA () :IN \"/a (b.lisp\")"
+             (ir::frame-function-name "4: ((LAMBDA () :IN \"/a (b.lisp\") 1 \"x)\")"))))

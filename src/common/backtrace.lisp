@@ -50,6 +50,20 @@ a print-object method may signal on an object of a half-broken editor."
         (prin1-to-string object))
     (error () "#<error printing>")))
 
+(defun print-frame-name (name)
+  "Return the frame's function NAME on one line, whole: it is what tells
+frames apart (the incident fingerprint is made of these), so it is not cut
+and not limited in length or depth, unlike the arguments."
+  (one-line (handler-case
+                (let ((*print-pretty* nil)
+                      (*print-readably* nil)
+                      (*print-circle* t)
+                      (*print-length* nil)
+                      (*print-level* nil))
+                  (prin1-to-string name))
+              (error () "#<error printing>"))
+            most-positive-fixnum))
+
 (defun print-argument (object depth)
   "Return a one-line form of the frame argument OBJECT.
 Strings are printed by hand, not by the Lisp printer: SBCL prints long
@@ -86,7 +100,7 @@ before the stack unwinds."
              (ignore-errors (sb-debug::frame-call frame))
            (format out "~D: (~A~{ ~A~})~%"
                    index
-                   (one-line (print-object-safely name) *max-object-length*)
+                   (print-frame-name name)
                    (if (listp args)
                        (mapcar (lambda (arg) (print-argument arg 0)) args)
                        '())))

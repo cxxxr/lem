@@ -148,15 +148,23 @@ one line per frame."
 \"3: (LEM-CORE::FOO #<BUFFER a> 1)\", or NIL if LINE is not a frame."
   (ppcre:register-groups-bind (rest) ("^\\s*\\d+: \\((.*)$" line)
     (if (and (plusp (length rest)) (char= #\( (char rest 0)))
-        ;; (LAMBDA (X) :IN FOO) or (FLET BAR :IN FOO): up to the matching paren
+        ;; (LAMBDA (X) :IN FOO) or (FLET BAR :IN FOO): up to the matching
+        ;; paren, not counting the parens in strings such as :IN "/a (b).lisp"
         (loop :with depth := 0
+              :with in-string := nil
+              :with escaped := nil
               :for i :from 0 :below (length rest)
               :for c := (char rest i)
-              :do (case c
-                    (#\( (incf depth))
-                    (#\) (decf depth)
-                     (when (zerop depth)
-                       (return (subseq rest 0 (1+ i))))))
+              :do (cond (escaped (setf escaped nil))
+                        (in-string (case c
+                                     (#\\ (setf escaped t))
+                                     (#\" (setf in-string nil))))
+                        (t (case c
+                             (#\" (setf in-string t))
+                             (#\( (incf depth))
+                             (#\) (decf depth)
+                              (when (zerop depth)
+                                (return (subseq rest 0 (1+ i))))))))
               :finally (return rest))
         (subseq rest 0 (or (position-if (lambda (c) (member c '(#\Space #\))))
                                         rest)
@@ -175,7 +183,8 @@ Used instead of sxhash, which may change between Lisp versions."
 signalled from the same place: the condition type and the names of the
 topmost frames below the error machinery. Frame arguments and the error
 message are left out, since they change from one occurrence to the next."
-  (let ((names (with-input-from-string (in (sanitize-backtrace backtrace))
+  ;; The lines are read whole: sanitize-backtrace could cut a long name.
+  (let ((names (with-input-from-string (in (or backtrace ""))
                  (loop :for line := (read-line in nil)
                        :while line
                        :for name := (frame-function-name line)
