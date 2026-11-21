@@ -460,6 +460,40 @@ module.exports = (win, app) => {
         check('terminal: exit', await until(async () => (await terminalText()).includes('[Process exited'), 10000), await terminalText());
         await lisp('(lem:send-event (lambda () (lem:kill-buffer (lem:current-buffer))))');
         await sleep(300);
+        // a start that fails after the process is spawned (its output cannot
+        // be subscribed to) kills that process and leaves no buffer
+        // the next spawn starts the process, whose onData then throws (node-pty's
+        // onData is a getter: an assignment would not replace it)
+        const breakNextSpawn = `(() => {
+          const pty = require('node-pty'), spawn = pty.spawn;
+          pty.spawn = (...args) => {
+            pty.spawn = spawn;
+            const spawned = spawn(...args);
+            globalThis.lemTestPid = spawned.pid;
+            const broken = Object.create(spawned);
+            Object.defineProperty(broken, 'onData', { value: () => { throw new Error('onData failed (a test)'); } });
+            return broken;
+          };
+        })()`;
+        const buffersBefore = await lisp('(length (lem:buffer-list))');
+        await js(breakNextSpawn);
+        await command('terminal');
+        await sleep(500);
+        const alive = () => js(`(() => { try { process.kill(globalThis.lemTestPid, 0); return true; }
+                                       catch (e) { return false; } })()`);
+        check('terminal: a failed start kills its process',
+              (await js('typeof globalThis.lemTestPid')) === 'number' && await until(async () => !(await alive()), 5000),
+              await js('globalThis.lemTestPid'));
+        check('terminal: a failed start leaves no buffer',
+              (await lisp('(length (lem:buffer-list))')) === buffersBefore,
+              `${buffersBefore} ${await lisp('(length (lem:buffer-list))')}`);
+        await key('g', ['control']); await sleep(300);
+        // and says why: create's editor-error, the same start called directly
+        await js(breakNextSpawn);
+        const why = await lisp('(handler-case (progn (lem-terminal/terminal:create :rows 24 :cols 80 :buffer (lem:make-buffer "*failed terminal*" :temporary t) :directory "") :started) (lem:editor-error (e) (princ-to-string e)))');
+        check('terminal: a failed start says why', why === '"Cannot start the terminal: onData failed (a test)"', why);
+        check('terminal: so does a direct create, killing its process', await until(async () => !(await alive()), 5000),
+              await js('globalThis.lemTestPid'));
       }
 
       // the editor seen from outside (M-x remote-start, tools/lem-remote): in the desktop application

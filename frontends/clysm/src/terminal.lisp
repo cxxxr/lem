@@ -123,6 +123,7 @@ three 32-bit words, little-endian: content, foreground, background.")
 
 (defclass terminal ()
   ((pty :initarg :pty
+        :initform nil
         :accessor terminal-pty
         :documentation "The pseudo-terminal and its child process (node-pty).")
    (xterm :initarg :xterm
@@ -347,8 +348,14 @@ unless a terminal ran in it before (M-x terminal-restart keeps its buffer)."
              (js:js-error (e)
                (editor-error "Cannot start the terminal: ~A" (js:js-error-message e))))
            (setf started t))
-      (unless (or started (buffer-value buffer 'terminal-started))
-        (delete-buffer buffer)))
+      (unless started
+        ;; The process may run already (spawned, then an error setting up its
+        ;; handlers): kill it and free the screen, as nothing else could.  The
+        ;; error that made the start fail goes on.
+        (when (terminal-pty terminal)
+          (ignore-errors (kill-process terminal)))
+        (unless (buffer-value buffer 'terminal-started)
+          (delete-buffer buffer))))
     (setf (buffer-value buffer 'terminal-started) t)
     (push terminal *terminals*)
     terminal))
