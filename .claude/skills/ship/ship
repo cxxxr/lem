@@ -20,8 +20,11 @@
 #                               moved past SHA, or was replaced by a later commit (a
 #                               rebase pushed over it)
 #   ship rerun RUN              re-run the failed jobs of workflow run RUN (an ID or a
-#                               URL from wait) and wait until the new attempt started,
-#                               so that a wait right after it does not read the old one
+#                               URL from wait) once it completed, and wait until the new
+#                               attempt started, so that a wait right after it does not
+#                               read the old one: 0 started, 1 gh refused the re-run or
+#                               no new attempt in 2 minutes, 2 not a workflow run, 3 the
+#                               run did not complete within SHIP_CI_TIMEOUT
 #   ship scheduled              the newest scheduled run of each workflow on the base
 #                               branch (CI and Nix CI test what was merged; also the
 #                               nightly builds and the stale bot): 1 if one failed,
@@ -86,10 +89,12 @@ included() {
 }
 
 # The pull_request filters of the workflow file $1 at commit $2, one per
-# line: "always" (no paths filter), "unknown" (a form not read here, taken
-# as running for every PR), "ignore ERE" (paths-ignore), "paths ERE",
-# "branches ERE" or "branches-ignore ERE", each glob turned into an extended
-# regexp; nothing when it does not run on pull requests.  Reads the block style of YAML the workflows use.
+# line as "TRIGGER FILTER": TRIGGER numbers the pull_request and
+# pull_request_target triggers, and FILTER is "always" (no paths filter),
+# "unknown" (a form not read here, taken as running for every PR), "ignore
+# ERE" (paths-ignore), "paths ERE", "branches ERE" or "branches-ignore ERE",
+# each glob turned into an extended regexp.  Nothing when it does not run on
+# pull requests.  Reads the YAML forms the workflows use.
 pr_filters() {
     git show "$2:$1" | awk '
         function indent(s) { match(s, /^ */); return RLENGTH }
@@ -108,21 +113,22 @@ pr_filters() {
             sub(/^[ \t]+/, "", g); sub(/[ \t]+$/, "", g)
             if (g ~ /^\047.*\047$/ || g ~ /^".*"$/) g = substr(g, 2, length(g) - 2)
             if (g == "") return
-            if (g ~ /^!/) print "unknown"; else print kind " " ere(g)
+            if (g ~ /^!/) out("unknown"); else out(kind " " ere(g))
         }
         function flow(kind, v,   n, a, i) {
-            if (v !~ /^\[.*\]$/) { print "unknown"; return }
+            if (v !~ /^\[.*\]$/) { out("unknown"); return }
             n = split(substr(v, 2, length(v) - 2), a, ",")
             for (i = 1; i <= n; i++) item(kind, a[i])
         }
-        function endpr() { if (pr && !filtered) print "always"; pr = 0 }
+        function out(s) { print t " " s }
+        function endpr() { if (pr && !filtered) out("always"); pr = 0 }
         /^[ \t]*(#.*)?$/ { next }
         /^[^ ]/ {
             endpr(); inon = 0
             if ($0 ~ /^("on"|\047on\047|on|true):/) {
                 v = value($0)
                 if (v == "") { inon = 1; child = -1 }
-                else if (v ~ /pull_request/) print "always"
+                else if (v ~ /pull_request/) { t++; out("always") }
             }
             next
         }
@@ -132,10 +138,10 @@ pr_filters() {
             if (child < 0) child = ind
             if (ind <= child) {
                 endpr(); list = ""
-                if (line ~ /^- *pull_request(_target)? *(#.*)?$/) print "always"
+                if (line ~ /^- *pull_request(_target)? *(#.*)?$/) { t++; out("always") }
                 else if (line ~ /^pull_request(_target)?:/) {
-                    pr = 1; filtered = 0; v = value(line)
-                    if (v != "" && v != "{}" && v != "null" && v != "~") { print "unknown"; filtered = 1 }
+                    t++; pr = 1; filtered = 0; v = value(line)
+                    if (v != "" && v != "{}" && v != "null" && v != "~") { out("unknown"); filtered = 1 }
                 }
                 next
             }
@@ -153,6 +159,23 @@ pr_filters() {
         END { endpr() }'
 }
 
+# Whether trigger $3 of the filters in $2 runs for a pull request into the
+# base branch changing the files listed in file $1.
+trigger_runs() {
+    f=$(echo "$2" | sed -n "s/^$3 //p")
+    if echo "$f" | grep -qx unknown; then return 0; fi
+    br=$(echo "$f" | sed -n 's/^branches //p' | paste -sd'|' -)
+    bri=$(echo "$f" | sed -n 's/^branches-ignore //p' | paste -sd'|' -)
+    if [ -n "$br" ] && ! printf '%s\n' "$base" | grep -qE "$br"; then return 1; fi
+    if [ -n "$bri" ] && printf '%s\n' "$base" | grep -qE "$bri"; then return 1; fi
+    if echo "$f" | grep -qx always; then return 0; fi
+    ign=$(echo "$f" | sed -n 's/^ignore //p' | paste -sd'|' -)
+    pat=$(echo "$f" | sed -n 's/^paths //p' | paste -sd'|' -)
+    if [ -n "$ign" ] && grep -qvE "$ign" "$1"; then return 0; fi
+    if [ -n "$pat" ] && grep -qE "$pat" "$1"; then return 0; fi
+    return 1
+}
+
 # Whether some pull_request workflow of commit $2 runs for the changed files
 # listed in file $1 (status 0), or each skips all of them (status 1).
 ci_applies() {
@@ -160,18 +183,9 @@ ci_applies() {
     for wf in $wfs; do
         case $wf in *.yml|*.yaml) ;; *) continue ;; esac
         filters=$(pr_filters "$wf" "$2") || return 0
-        [ -n "$filters" ] || continue
-        if echo "$filters" | grep -qx unknown; then return 0; fi
-        # Not for pull requests into the base branch.
-        br=$(echo "$filters" | sed -n 's/^branches //p' | paste -sd'|' -)
-        bri=$(echo "$filters" | sed -n 's/^branches-ignore //p' | paste -sd'|' -)
-        if [ -n "$br" ] && ! printf '%s\n' "$base" | grep -qE "$br"; then continue; fi
-        if [ -n "$bri" ] && printf '%s\n' "$base" | grep -qE "$bri"; then continue; fi
-        if echo "$filters" | grep -qx always; then return 0; fi
-        ign=$(echo "$filters" | sed -n 's/^ignore //p' | paste -sd'|' -)
-        pat=$(echo "$filters" | sed -n 's/^paths //p' | paste -sd'|' -)
-        if [ -n "$ign" ] && grep -qvE "$ign" "$1"; then return 0; fi
-        if [ -n "$pat" ] && grep -qE "$pat" "$1"; then return 0; fi
+        for n in $(echo "$filters" | cut -d' ' -f1 | sort -u); do
+            if trigger_runs "$1" "$filters" "$n"; then return 0; fi
+        done
     done
     return 1
 }
@@ -275,13 +289,17 @@ case "${1:-}" in
         err=$tmp/err
         # The full SHA, lower case, as GitHub gives the head: a short or upper
         # case one would never equal it.
-        sha=$(git rev-parse -q --verify "$given^{commit}" 2>/dev/null) || {
-            git fetch -q "$remote" "refs/pull/$number/head" 2>/dev/null || true
-            sha=$(git rev-parse -q --verify "$given^{commit}" 2>/dev/null)
-        } || { echo "no commit $given here or at the head of PR $number" >&2; exit 2; }
+        if ! sha=$(git rev-parse -q --verify "$given^{commit}" 2>/dev/null); then
+            if ! git fetch -q "$remote" "refs/pull/$number/head" 2>"$err"; then
+                echo "cannot fetch the head of PR $number to look for $given:" >&2
+                sed 's/^/  /' "$err" >&2
+                exit 4
+            fi
+            sha=$(git rev-parse -q --verify "$given^{commit}" 2>/dev/null) ||
+                { echo "no commit $given here or at the head of PR $number" >&2; exit 2; }
+        fi
         waited=0
         errors=0
-        seen=
         moved=
         replaced=
         pending=
@@ -366,29 +384,29 @@ case "${1:-}" in
             fi
             errors=0
             if [ "$head" = "$sha" ]; then
-                seen=1
                 replaced=
             elif [ "$head" != "$moved" ]; then
-                moved=$head
                 replaced=
                 git cat-file -e "$head^{commit}" 2>/dev/null ||
                     git fetch -q "$remote" "refs/pull/$number/head" 2>/dev/null || true
-                # A newer commit on top of SHA: SHA will not be the head again.
-                # An older head that SHA is on top of is a push not seen yet.
-                if git merge-base --is-ancestor "$sha" "$head" 2>/dev/null; then
-                    echo "the head of PR $number moved past $sha to $head" >&2
-                    exit 5
-                fi
-                # Neither: a commit that replaced SHA (a rebase pushed over it)
-                # when SHA was the head before or this one is newer; else an
-                # older head not replaced yet by the push of SHA.  Decided at
-                # the next poll, if the head is still this one: one read may
-                # be stale, or a push back to SHA not shown yet.
-                if git cat-file -e "$head^{commit}" 2>/dev/null &&
-                       ! git merge-base --is-ancestor "$head" "$sha" &&
-                       { [ -n "$seen" ] ||
-                             [ "$(git show -s --format=%ct "$head")" -gt "$(git show -s --format=%ct "$sha")" ]; }; then
-                    replaced=$head
+                # Looked at once the commit is here (else again at the next poll).
+                if git cat-file -e "$head^{commit}" 2>/dev/null; then
+                    moved=$head
+                    # A newer commit on top of SHA: SHA will not be the head
+                    # again.  An older head that SHA is on top of is a push not
+                    # seen yet.
+                    if git merge-base --is-ancestor "$sha" "$head"; then
+                        echo "the head of PR $number moved past $sha to $head" >&2
+                        exit 5
+                    fi
+                    # Neither, and committed after SHA: it replaced SHA (a
+                    # rebase pushed over it).  Committed before: an older head,
+                    # not replaced yet by the push of SHA, or a stale read.
+                    # Decided at the next poll, if the head is still this one.
+                    if ! git merge-base --is-ancestor "$head" "$sha" &&
+                           [ "$(git show -s --format=%ct "$head")" -gt "$(git show -s --format=%ct "$sha")" ]; then
+                        replaced=$head
+                    fi
                 fi
             elif [ -n "$replaced" ]; then
                 echo "the head of PR $number is $head, which replaced $sha (a rebase or a force-push)" >&2
@@ -473,6 +491,18 @@ case "${1:-}" in
                 run=${run##*/actions/runs/}
                 run=${run%%/*} ;;
         esac
+        # GitHub re-runs only a completed run: wait for the jobs still running
+        # (wait exits at the first failed check).
+        waited=0
+        while [ "$(gh api "repos/$repo/actions/runs/$run" --jq .status)" != completed ]; do
+            if [ "$waited" -ge "${SHIP_CI_TIMEOUT:-2400}" ]; then
+                echo "run $run still not completed after ${waited}s" >&2
+                exit 3
+            fi
+            [ "$waited" -gt 0 ] || echo "waiting for run $run to complete" >&2
+            sleep 30
+            waited=$((waited + 30))
+        done
         before=$(gh api "repos/$repo/actions/runs/$run" --jq '"\(.run_attempt) \(.run_started_at)"')
         gh run rerun "$run" --failed --repo "$repo"
         # Until the new attempt shows, with its own start time (ship wait drops
@@ -499,13 +529,14 @@ case "${1:-}" in
         tmp=$(mktemp)
         trap 'rm -f "$tmp"' EXIT
         git fetch -q "$remote" "$base" || exit 4
+        tip=$(git rev-parse -q --verify FETCH_HEAD) || exit 4
         gh api "repos/$repo/actions/runs?event=schedule&branch=$base&per_page=100" \
             --jq '.workflow_runs | group_by(.workflow_id) | map(max_by(.run_number))[]
                   | "\(.path)\t\(.status)/\(.conclusion)\t\(.name)\t\(.head_sha[:12])\t\(.created_at)\t\(.html_url)"' \
             >"$tmp" || exit 4
         status=0
         while IFS="$(printf '\t')" read -r path state rest; do
-            git cat-file -e "$remote/$base:$path" 2>/dev/null || continue
+            git cat-file -e "$tip:$path" 2>/dev/null || continue
             printf '%s\t%s\n' "$state" "$rest"
             case $state in
                 completed/failure|completed/cancelled|completed/timed_out|completed/startup_failure|completed/action_required|completed/stale)
