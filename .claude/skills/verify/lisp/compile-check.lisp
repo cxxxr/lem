@@ -42,7 +42,8 @@
   "Quickload SYSTEMS, letting a file that fails to compile with a warning or
 a \"caught ERROR\" go on: the compile below reports it.  Returns T when the
 load succeeded; otherwise prints the error, with the file that signalled it,
-and returns NIL and the name of that file's system (or NIL)."
+and returns NIL and the name of the system at fault (see
+`verify-condition-system')."
   (handler-case
       (let ((uiop:*compile-file-failure-behaviour* :warn))
         (ql:quickload systems :silent t)
@@ -51,7 +52,17 @@ and returns NIL and the name of that file's system (or NIL)."
       (format t "~&FAILED to load ~{~(~a~)~^, ~}:~%  ~a~%"
               (uiop:ensure-list systems) condition)
       (verify-print-failing-file condition)
-      (values nil (verify-failing-system condition)))))
+      (values nil (verify-condition-system condition)))))
+
+(defun verify-condition-system (condition)
+  "The name of the system at fault for CONDITION, a load error: the system of
+the file that signalled it, or the system that was not found, or NIL."
+  (or (verify-failing-system condition)
+      (typecase condition
+        (ql:system-not-found (ql:system-not-found-name condition))
+        (asdf:missing-component
+         (let ((name (asdf/find-component:missing-requires condition)))
+           (and name (asdf:coerce-name name)))))))
 
 (defun verify-dependency-name (dependency)
   "The system name of the ASDF DEPENDENCY specifier, or NIL for one that
@@ -60,12 +71,17 @@ names no system (:require)."
         ((and (consp dependency) (eq (first dependency) :version))
          (verify-dependency-name (second dependency)))
         ((and (consp dependency) (eq (first dependency) :feature))
-         (verify-dependency-name (third dependency)))))
+         ;; Only where ASDF uses it.
+         (and (uiop:featurep (second dependency))
+              (verify-dependency-name (third dependency))))))
 
 (defun verify-failed-dependency (system)
   "A system of `*verify-failed-systems*' that SYSTEM is or depends on, directly
-or not, or NIL.  Loaded systems are not looked into: they loaded."
+or not, or NIL.  Loaded systems are not looked into: they loaded.  Nothing is
+looked up (ASDF may load .asd files for it) while no system has failed."
   (let ((seen (make-hash-table :test 'equal)))
+    (unless *verify-failed-systems*
+      (return-from verify-failed-dependency nil))
     (labels ((walk (name)
                (unless (gethash name seen)
                  (setf (gethash name seen) t)
@@ -175,11 +191,17 @@ definition.  SYSTEM must be a primary system: its subsystems have the same
       (if (and found (uiop:pathname-equal (truename found) source))
           (format nil "~a/~a" (asdf:component-name system) (string-downcase path))
           (progn
-            (format t "~&note: ~a is not taken as ~a/~a: ASDF looks for ~
-                       the file by the lowercase name~%"
-                    (enough-namestring source (uiop:getcwd))
-                    (asdf:component-name system) (string-downcase path))
+            (unless *verify-case-note*
+              (setf *verify-case-note*
+                    (format nil "~a is not taken as ~a/~a: ASDF looks for the ~
+                                 file by the lowercase name"
+                            (enough-namestring source (uiop:getcwd))
+                            (asdf:component-name system) (string-downcase path))))
             nil)))))
+
+(defvar *verify-case-note* nil
+  "Why `verify-inferred-system' did not take the file `verify-file-system' looks
+for as a system because of its case, or NIL.  Printed when no system is found.")
 
 (defun verify-file-system (file)
   "The name of the ASDF system that has FILE as a component or, in a
@@ -192,7 +214,8 @@ but not for a package-inferred-system above them, which would take FILE
 whatever its own .asd says."
   (let ((source (uiop:truenamize (verify-absolute-file file)))
         (repo (uiop:truenamize (uiop:getcwd)))
-        (failed '()))
+        (failed '())
+        (*verify-case-note* nil))
     (loop :for directory := (uiop:pathname-directory-pathname source)
             :then (uiop:pathname-parent-directory-pathname directory)
           :while (uiop:subpathp directory repo)
@@ -228,6 +251,8 @@ whatever its own .asd says."
                           (if failed
                               (values nil (reverse failed))
                               (values inferred '())))))))))
+    (when *verify-case-note*
+      (format t "~&note: ~a~%" *verify-case-note*))
     (values nil (nreverse failed))))
 
 (defun verify-print-failed-asds (failed-asds)
