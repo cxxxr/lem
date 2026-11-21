@@ -1,0 +1,186 @@
+#!/bin/sh
+# The fixed steps of shipping a branch: open its PR, wait for CI, merge the
+# commit that was verified.  The judgement (verify, review, fixes) is in
+# SKILL.md next to this script.
+#
+#   ship preflight              check the branch can be shipped; fetch the base
+#   ship pr BODY-FILE [TITLE]   push the branch and open its PR (or find its open one,
+#                               from this repository's owner); prints the PR number
+#                               (TITLE: the first commit's subject)
+#   ship head PR                the commit SHA at the head of the PR
+#   ship comment PR FILE        add FILE as a comment on the PR
+#   ship wait PR SHA            wait for the CI of commit SHA, once it is the PR's head:
+#                               0 passed, 1 a check failed or was cancelled, 3 timed out
+#   ship merge PR SHA           merge the PR if its head is still SHA, then fetch the base
+#
+# Exit status: 0 done, 1 failed, 2 usage error, 3 CI timed out.
+#
+# Environment:
+#   SHIP_REPO        repository of the PR (default: cxxxr/lem)
+#   SHIP_REMOTE      git remote of that repository (default: cxxxr)
+#   SHIP_BASE        base branch (default: staging)
+#   SHIP_CI_TIMEOUT  seconds to wait for CI (default: 2400)
+#   SHIP_CI_SLOW     checks allowed to be still pending at the timeout, as an
+#                    extended regexp on their names (default: macos; those runners
+#                    are often queued for a long time)
+set -eu
+
+repo=${SHIP_REPO:-cxxxr/lem}
+remote=${SHIP_REMOTE:-cxxxr}
+base=${SHIP_BASE:-staging}
+self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+caller=$(pwd)
+top=$(git -C "$(dirname "$self")" rev-parse --show-toplevel)
+cd "$top"
+
+usage() {
+    sed -n '2,/^[^#]/{/^#/p}' "$self" | sed 's/^# \{0,1\}//'
+    exit 2
+}
+
+# A file argument as given by the caller, before the cd above.
+from_caller() {
+    case "$1" in
+        /*) echo "$1" ;;
+        *) echo "$caller/$1" ;;
+    esac
+}
+
+current_branch() {
+    git symbolic-ref -q --short HEAD || { echo "not on a branch" >&2; exit 1; }
+}
+
+case "${1:-}" in
+    preflight)
+        branch=$(current_branch)
+        case "$branch" in
+            "$base"|main|master)
+                echo "on $branch: make a branch for the change first" >&2; exit 1 ;;
+        esac
+        if ! git diff --quiet HEAD; then
+            echo "uncommitted changes to tracked files: commit them first" >&2
+            git status --short --untracked-files=no >&2
+            exit 1
+        fi
+        git fetch -q "$remote" "$base"
+        ahead=$(git rev-list --count "$remote/$base..HEAD")
+        behind=$(git rev-list --count "HEAD..$remote/$base")
+        if [ "$ahead" -eq 0 ]; then echo "nothing to ship: no commits over $remote/$base" >&2; exit 1; fi
+        echo "branch $branch: $ahead commit(s) over $remote/$base, $behind behind it"
+        git log --oneline "$remote/$base..HEAD"
+        if [ "$behind" -gt 0 ] && ! git merge-tree --write-tree "$remote/$base" HEAD >/dev/null 2>&1; then
+            echo "conflicts with $remote/$base: merge or rebase first" >&2; exit 1
+        fi
+        ;;
+    pr)
+        body=$(from_caller "${2:?usage: ship pr BODY-FILE [TITLE]}")
+        [ -r "$body" ] || { echo "cannot read $body" >&2; exit 1; }
+        branch=$(current_branch)
+        git push -q -u "$remote" "$branch"
+        # --head matches the branch name of any fork: keep the owner's PR only.
+        number=$(gh pr list --repo "$repo" --head "$branch" --state open \
+            --json number,headRepositoryOwner \
+            --jq "map(select(.headRepositoryOwner.login == \"${repo%%/*}\")) | .[0].number // empty")
+        if [ -z "$number" ]; then
+            title=${3:-$(git log --reverse --format=%s "$remote/$base..HEAD" | head -1)}
+            url=$(gh pr create --repo "$repo" --base "$base" --head "$branch" \
+                --title "$title" --body-file "$body")
+            number=${url##*/}
+        fi
+        echo "$number"
+        echo "https://github.com/$repo/pull/$number" >&2
+        ;;
+    head)
+        # gh prints hints on stderr; an error still fails the command.
+        gh pr view "${2:?usage: ship head PR}" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null
+        ;;
+    comment)
+        file=$(from_caller "${3:?usage: ship comment PR FILE}")
+        [ -r "$file" ] || { echo "cannot read $file" >&2; exit 1; }
+        gh pr comment "${2:?usage: ship comment PR FILE}" --repo "$repo" \
+            --body-file "$file" >/dev/null
+        ;;
+    wait)
+        number=${2:?usage: ship wait PR SHA}
+        sha=${3:?usage: ship wait PR SHA}
+        timeout=${SHIP_CI_TIMEOUT:-2400}
+        slow=${SHIP_CI_SLOW:-macos}
+        waited=0
+        pending=
+        previous=
+        names=
+        last=
+        while :; do
+            # The checks of commit SHA itself, not of whatever the PR's head is:
+            # right after a push, the PR still shows the previous commit's checks.
+            head=$(gh pr view "$number" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null) || {
+                echo "cannot read PR $number of $repo" >&2; exit 1; }
+            checks=
+            if [ "$head" = "$sha" ]; then
+                checks=$(gh api "repos/$repo/commits/$sha/check-runs?per_page=100" \
+                    --jq '.check_runs[] | "\(.status)/\(.conclusion)\t\(.name)"' 2>/dev/null) || {
+                    echo "cannot read the checks of $sha" >&2; exit 1; }
+                # Commit statuses (the older API some integrations use), in the
+                # same form: success passes, failure and error fail, pending runs.
+                statuses=$(gh api "repos/$repo/commits/$sha/status" \
+                    --jq '.statuses[] | (if .state == "success" then "completed/success"
+                                         elif .state == "pending" then "in_progress/null"
+                                         else "completed/failure" end) + "\t" + .context' 2>/dev/null) || {
+                    echo "cannot read the statuses of $sha" >&2; exit 1; }
+                if [ -n "$statuses" ]; then
+                    checks=$(printf '%s\n%s' "$checks" "$statuses" | sed '/^$/d')
+                fi
+            fi
+            if [ -n "$checks" ]; then
+                failed=$(echo "$checks" | grep -E '^completed/(failure|cancelled|timed_out|action_required|startup_failure|stale)' || true)
+                if [ -n "$failed" ]; then echo "$failed" >&2; exit 1; fi
+                pending=$(echo "$checks" | grep -v '^completed/' || true)
+                # Workflows create some check runs late (jobs that need another
+                # job): done only when two polls in a row found every check
+                # completed, with the same checks.
+                last=$names
+                names=$(echo "$checks" | cut -f2 | sort)
+                if [ -z "$pending" ]; then
+                    if [ "$names" = "$previous" ]; then echo "CI passed for $sha"; exit 0; fi
+                    previous=$names
+                else
+                    previous=
+                fi
+            fi
+            if [ "$waited" -ge "$timeout" ]; then
+                # The same two-poll rule holds at the timeout: a list of checks
+                # seen once may still lack the jobs created late.
+                if [ -n "$checks" ] && [ "$waited" -lt $((timeout + 120)) ] &&
+                       { [ -z "$pending" ] || [ "$names" != "$last" ]; }; then
+                    sleep 30; waited=$((waited + 30)); continue
+                fi
+                if [ -n "$checks" ] && [ -n "$pending" ] && [ "$names" = "$last" ] &&
+                       ! echo "$pending" | cut -f2 | grep -qvE "$slow"; then
+                    echo "CI passed for $sha except checks still pending:" >&2
+                    echo "$pending" | cut -f2 | sed 's/^/  /' >&2
+                    exit 0
+                fi
+                if [ "$head" != "$sha" ]; then
+                    echo "the head of PR $number is $head, not $sha" >&2
+                else
+                    echo "CI timed out after ${timeout}s; pending:" >&2
+                    echo "${pending:-  (no checks reported)}" | cut -f2 >&2
+                fi
+                exit 3
+            fi
+            sleep 30
+            waited=$((waited + 30))
+        done
+        ;;
+    merge)
+        number=${2:?usage: ship merge PR SHA}
+        sha=${3:?usage: ship merge PR SHA}
+        gh pr merge "$number" --repo "$repo" --merge --match-head-commit "$sha"
+        git fetch -q "$remote" "$base"
+        gh pr view "$number" --repo "$repo" --json state,mergeCommit \
+            --jq '"\(.state) \(.mergeCommit.oid)"' 2>/dev/null
+        ;;
+    *)
+        usage
+        ;;
+esac
