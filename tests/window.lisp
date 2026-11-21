@@ -471,3 +471,105 @@
       (testing "the points of the header window are deleted"
         (ok (notany (lambda (point) (buffer-has-point-p shown point))
                     header-points))))))
+
+(deftest adjust-all-window-size/header-windows-move-up
+  ;; adjust-all-window-size and topleft-window-y are internal: redisplay runs
+  ;; them, which the fake interface does not draw.
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((upper (make-instance 'lem:header-window
+                                   :buffer (lem:make-buffer "upper" :temporary t)))
+             (lower (make-instance 'lem:header-window
+                                   :buffer (lem:make-buffer "lower" :temporary t))))
+        (unwind-protect
+             (progn
+               (assert (= 1 (lem:window-y lower)))
+               (lem:delete-window upper)
+               (lem-core::adjust-all-window-size)
+               (testing "the header window under the deleted one moves up"
+                 (ok (= 0 (lem:window-y lower))))
+               (testing "and the editor windows begin under it"
+                 (ok (= 1 (lem-core::topleft-window-y (lem:current-frame))))
+                 (ok (= 1 (lem:window-y (lem:current-window))))))
+          (lem:delete-window lower))))))
+
+(deftest teardown-frame/frees-attached-windows
+  ;; window-attached-window and window-deleted-p are internal: lem exports no
+  ;; way to reach an attached window or to tell that a window was freed.
+  (lem:with-current-buffers ()
+    (let* ((buffer (make-attached-buffer))
+           (attached (lem-core::buffer-attached-buffer buffer))
+           (window nil)
+           (points '()))
+      (with-fake-interface ()
+        (lem:switch-to-buffer buffer)
+        (setf window (lem-core::window-attached-window
+                      (first (lem:get-buffer-windows buffer))))
+        (assert window)
+        (setf points (window-points window))
+        (ok (every (lambda (point) (buffer-has-point-p attached point)) points)))
+      (testing "the attached window is freed with its frame"
+        (ok (lem-core::window-deleted-p window))
+        (ok (notany (lambda (point) (buffer-has-point-p attached point)) points))))))
+
+(deftest teardown-frames/every-frame
+  ;; window-deleted-p is internal: lem exports no way to tell that a window
+  ;; was freed.
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((hidden-buffer (lem:make-buffer "hidden"))
+             ;; As a hidden frame-multiplexer tab: made and set up, not mapped.
+             (hidden (lem:make-frame (lem:current-frame)))
+             (shown-window (lem:current-window)))
+        (lem:setup-frame hidden hidden-buffer)
+        (let* ((hidden-window (first (lem:window-list hidden)))
+               (points (window-points hidden-window)))
+          (lem:teardown-frames)
+          (ok (null (lem:all-frames)))
+          (ok (lem-core::window-deleted-p shown-window))
+          (testing "the frame not mapped to the display is torn down too"
+            (ok (lem-core::window-deleted-p hidden-window))
+            (ok (notany (lambda (point) (buffer-has-point-p hidden-buffer point))
+                        points))))))))
+
+(deftest map-protected/the-first-error-is-signalled
+  ;; map-protected is internal: a helper of teardown-frames and teardown-windows.
+  (let ((called '())
+        (conditions '()))
+    (ok (equal "1"
+               (handler-case
+                   (handler-bind ((condition (lambda (c) (push c conditions))))
+                     (lem-core::map-protected
+                      (lambda (n)
+                        (push n called)
+                        (when (oddp n)
+                          (error "~D" n)))
+                      '(0 1 2 3 4)))
+                 (error (e) (princ-to-string e)))))
+    (testing "every element is called, also after the errors"
+      (ok (equal '(0 1 2 3 4) (reverse called))))
+    (testing "the later error is not signalled out of map-protected (it is logged)"
+      (ok (= 1 (count-if (lambda (c) (typep c 'error)) conditions)))
+      (ok (notany (lambda (c) (typep c 'warning)) conditions)))))
+
+(deftest map-protected/nested-failures-signal-nothing-that-skips-the-rest
+  ;; map-protected is internal: a helper of teardown-frames and teardown-windows.
+  (let ((called '()))
+    (block exit
+      (handler-bind ((warning (lambda (w)
+                                (declare (ignore w))
+                                (return-from exit))))
+        (handler-case
+            (lem-core::map-protected
+             (lambda (n)
+               (push n called)
+               (case n
+                 (0 (error "0"))
+                 ;; As teardown-windows inside teardown-frames: a nested
+                 ;; map-protected whose two calls fail.  Nothing is signalled
+                 ;; for the second, so the handler of warnings above, which
+                 ;; exits, does not run.
+                 (1 (lem-core::map-protected (lambda (x) (error "~A" x)) '(a b)))))
+             '(0 1 2))
+          (error () nil))))
+    (ok (equal '(0 1 2) (reverse called)))))

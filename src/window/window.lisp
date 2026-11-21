@@ -339,28 +339,39 @@ to the frame again (balance-windows, a resize of the display)."
 
 (defun teardown-windows (frame)
   "Free the windows of FRAME: the window tree, the floating windows (side
-windows among them) and the header windows that no other frame has.
-Each is freed once and marked deleted, so that a later delete-window does
-nothing.  Attached windows are not freed."
-  (flet ((free (window)
-           (unless (window-deleted-p window)
-             (%free-window window)
-             (setf (window-deleted-p window) t))))
+windows among them), the windows attached to them, and the header windows
+that no other frame has.  Each is freed once and marked deleted, so that a
+later delete-window does nothing.  A frame never set up has no window tree.
+All are freed even if freeing one signals an error (see map-protected)."
+  (labels ((free (window)
+             ;; Marked first, so that a window whose freeing failed is not
+             ;; freed again.
+             (unless (window-deleted-p window)
+               (setf (window-deleted-p window) t)
+               (map-protected (lambda (w)
+                                (if (eq w window)
+                                    (%free-window w)
+                                    (free w)))
+                              (remove nil (list (window-attached-window window)
+                                                window)))))
+           (shared-header-p (header)
+             (some (lambda (other)
+                     (and (not (eq other frame))
+                          (member header (frame-header-windows other))))
+                   (all-frames))))
     ;; A side window is a floating window too: FREE skips it the second time.
-    (mapc #'free (window-list frame))
-    (mapc #'free (frame-floating-windows frame))
-    (mapc #'free (remove nil (list (frame-leftside-window frame)
-                                   (frame-rightside-window frame)
-                                   (frame-bottomside-window frame))))
     ;; make-frame gives each new frame the header windows of the current one
-    ;; (each frame-multiplexer tab has the tab bar): free a header window with
-    ;; the last frame that has it.
-    (dolist (header (frame-header-windows frame))
-      (unless (some (lambda (other)
-                      (and (not (eq other frame))
-                           (member header (frame-header-windows other))))
-                    (all-frames))
-        (free header))))
+    ;; (each frame-multiplexer tab has the tab bar): a header window is freed
+    ;; with the last frame that has it.
+    (map-protected #'free
+                   (append (when (frame-window-tree frame)
+                             (window-list frame))
+                           (frame-floating-windows frame)
+                           (remove nil (list (frame-leftside-window frame)
+                                             (frame-rightside-window frame)
+                                             (frame-bottomside-window frame)))
+                           (remove-if #'shared-header-p
+                                      (frame-header-windows frame)))))
   (values))
 
 (defun adjust-view-point (window)
@@ -1095,11 +1106,17 @@ its own and is not a place to show another buffer."
 ;;;
 (defun adjust-all-window-size ()
   "Resize all windows to fit the current display dimensions.
-Each header window is set to full display width and its preferred height;
+Each header window is set to full display width and its preferred height,
+below the header windows before it;
 the windows of the frame keep their share of it (a window whose height or
 width is fixed keeps it)."
-  (dolist (window (frame-header-windows (current-frame)))
-    (window-set-size window (display-width) (header-window-height window)))
+  ;; Each header window below the ones above it: when one is deleted, the
+  ;; ones under it move up.
+  (let ((y 0))
+    (dolist (window (frame-header-windows (current-frame)))
+      (window-set-pos window 0 y)
+      (window-set-size window (display-width) (header-window-height window))
+      (incf y (header-window-height window))))
   (alexandria:when-let (window (frame-leftside-window (current-frame)))
     (place-leftside-window window))
   (alexandria:when-let (window (frame-rightside-window (current-frame)))

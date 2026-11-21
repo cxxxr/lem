@@ -119,8 +119,8 @@
   ;;
   ;; The frames are torn down at the end, so that the points of their windows
   ;; do not stay in buffers that outlive this use, such as *tmp*.
-  ;; teardown-frame frees the window tree, the floating, side and header
-  ;; windows (a header window with the last frame that has it).
+  ;; teardown-frame frees the window tree, the floating, side, attached and
+  ;; header windows (a header window with the last frame that has it).
   (let* ((lem-core::*frames* '())
          (lem-core::*display-frame-map* (make-hash-table))
          (lem-core::*last-focused-window* nil)
@@ -133,19 +133,25 @@
                         'lem/buffer/internal::*current-buffer*)
                   bt2:*default-special-bindings*)))
     (with-implementation (make-instance 'fake-interface)
-      (unwind-protect
-           (progn
-             (setup-first-frame)
-             (setf (current-buffer) (window-buffer (current-window)))
-             (funcall function))
-        ;; teardown-frame removes the frame from *frames*.  A frame never
-        ;; set up (make-frame alone) has no windows to tear down; it is
-        ;; dropped first, as it may hold the header windows of the others,
-        ;; which are freed with the last frame that has them.
-        (let ((frames (copy-list (all-frames))))
-          (setf lem-core::*frames* (remove-if-not #'frame-window-tree frames))
-          (dolist (frame (copy-list (all-frames)))
-            (teardown-frame frame)))))))
+      (let ((returned nil))
+        (unwind-protect
+             (multiple-value-prog1
+                 (progn
+                   (setup-first-frame)
+                   (setf (current-buffer) (window-buffer (current-window)))
+                   (funcall function))
+               (setf returned t))
+          ;; teardown-frames tears down every frame, also after one failed.
+          ;; When FUNCTION did not return (an error, a throw), its error is
+          ;; only warned about: it would replace FUNCTION's own error.  This
+          ;; is knowingly the case after a throw or return-from too, as they
+          ;; cannot be told from an error unwinding without a flag that a
+          ;; restart would fool.
+          (if returned
+              (teardown-frames)
+              (handler-case (teardown-frames)
+                (error (condition)
+                  (warn "Tearing down the frames failed: ~A" condition)))))))))
 
 (defmacro with-fake-interface (() &body body)
   `(call-with-fake-interface (lambda () ,@body)))
