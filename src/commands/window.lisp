@@ -103,19 +103,22 @@
 
 (define-command previous-buffer () ()
   "Switches to the previous buffer."
-  (switch-to-buffer
-   (if (eq (current-buffer) (car (buffer-list)))
-       (alexandria:lastcar (buffer-list))
-       (loop :for rest :on (buffer-list)
-             :do (when (eq (cadr rest) (current-buffer))
-                   (return (car rest)))))
-   nil))
+  (let ((buffers (frame-buffer-list)))
+    (switch-to-buffer
+     (if (eq (current-buffer) (car buffers))
+         (alexandria:lastcar buffers)
+         (loop :for rest :on buffers
+               :do (when (eq (cadr rest) (current-buffer))
+                     (return (car rest)))
+               :finally (return (car buffers))))
+     nil)))
 
 (define-command next-buffer () ()
   "Switches to the next buffer."
-  (switch-to-buffer (or (cadr (member (current-buffer) (buffer-list)))
-                        (car (buffer-list)))
-                    nil))
+  (let ((buffers (frame-buffer-list)))
+    (switch-to-buffer (or (cadr (member (current-buffer) buffers))
+                          (car buffers))
+                      nil)))
 
 (define-command recenter (p) (:universal-nil)
   "Scroll so that the cursor is in the middle."

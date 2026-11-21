@@ -3,6 +3,12 @@
 (defvar *display-frame-map* (make-hash-table))
 (defvar *frames* '())
 
+(defvar *frame-buffer-list-function* nil
+  "NIL, or a function of one argument, a frame, that returns the buffers
+to offer for selection in that frame.
+Extensions that use each frame as a separate workspace, such as
+frame-multiplexer, set this.  When it is NIL or returns NIL, every buffer is offered.")
+
 (defgeneric update-prompt-window (window)
   (:method (window)))
 
@@ -128,6 +134,17 @@ redraw-display関数でキャッシュを捨てて画面全体を再描画しま
 
 (defun current-frame ()
   (get-frame (implementation)))
+
+(defun frame-buffer-list (&optional (frame (current-frame)))
+  "Return the buffers to offer for selection in FRAME, most recently used first.
+This is what buffer completion, list-buffers, next-buffer and previous-buffer use,
+so that a frame used as a workspace only shows its own buffers.
+Lookups by name or file (get-buffer, get-file-buffer) still see every buffer:
+two workspaces visiting the same file share one buffer."
+  (or (and *frame-buffer-list-function*
+           frame
+           (funcall *frame-buffer-list-function* frame))
+      (buffer-list)))
 
 (defun unmap-frame (display)
   (let ((frame (gethash display *display-frame-map*)))

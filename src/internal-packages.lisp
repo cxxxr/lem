@@ -231,6 +231,8 @@
    :get-frame
    :all-frames
    :current-frame
+   :*frame-buffer-list-function*
+   :frame-buffer-list
    :unmap-frame
    :setup-frame
    :teardown-frame

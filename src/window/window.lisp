@@ -834,13 +834,13 @@ You can pass in the optional argument WINDOW-LIST to replace the default
         :collect window))
 
 (defun other-buffer ()
-  (let ((buffer-list (buffer-list)))
+  (let ((buffer-list (frame-buffer-list)))
     (dolist (win (window-list))
       (setq buffer-list
             (remove (window-buffer win)
                     buffer-list)))
     (if (null buffer-list)
-        (car (buffer-list))
+        (car (frame-buffer-list))
         (car buffer-list))))
 
 (defun change-buffer-p (window)

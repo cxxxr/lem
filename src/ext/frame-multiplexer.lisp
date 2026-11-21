@@ -26,6 +26,7 @@
            :frame-multiplexer-recent
            :frame-multiplexer-rename
            :toggle-frame-multiplexer
+           :frame-multiplexer-separate-buffers
            :frame-multiplexer-normalize-ids)
   #+sbcl
   (:lock t))
@@ -51,6 +52,13 @@
     (if value
         (frame-multiplexer-on)
         (frame-multiplexer-off))))
+
+(define-editor-variable frame-multiplexer-separate-buffers t
+  "If non-NIL, each frame (tab) is a workspace with its own buffers:
+buffer completion, list-buffers, next-buffer and previous-buffer only offer
+the buffers shown in the current frame, plus the buffers no frame has shown yet.
+Buffers themselves are shared, so opening a file another frame already visits
+reuses its buffer and adds it to the current frame.")
 
 (defvar *keymap*
   (make-keymap :description '*frame-multiplexer-keymap*)
@@ -83,7 +91,8 @@
 
 (defstruct frame-table-entry
   frame
-  name)
+  name
+  (buffers '()))
 
 (defun make-tabs (virtual-frame frames)
   (loop :for frame :in frames
@@ -151,7 +160,11 @@
   (declare (type frame frame))
   (let* ((buffer (make-buffer "*frame-multiplexer*" :enable-undo-p nil :temporary t))
          (id/frame-table (make-array +max-number-of-frames+ :initial-element nil)))
-    (setf (aref id/frame-table 0) (make-frame-table-entry :frame frame :name nil))
+    (setf (aref id/frame-table 0)
+          (make-frame-table-entry :frame frame
+                                  :name nil
+                                  :buffers (remove-duplicates
+                                            (mapcar #'window-buffer (window-list frame)))))
     (setf (variable-value 'line-wrap :buffer buffer) nil)
     (make-instance 'virtual-frame
                    :impl impl
@@ -202,9 +215,10 @@
     ;; primordial-bufferは現在のバッファリストから*tmp*バッファを返すが
     ;; バッファリストをフレームごとに管理する場合にここで*tmp*バッファを返すと
     ;; 元のフレームの*tmp*バッファを新しい方のフレームから参照することになってしまう
-    (setup-frame frame (primordial-buffer))
-    (setf (aref (virtual-frame-id/frame-table virtual-frame) id)
-          (make-frame-table-entry :frame frame :name nil))))
+    (let ((buffer (primordial-buffer)))
+      (setup-frame frame buffer)
+      (setf (aref (virtual-frame-id/frame-table virtual-frame) id)
+            (make-frame-table-entry :frame frame :name nil :buffers (list buffer))))))
 
 (defun free-frame (virtual-frame frame)
   (declare (type frame frame))
@@ -309,6 +323,47 @@
     (setf (virtual-frame-height window) (display-height))
     (call-next-method)))
 
+(defun buffer-visible-in-entry-p (virtual-frame entry buffer)
+  "Return T if BUFFER is to be offered in ENTRY's frame.
+A buffer that no frame has shown, such as one a background process created,
+is offered in every frame so that it can be found at all."
+  (or (member buffer (frame-table-entry-buffers entry))
+      (notany (lambda (other)
+                (member buffer (frame-table-entry-buffers other)))
+              (virtual-frame-entries virtual-frame))))
+
+(defun workspace-buffer-list (frame)
+  "Return the buffers of FRAME's workspace, or NIL to offer every buffer.
+This is set to lem:*frame-buffer-list-function* while frame-multiplexer is on."
+  (when (variable-value 'frame-multiplexer-separate-buffers :global)
+    (alexandria:when-let* ((vf (gethash (implementation) *virtual-frame-map*))
+                           (entry (find-frame-table-entry vf frame)))
+      (remove-if-not (lambda (buffer) (buffer-visible-in-entry-p vf entry buffer))
+                     (buffer-list)))))
+
+(defun find-entry-of-current-window (virtual-frame)
+  "Return the entry of the frame that holds the current window.
+It is not always the displayed frame: killing a buffer switches the windows
+of every frame to another buffer."
+  (or (find-if (lambda (entry)
+                 (member (current-window) (window-list (frame-table-entry-frame entry))))
+               (virtual-frame-entries virtual-frame))
+      (find-frame-table-entry virtual-frame (virtual-frame-current virtual-frame))))
+
+(defun add-buffer-to-workspace (buffer)
+  "Record that BUFFER is shown in the frame of the current window."
+  (alexandria:when-let* ((vf (gethash (implementation) *virtual-frame-map*))
+                         (entry (find-entry-of-current-window vf)))
+    (pushnew buffer (frame-table-entry-buffers entry))))
+
+(defun remove-buffer-from-workspaces (buffer)
+  "Forget BUFFER, which is being killed, in every frame."
+  (maphash (lambda (impl vf)
+             (declare (ignore impl))
+             (dolist (entry (virtual-frame-entries vf))
+               (alexandria:deletef (frame-table-entry-buffers entry) buffer)))
+           *virtual-frame-map*))
+
 (defun frame-multiplexer-init ()
   (clrhash *virtual-frame-map*)
   (loop
@@ -328,7 +383,8 @@
 
 (defun frame-multiplexer-on ()
   (unless (enabled-frame-multiplexer-p)
-    (frame-multiplexer-init)))
+    (frame-multiplexer-init)
+    (setf *frame-buffer-list-function* 'workspace-buffer-list)))
 
 (defun frame-multiplexer-off ()
   (when (enabled-frame-multiplexer-p)
@@ -336,7 +392,8 @@
                (declare (ignore k))
                (delete-window v))
              *virtual-frame-map*)
-    (clrhash *virtual-frame-map*)))
+    (clrhash *virtual-frame-map*)
+    (setf *frame-buffer-list-function* nil)))
 
 (defclass frame-multiplexer-advice () ())
 
@@ -512,6 +569,8 @@ With prefix argument ID, rename the frame with the given ID."
   (setf (variable-value 'frame-multiplexer :global) nil)
   (setq *recent-list* nil))
 
+(add-hook *switch-to-buffer-hook* 'add-buffer-to-workspace)
+(add-hook (variable-value 'kill-buffer-hook :global) 'remove-buffer-from-workspaces)
 (add-hook *after-init-hook* 'enable-frame-multiplexer)
 (add-hook *exit-editor-hook* 'disable-frame-multiplexer)
 
