@@ -39,4 +39,3 @@
     (and value
          (remove "" (uiop:split-string value :separator '(#\Space #\Newline #\Tab))
                  :test #'string=))))
-

@@ -16,8 +16,7 @@
   "True when lem-fake-interface and lem-tests loaded.")
 
 (defvar *verify-failed-systems* '()
-  "The primary systems of the systems that `verify-load-file-system' could not
-load: their other subsystems would fail the same way.")
+  "The systems that `verify-load-file-system' could not load.")
 
 (defun verify-cache-file-p (file)
   "True when FILE is under VERIFY_CACHE."
@@ -129,17 +128,21 @@ top level, which ASDF takes as the package of a package-inferred-system file."
   "The name of the system SOURCE is in as a file of the package-inferred-system
 SYSTEM that is not one of its components, or NIL.  Such a file is the system
 SYSTEM/PATH (PATH relative to SYSTEM's directory, without the type), which
-ASDF finds by that path when the file has a package definition.  SYSTEM must
+ASDF finds by that path when the file has a package definition and the path
+has no uppercase letter.  SYSTEM must
 be a primary system: its subsystems have the same .asd and directory."
   (when (and (typep system 'asdf:package-inferred-system)
              (string= (asdf:primary-system-name system) (asdf:component-name system))
              (uiop:subpathp source (asdf:component-pathname system))
              (verify-defpackage-file-p source))
-    (let ((relative (uiop:enough-pathname source (asdf:component-pathname system))))
-      ;; Joined by hand: NAMESTRING would escape a dot in the name.
-      (string-downcase
-       (format nil "~a/~{~a/~}~a" (asdf:component-name system)
-               (cdr (pathname-directory relative)) (pathname-name relative))))))
+    (let* ((relative (uiop:enough-pathname source (asdf:component-pathname system)))
+           ;; Joined by hand: NAMESTRING would escape a dot in the name.
+           (path (format nil "~{~a/~}~a" (cdr (pathname-directory relative))
+                         (pathname-name relative))))
+      ;; ASDF downcases system names and looks for the file of the
+      ;; downcased path, so it never finds Foo.lisp.
+      (and (string= path (string-downcase path))
+           (format nil "~a/~a" (asdf:component-name system) path)))))
 
 (defun verify-file-system (file)
   "The name of the ASDF system that has FILE as a component or, in a
@@ -203,8 +206,8 @@ whatever its own .asd says."
 every system, e.g. the frontends), so that FILE's packages exist.
 Returns :NONE when FILE is in no system, NIL, after printing why, when the
 system cannot be found or loaded here (a frontend whose foreign library is
-missing, say), and T otherwise.  A system that failed to load, or another
-of its primary system, is not loaded again for the next file."
+missing, say), and T otherwise.  A system that failed to load is not loaded
+again for the next file of it."
   (handler-case
       (multiple-value-bind (system failed-asds) (verify-file-system file)
         (cond (system
@@ -212,17 +215,15 @@ of its primary system, is not loaded again for the next file."
                  ;; Not FILE's system: noted, as nothing else checks them.
                  (format t "~&note: skipped .asd files that do not load, looking for ~a:~%" file)
                  (verify-print-failed-asds failed-asds))
-               (cond ((member (asdf:primary-system-name system) *verify-failed-systems*
-                              :test #'string=)
+               (cond ((asdf:component-loaded-p system) t)
+                     ((member system *verify-failed-systems* :test #'string=)
                       (format t "~&FAILED: ~a of ~a did not load, see above~%"
                               system file)
                       nil)
-                     ((asdf:component-loaded-p system) t)
                      (t
                       (format t "~&loading ~a for ~a~%" system file)
                       (or (verify-quickload system)
-                          (progn (push (asdf:primary-system-name system) *verify-failed-systems*)
-                                 nil)))))
+                          (progn (push system *verify-failed-systems*) nil)))))
               (failed-asds
                ;; FILE may be in one of these.
                (format t "~&FAILED to find the system of ~a:~%" file)
