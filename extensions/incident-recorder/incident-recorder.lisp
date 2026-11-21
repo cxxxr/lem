@@ -25,6 +25,10 @@ errors can be triaged and fixed later (.claude/skills/triage/)."))
 (defparameter *max-incidents-per-session* 100
   "No more incidents are written in this session after this many.")
 
+(defparameter *max-failed-writes-per-session* 10
+  "No more incidents are tried in this session after this many failed to be
+written (a full disk, a read-only home).")
+
 (defparameter *same-fingerprint-interval* 60
   "Seconds during which another error with the same fingerprint is not written again.")
 
@@ -69,6 +73,9 @@ Written only in the editor thread.")
 (defvar *incident-count* 0
   "Incidents written in this session.")
 
+(defvar *failed-write-count* 0
+  "Incidents that failed to be written in this session.")
+
 (defvar *last-written-times* (make-hash-table :test 'equal)
   "Fingerprint -> universal time it was last written, or last tried to be.")
 
@@ -96,7 +103,8 @@ the names of lambdas defined at the top level of a file.")
   "Forget the recent commands and the per-session counters (for tests)."
   (bt2:with-lock-held (*recorder-lock*)
     (setf *recent-commands* '()
-          *incident-count* 0)
+          *incident-count* 0
+          *failed-write-count* 0)
     (clrhash *last-written-times*)
     (clrhash *suppressed-counts*)))
 
@@ -106,25 +114,29 @@ the names of lambdas defined at the top level of a file.")
   (reverse (copy-list *recent-commands*)))
 
 (defun text-key-p (key)
-  "Return true if KEY types or deletes a character: one character or Space,
-with no modifier other than shift (which some frontends set on Space),
-Return, Tab, Backspace or Delete with no modifier, or C-h, which a terminal
-sends for Backspace. Recording Space or Backspace would tell the length of
-the words of a typed password."
+  "Return true if KEY types or deletes a character: one character, Space,
+Return or Backspace with no modifier other than shift (which some frontends
+keep on these keys while a capital is typed), or Tab or Delete with no
+modifier (Shift-Tab and Shift-Delete run commands). Recording Space or
+Backspace would tell the length of the words of a typed password."
   (let ((sym (key-sym key)))
     (or (and (not (or (key-ctrl key) (key-meta key) (key-super key) (key-hyper key)))
-             (or (= 1 (length sym)) (string= sym "Space")))
-        (some (lambda (named) (match-key key :sym named))
-              '("Return" "Tab" "Backspace" "Delete"))
-        (match-key key :ctrl t :sym "h"))))
+             (or (= 1 (length sym))
+                 (member sym '("Space" "Return" "Backspace") :test #'string=)))
+        (match-key key :sym "Tab")
+        (match-key key :sym "Delete"))))
 
 (defun recorded-keys (keys)
   "Return KEYS as a string, or NIL when every key of them types or deletes a
 character (text-key-p).
 Many commands run on typed text, not only self-insert (terminal-input,
 isearch, completion, skk), so typed text is told by its keys and not by
-the command: a password typed in a terminal or a prompt is not recorded."
-  (when (and keys (notevery #'text-key-p keys))
+the command: a password typed in a terminal or a prompt is not recorded.
+C-h alone is NIL too, as a terminal sends it for Backspace; C-h f is not."
+  (when (and keys
+             (notevery #'text-key-p keys)
+             (not (and (null (rest keys))
+                       (match-key (first keys) :ctrl t :sym "h"))))
     (keyseq-to-string keys)))
 
 (defun record-command ()
@@ -211,12 +223,18 @@ tells where the error was, and the fingerprint is made of it."
   (let* ((name (frame-function-name line))
          (start (and name (search name line))))
     (if (and start (> (length line) *max-frame-length*))
-        (let ((name-end (+ start (length name))))
-          (concatenate 'string
-                       (subseq line 0 name-end)
-                       (cut-string (subseq line name-end)
-                                   (max 0 (- *max-frame-length* name-end)))))
+        (let ((end (max *max-frame-length* (+ start (length name)))))
+          (format nil "~A... (~D chars)" (subseq line 0 end) (length line)))
         (cut-string line *max-frame-length*))))
+
+(defun type-name (condition package)
+  "Return the type of CONDITION printed in PACKAGE with the standard printer
+settings, whatever the user set them to in init.lisp (case, gensyms,
+readtable case): in KEYWORD every symbol has its package."
+  (with-standard-io-syntax
+    (let ((*package* (find-package package))
+          (*print-readably* nil))
+      (prin1-to-string (type-of condition)))))
 
 (defun fnv-1a (string)
   "Return the 32-bit FNV-1a hash of STRING's UTF-8 octets as 8 hex digits.
@@ -286,10 +304,7 @@ one build to the next."
     ;; The frame names are printed by safe-backtrace, with *package* bound
     ;; to CL.
     (fnv-1a (format nil "~A~{|~A~}"
-                    (with-standard-io-syntax
-                      (let ((*package* (find-package :keyword))
-                            (*print-readably* nil))
-                        (prin1-to-string (type-of condition))))
+                    (type-name condition :keyword)
                     (subseq names 0 (min *fingerprint-frame-count* (length names)))))))
 
 (defun utc-timestamp (universal-time &key compact)
@@ -352,7 +367,7 @@ errors of a timer's function are told apart by their types."
         (lem-table (make-hash-table :test 'equal)))
     ;; A timer-error's message names the timer
     (setf (gethash "type" condition-table)
-          (safe-string (lambda () (type-of (recorded-condition condition))))
+          (ignore-errors (type-name (recorded-condition condition) :cl))
           (gethash "message" condition-table)
           (cut-string (or (safe-string (lambda () condition)) "") *max-message-length*))
     (setf (gethash "revision" lem-table) (safe-string #'lem-git-revision)
@@ -381,6 +396,7 @@ Return (values write-p suppressed-count-to-report)."
   (bt2:with-lock-held (*recorder-lock*)
     (let ((last (gethash fingerprint *last-written-times*)))
       (cond ((or (>= *incident-count* *max-incidents-per-session*)
+                 (>= *failed-write-count* *max-failed-writes-per-session*)
                  (and last (< (- time last) *same-fingerprint-interval*)))
              (incf (gethash fingerprint *suppressed-counts* 0))
              (values nil 0))
@@ -394,11 +410,16 @@ Return (values write-p suppressed-count-to-report)."
   "Count the incident with FINGERPRINT that could not be written, and the
 SUPPRESSED ones its claim-slot took, as dropped: the next one written says
 so. The slot itself stays taken, so that a directory that cannot be written
-is tried once per fingerprint and interval, not on every error."
-  (bt2:with-lock-held (*recorder-lock*)
-    ;; not counted toward *max-incidents-per-session*, which is for files
-    (decf *incident-count*)
-    (incf (gethash fingerprint *suppressed-counts* 0) (1+ suppressed))))
+is tried once per fingerprint and interval, not on every error, and at
+most *max-failed-writes-per-session* times. The first failure is logged."
+  (when (= 1 (bt2:with-lock-held (*recorder-lock*)
+               ;; not counted toward *max-incidents-per-session*, which is
+               ;; for files written
+               (decf *incident-count*)
+               (incf (gethash fingerprint *suppressed-counts* 0) (1+ suppressed))
+               (incf *failed-write-count*)))
+    (ignore-errors
+     (log:error "Incidents cannot be written to ~A" (incident-directory)))))
 
 (defun write-incident-file (table directory name)
   "Write TABLE as JSON to DIRECTORY/NAME, through a temporary file, so that

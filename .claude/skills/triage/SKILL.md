@@ -53,20 +53,28 @@ in cxxxr/lem#79).
 ## 3. Reproduce it
 
 Find the failing function from the backtrace (skip the frames of the error
-machinery, which the fingerprint leaves out too: `SB-*`, `UIOP*`, `ASDF*`,
-`SAFE-BACKTRACE` (frame 0 of every incident), `BACKTRACE-STRING`,
-`REPORT-ERROR`, `POP-UP-BACKTRACE`, `BAILOUT`, `CALL-TIMER-FUNCTION`,
-`CALL-BACKGROUND-JOB`, `RECORD-INCIDENT`, and the signalling functions
-`ERROR`, `SIGNAL`, `EDITOR-ERROR`). `recent_commands` tells what the
-user did: the commands, their keys, and how many times in a row. Keys that
-type or delete text (characters, `Space`, `Return`, `Tab`, `Backspace`,
-`Delete`, `C-h`) are not kept, whatever the command, so `keys` is null for
-them and the typed text is unknown. `suppressed_since_last` counts the
-errors with the same fingerprint not written since the last incident: rate
-limited, or a write that failed. A timer's error has the type and fingerprint of the error
-the timer's function signalled, not `TIMER-ERROR`; its message names the
-timer. `buffer` gives the major mode, the minor modes, the file
-type and the line count.
+machinery, which the fingerprint leaves out too, `*machinery-frame-regex*`
+in `extensions/incident-recorder/`: `SB-*`, `UIOP*`, `ASDF*`, foreign frames
+written as `"..."`, the signalling functions `ERROR`, `CERROR`, `SIGNAL`,
+`WARN` and `LEM/BUFFER/ERRORS:EDITOR-ERROR`, the handler
+`(LAMBDA (CONDITION) :IN LEM-CORE::COMMAND-LOOP)` (or
+`TOPLEVEL-COMMAND-LOOP`), and, in their own packages only, also as the
+`:IN` parent of a lambda or flet: `LEM/COMMON/BACKTRACE:SAFE-BACKTRACE`
+(frame 0 of every incident), `LEM-CORE::` `BACKTRACE-STRING`,
+`REPORT-ERROR`, `POP-UP-BACKTRACE`, `BAILOUT`, `CALL-BACKGROUND-JOB`,
+`LEM/COMMON/TIMER::CALL-TIMER-FUNCTION` and
+`LEM-INCIDENT-RECORDER:RECORD-INCIDENT`; a function of the same name in
+another package, such as `MY-MODE::BAILOUT`, is where the error was).
+`recent_commands` tells what the user did: the commands, their keys, and
+how many times in a row. Keys that type or delete text (characters,
+`Space`, `Return`, `Backspace`, also with shift, `Tab`, `Delete`, and `C-h`
+alone) are not kept, whatever the command, so `keys` is null for them and
+the typed text is unknown. `suppressed_since_last` counts the errors with
+the same fingerprint not written since the last incident: rate limited, or
+a write that failed. A timer's error has the type and fingerprint of the
+error the timer's function signalled, not `TIMER-ERROR`; its message names
+the timer. `buffer` gives the major mode, the minor modes, the file type
+and the line count.
 
 - Write a Rove test that fails the same way (same condition type at the same
   function), with `with-fake-interface` as in `tests/`. Add it to

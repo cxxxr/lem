@@ -17,6 +17,7 @@
          (lem:*error-report-hook* '())
          (ir::*recent-commands* '())
          (ir::*incident-count* 0)
+         (ir::*failed-write-count* 0)
          (ir::*last-written-times* (make-hash-table :test 'equal))
          (ir::*suppressed-counts* (make-hash-table :test 'equal))
          (lem-core::*last-reported-condition* nil))
@@ -400,9 +401,13 @@ backtrace taken where it was signalled, as the editor's handlers do."
   (dolist (sym '("Space" "Return" "Tab" "Backspace" "Delete"))
     (ok (null (ir::recorded-keys (list (lem:make-key :sym "p") (lem:make-key :sym sym))))
         sym))
-  ;; some frontends set shift on Space; a terminal sends C-h for Backspace
-  (ok (null (ir::recorded-keys (list (lem:make-key :shift t :sym "Space")))))
+  ;; some frontends keep shift on these keys while a capital is typed
+  (dolist (sym '("Space" "Return" "Backspace"))
+    (ok (null (ir::recorded-keys (list (lem:make-key :shift t :sym sym)))) sym))
+  ;; a terminal sends C-h for Backspace, but C-h f is a help command
   (ok (null (ir::recorded-keys (list (lem:make-key :ctrl t :sym "h")))))
+  (ok (equal "C-h f" (ir::recorded-keys (list (lem:make-key :ctrl t :sym "h")
+                                              (lem:make-key :sym "f")))))
   ;; Shift-Tab and Shift-Delete run commands, they type nothing
   (ok (equal "Shift-Tab" (ir::recorded-keys (list (lem:make-key :shift t :sym "Tab")))))
   (ok (equal "Shift-Delete" (ir::recorded-keys (list (lem:make-key :shift t :sym "Delete")))))
@@ -463,6 +468,31 @@ backtrace taken where it was signalled, as the editor's handlers do."
         ;; only the written one counts toward *max-incidents-per-session*
         (ok (= 1 ir::*incident-count*))))))
 
+(deftest failed-writes-stop-after-a-few
+  (with-recorder (directory)
+    (let ((ir::*max-failed-writes-per-session* 2))
+      ;; new/ is a file, so no incident can be written
+      (ensure-directories-exist directory)
+      (with-open-file (out (merge-pathnames "new" directory) :direction :output))
+      (dolist (function '(fail-in-place-a fail-in-place-b))
+        (multiple-value-bind (condition backtrace)
+            (signal-and-capture (lambda () (funcall function "x")))
+          (ok (handler-case (progn (ir:record-incident condition backtrace :command) nil)
+                (error () t)))))
+      ;; a third fingerprint is not tried
+      (multiple-value-bind (condition backtrace)
+          (signal-and-capture (lambda () (error 'test-error)))
+        (ok (null (ir:record-incident condition backtrace :command)))))))
+
+(deftest the-type-in-an-incident-is-printed-the-standard-way
+  (with-recorder (directory)
+    (multiple-value-bind (condition backtrace)
+        (signal-and-capture (lambda () (error 'test-error)))
+      (let ((path (let ((*print-case* :downcase))
+                    (ir:record-incident condition backtrace :command))))
+        (ok (equal "LEM-TESTS/INCIDENT-RECORDER::TEST-ERROR"
+                   (gethash "type" (gethash "condition" (read-incident path)))))))))
+
 (deftest a-failed-write-leaves-no-temporary-file
   (with-recorder (directory)
     (let ((table (make-hash-table :test 'equal)))
@@ -481,4 +511,5 @@ backtrace taken where it was signalled, as the editor's handlers do."
          (saved (string-right-trim '(#\Newline) (ir::sanitize-backtrace line))))
     (ok (search name saved))
     (ok (< (length saved) (+ (length name) 100)))
-    (ok (search "chars)" saved))))
+    ;; the length of the whole frame
+    (ok (search (format nil "(~D chars)" (length line)) saved))))
