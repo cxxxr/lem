@@ -91,12 +91,16 @@
          nil :timer))
       (ok (equal '(:timer) contexts)))))
 
-(defun contexts-of-a-command-failing-in-a-prompt-of-a-timer (handle-function-p)
+(defun contexts-of-a-command-failing-in-a-prompt-of-a-timer
+    (handle-function-p &optional (key (lem:make-key :ctrl t :sym "t")))
+  "Run a timer whose function opens a prompt, in which KEY is typed (C-t runs
+a failing command), and return the contexts reported and the type of the
+condition that left the timer: TIMER-ERROR, EDITOR-ABORT or NIL."
   (lem-fake-interface:with-fake-interface ()
     (lem:with-current-buffers ()
       (with-reported-contexts (contexts)
         (let* ((keymap (lem:make-keymap))
-               (key (lem:make-key :ctrl t :sym "t"))
+               (escaped nil)
                (timer (lem:make-idle-timer
                        (lambda ()
                          (lem:prompt-for-string "in a timer: " :special-keymap keymap))
@@ -114,14 +118,54 @@
                   (make-instance 'lem-core::lem-timer-manager)))
             (handler-case (lem/common/timer::call-timer-function timer)
               (lem/common/timer:timer-error (c)
-                (lem:pop-up-backtrace c))))
-          contexts)))))
+                (setf escaped 'timer-error)
+                (lem:pop-up-backtrace c))
+              (lem:editor-abort ()
+                (setf escaped 'editor-abort))))
+          (values contexts escaped))))))
 
 (deftest a-command-failing-in-a-prompt-of-a-timer-is-a-command-error
   (testing "with a handle-function: reported once, by it"
     (ok (equal '(:command) (contexts-of-a-command-failing-in-a-prompt-of-a-timer t))))
   (testing "without one: reported once, as the timer-error"
     (ok (equal '(:command) (contexts-of-a-command-failing-in-a-prompt-of-a-timer nil)))))
+
+(deftest an-abort-in-a-prompt-of-a-timer-is-not-an-error
+  (dolist (handle-function-p '(t nil))
+    (testing (format nil "~:[without~;with~] a handle-function" handle-function-p)
+      (multiple-value-bind (contexts escaped)
+          (contexts-of-a-command-failing-in-a-prompt-of-a-timer
+           handle-function-p (lem:make-key :ctrl t :sym "g"))
+        (testing "nothing is reported"
+          (ok (null contexts)))
+        (testing "the timer's function returns: nothing leaves the timer"
+          (ok (null escaped)))))))
+
+(deftest an-abort-in-a-prompt-of-an-idle-timer-leaves-the-other-timers-running
+  ;; The idle timer state, the editor's timer manager and the toplevel flag
+  ;; are internal: lem exports no way to make two idle timers due now in a
+  ;; test, outside of a running command loop.
+  (lem-fake-interface:with-fake-interface ()
+    (lem:with-current-buffers ()
+      (let* ((ran '())
+             (lem/common/timer::*timer-manager* (make-instance 'lem-core::lem-timer-manager))
+             (lem/common/timer::*idle-timer-list* '())
+             (lem/common/timer::*processed-idle-timer-list* '())
+             (lem-core::*toplevel-command-loop-p* nil)
+             (prompting (lem:make-idle-timer
+                         (lambda ()
+                           (push :prompting ran)
+                           (lem:prompt-for-string "in a timer: "))
+                         :name "a timer with a prompt"))
+             (other (lem:make-idle-timer (lambda () (push :other ran))
+                                         :name "another timer")))
+        ;; Both due now; update-idle-timers calls the timers in list order.
+        (dolist (timer (list other prompting))
+          (lem:start-timer timer 1)
+          (setf (lem/common/timer::timer-last-time timer) 1))
+        (lem:unread-key (lem:make-key :ctrl t :sym "g"))
+        (ok (lem/common/timer:update-idle-timers))
+        (ok (equal '(:other :prompting) ran))))))
 
 (deftest a-background-job-error-that-cannot-be-printed-is-shown
   (lem-fake-interface:with-fake-interface ()
