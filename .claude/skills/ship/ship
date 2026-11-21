@@ -4,11 +4,13 @@
 # SKILL.md next to this script.
 #
 #   ship preflight              check the branch can be shipped; fetch the base
-#   ship pr BODY-FILE [TITLE]   push the branch and open its PR (or find the open one);
-#                               prints the PR number (TITLE: the first commit's subject)
+#   ship pr BODY-FILE [TITLE]   push the branch and open its PR (or find its open one,
+#                               from this repository's owner); prints the PR number
+#                               (TITLE: the first commit's subject)
 #   ship head PR                the commit SHA at the head of the PR
 #   ship comment PR FILE        add FILE as a comment on the PR
-#   ship wait PR                wait for CI: 0 passed, 1 a check failed, 3 timed out
+#   ship wait PR SHA            wait for the CI of commit SHA, once it is the PR's head:
+#                               0 passed, 1 a check failed or was cancelled, 3 timed out
 #   ship merge PR SHA           merge the PR if its head is still SHA, then fetch the base
 #
 # Exit status: 0 done, 1 failed, 2 usage error, 3 CI timed out.
@@ -26,12 +28,22 @@ set -eu
 repo=${SHIP_REPO:-cxxxr/lem}
 remote=${SHIP_REMOTE:-cxxxr}
 base=${SHIP_BASE:-staging}
-top=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+caller=$(pwd)
+top=$(git -C "$(dirname "$self")" rev-parse --show-toplevel)
 cd "$top"
 
 usage() {
-    sed -n '2,/^[^#]/{/^#/p}' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^[^#]/{/^#/p}' "$self" | sed 's/^# \{0,1\}//'
     exit 2
+}
+
+# A file argument as given by the caller, before the cd above.
+from_caller() {
+    case "$1" in
+        /*) echo "$1" ;;
+        *) echo "$caller/$1" ;;
+    esac
 }
 
 current_branch() {
@@ -61,10 +73,14 @@ case "${1:-}" in
         fi
         ;;
     pr)
-        body=${2:?usage: ship pr BODY-FILE [TITLE]}
+        body=$(from_caller "${2:?usage: ship pr BODY-FILE [TITLE]}")
+        [ -r "$body" ] || { echo "cannot read $body" >&2; exit 1; }
         branch=$(current_branch)
         git push -q -u "$remote" "$branch"
-        number=$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '.[0].number // empty')
+        # --head matches the branch name of any fork: keep the owner's PR only.
+        number=$(gh pr list --repo "$repo" --head "$branch" --state open \
+            --json number,headRepositoryOwner \
+            --jq "map(select(.headRepositoryOwner.login == \"${repo%%/*}\")) | .[0].number // empty")
         if [ -z "$number" ]; then
             title=${3:-$(git log --reverse --format=%s "$remote/$base..HEAD" | head -1)}
             url=$(gh pr create --repo "$repo" --base "$base" --head "$branch" \
@@ -79,33 +95,54 @@ case "${1:-}" in
         gh pr view "${2:?usage: ship head PR}" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null
         ;;
     comment)
+        file=$(from_caller "${3:?usage: ship comment PR FILE}")
+        [ -r "$file" ] || { echo "cannot read $file" >&2; exit 1; }
         gh pr comment "${2:?usage: ship comment PR FILE}" --repo "$repo" \
-            --body-file "${3:?usage: ship comment PR FILE}" >/dev/null
+            --body-file "$file" >/dev/null
         ;;
     wait)
-        number=${2:?usage: ship wait PR}
+        number=${2:?usage: ship wait PR SHA}
+        sha=${3:?usage: ship wait PR SHA}
         timeout=${SHIP_CI_TIMEOUT:-2400}
         slow=${SHIP_CI_SLOW:-macos}
         waited=0
         pending=
+        previous=
         while :; do
-            checks=$(gh pr checks "$number" --repo "$repo" --json name,bucket \
-                --jq '.[] | "\(.bucket)\t\(.name)"' 2>/dev/null || true)
+            # The checks of commit SHA itself, not of whatever the PR's head is:
+            # right after a push, the PR still shows the previous commit's checks.
+            head=$(gh pr view "$number" --repo "$repo" --json headRefOid --jq .headRefOid 2>/dev/null) || {
+                echo "cannot read PR $number of $repo" >&2; exit 1; }
+            checks=
+            if [ "$head" = "$sha" ]; then
+                checks=$(gh api "repos/$repo/commits/$sha/check-runs?per_page=100" \
+                    --jq '.check_runs[] | "\(.status)/\(.conclusion)\t\(.name)"' 2>/dev/null) || {
+                    echo "cannot read the checks of $sha" >&2; exit 1; }
+            fi
             if [ -n "$checks" ]; then
-                if echo "$checks" | grep -q '^fail'; then
-                    echo "$checks" | grep '^fail' >&2; exit 1
+                failed=$(echo "$checks" | grep -E '^completed/(failure|cancelled|timed_out|action_required|startup_failure|stale)' || true)
+                if [ -n "$failed" ]; then echo "$failed" >&2; exit 1; fi
+                pending=$(echo "$checks" | grep -v '^completed/' || true)
+                # Workflows can create their check runs late: done only when
+                # nothing is pending and the same checks were seen one poll before.
+                names=$(echo "$checks" | cut -f2 | sort)
+                if [ -z "$pending" ] && [ "$names" = "$previous" ]; then
+                    echo "CI passed for $sha"; exit 0
                 fi
-                pending=$(echo "$checks" | grep '^pending' || true)
-                if [ -z "$pending" ]; then echo "CI passed"; exit 0; fi
+                previous=$names
             fi
             if [ "$waited" -ge "$timeout" ]; then
                 if [ -n "$checks" ] && ! echo "$pending" | cut -f2 | grep -qvE "$slow"; then
-                    echo "CI passed except checks still pending:" >&2
+                    echo "CI passed for $sha except checks still pending:" >&2
                     echo "$pending" | cut -f2 | sed 's/^/  /' >&2
                     exit 0
                 fi
-                echo "CI timed out after ${timeout}s; pending:" >&2
-                echo "${pending:-  (no checks reported)}" | cut -f2 >&2
+                if [ "$head" != "$sha" ]; then
+                    echo "the head of PR $number is $head, not $sha" >&2
+                else
+                    echo "CI timed out after ${timeout}s; pending:" >&2
+                    echo "${pending:-  (no checks reported)}" | cut -f2 >&2
+                fi
                 exit 3
             fi
             sleep 30

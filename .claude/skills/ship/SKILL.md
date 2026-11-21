@@ -16,6 +16,7 @@ from `/code-review`.
 
 ```sh
 S=.claude/skills/ship/ship
+SCRATCH=...                 # a directory outside the repository (the session scratchpad)
 ```
 
 ## 1. Preflight
@@ -42,12 +43,13 @@ section.
 
 ## 3. Open the PR
 
-Write the PR body to a file in the scratchpad: a Summary of the change, a
-Verification section (each check with its result, the checklist items that
-applied, what was not verified), and the attribution line. Then:
+Write the PR body to a file outside the repository (the scratchpad): a
+Summary of the change, a Verification section (each check with its result, the
+checklist items that applied, what was not verified), and the attribution line.
+Then:
 
 ```sh
-N=$($S pr body.md)          # title: the first commit's subject, or give one
+N=$($S pr "$SCRATCH/body.md")      # title: the first commit's subject, or give one
 ```
 
 ## 4. Review
@@ -58,7 +60,8 @@ its findings. Then, by severity:
 
 - **Important**: fix it, verify the fix (the checks it touches, plus a
   regression test that fails before the fix, see `verify worktree`), commit,
-  push (`$S pr body.md` again pushes and keeps the PR), and review again. A
+  push (`$S pr "$SCRATCH/body.md"` again pushes and finds the same PR), and
+  review again. A
   later round starts from the earlier findings: check they were fixed, then
   look at what the fixes changed.
 - **Pre-existing** and **Nit**: do not fix them in this PR. Add each to the
@@ -74,21 +77,24 @@ and bring them to the user.
 Post what the PR was judged on, for the reader of the PR:
 
 ```sh
-$S comment $N evidence.md
+$S comment $N "$SCRATCH/evidence.md"
 ```
 
-The comment lists the commit SHA (`$S head $N`), the checks run on it and
+The comment lists the commit SHA (`git rev-parse HEAD`), the checks run on it and
 their results, the review rounds and what was fixed, and the Todoist tasks
 added.
 
 ## 6. CI
 
 ```sh
-$S wait $N
+SHA=$(git rev-parse HEAD)   # the commit you verified and pushed, not $S head
+$S wait $N "$SHA"
 ```
 
-0: passed (or only the slow macOS runners still queued at the timeout; say
-so). 1: a check failed: read its log (`gh run view --repo cxxxr/lem --log-failed`),
+It waits until `SHA` is the PR's head and reads the checks of that commit
+(right after a push, the PR may still show the previous commit and its
+checks). 0: passed (or only the slow macOS runners still queued at the timeout; say
+so). 1: a check failed or was cancelled: read its log (`gh run view --repo cxxxr/lem --log-failed`),
 fix it as an Important finding (step 4), and wait again. 3: timed out on other
 checks: stop and tell the user.
 
@@ -97,7 +103,7 @@ checks: stop and tell the user.
 Merge only the commit that was verified, reviewed and passed CI:
 
 ```sh
-$S merge $N "$SHA"          # SHA from $S head $N when the gates passed
+$S merge $N "$SHA"          # the SHA that was verified, reviewed and waited for
 ```
 
 It refuses if the PR's head moved since. Then report to the user: the PR
