@@ -35,6 +35,9 @@ CLYSM_SAVE_IMAGE=fasls node host/run.mjs "$desktop/lem.wasm" "$out/save-image.li
 node "$here/web/pack.mjs" "$out/trace.json" "$out/files.pack.gz" \
   "$lem" "$deps/micros" "$here" contrib/micros TREE:runtime LIST:"$out/sources.txt" \
   FILE:"$out/lem.image"
+# (into another file first: a page cut short by a failure must not look
+# newer than the image to tests/run.sh)
 node "$here/web/make-html.mjs" "$clysm" "$desktop/lem.wasm" "$out/files.pack.gz" "$out/boot.lisp" "$HOME" \
-  "$(cat "$out/load-count")" > "$out/lem.html"
+  "$(cat "$out/load-count")" > "$out/lem.html.part"
+mv "$out/lem.html.part" "$out/lem.html"
 echo "built $out/lem.html ($(du -h "$out/lem.html" | cut -f1)) — open it in Chrome or Edge"
