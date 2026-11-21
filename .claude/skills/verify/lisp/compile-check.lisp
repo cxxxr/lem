@@ -19,11 +19,6 @@
   "Why `verify-inferred-system' did not take the file `verify-file-system' looks
 for as a system because of its case, or NIL.  Printed when no system is found.")
 
-(defvar *verify-failed-files* (make-hash-table :test 'equal)
-  "The files (`verify-file-key') whose compile or load signalled the error of a
-system that `verify-load-file-system' could not load, each to the name of the
-file's system.")
-
 (defvar *verify-failed-systems* '()
   "The systems that `verify-load-file-system' could not load.")
 
@@ -60,8 +55,9 @@ none is known."
            ;; Only a system that does not exist: not one that is too old, nor
            ;; a missing sibling of a component (required by that component,
            ;; not by a system), as Quicklisp tells them apart.
-           (let ((name (and (let ((by (asdf/find-component:missing-required-by condition)))
-                              (or (null by) (typep by 'asdf:system)))
+           (let ((name (and (or (not (typep condition 'asdf/find-component:missing-dependency))
+                                (let ((by (asdf/find-component:missing-required-by condition)))
+                                  (or (null by) (typep by 'asdf:system))))
                             (ignore-errors
                              (asdf:coerce-name
                               (asdf/find-component:missing-requires condition))))))
@@ -72,9 +68,8 @@ none is known."
   "Quickload SYSTEMS, letting a file that fails to compile with a warning or
 a \"caught ERROR\" go on: the compile below reports it.  Returns T when the
 load succeeded; otherwise prints the error, with the file that signalled it,
-and returns NIL, the names of the systems at fault (see
-`verify-condition-systems'), and the file that signalled the error and the name
-of its system (or NIL and NIL)."
+and returns NIL and the names of the systems at fault (see
+`verify-condition-systems')."
   (handler-case
       (let ((uiop:*compile-file-failure-behaviour* :warn))
         (ql:quickload systems :silent t)
@@ -83,10 +78,7 @@ of its system (or NIL and NIL)."
       (format t "~&FAILED to load ~{~(~a~)~^, ~}:~%  ~a~%"
               (uiop:ensure-list systems) condition)
       (verify-print-failing-file condition)
-      (let ((component (verify-failing-component condition)))
-        (values nil (verify-condition-systems condition)
-                (and component (asdf:component-pathname component))
-                (and component (asdf:component-name (asdf:component-system component))))))))
+      (values nil (verify-condition-systems condition)))))
 
 (defun verify-dependency-name (dependency)
   "The system name of the ASDF DEPENDENCY specifier, or NIL for one that
@@ -106,17 +98,13 @@ names no system (:require)."
     (asdf:parent-component (mapcan #'verify-component-files
                                    (copy-list (asdf:component-children component))))))
 
-(defun verify-file-key (file)
-  "FILE as a key of `*verify-failed-files*': the namestring of its truename, so
-that a primary system and its inferred subsystem name the same file alike."
-  (namestring (or (ignore-errors (truename file)) file)))
-
 (defun verify-failed-dependency (system)
-  "A failed system that SYSTEM, or one of its unloaded dependencies (direct or
-not), is (one of `*verify-failed-systems*'), or shares the file at fault with
-(see `*verify-failed-files*'); or NIL.  Loaded systems are not looked into:
-they loaded.  Nothing is looked up (ASDF may load .asd files for it) while no
-system has failed."
+  "The first system of `*verify-failed-systems*' that SYSTEM or one of its
+unloaded dependencies (direct or not) is, or NIL.  Loaded systems are not
+looked into: they loaded.  Nothing is looked up (ASDF may load .asd files for
+it) while no system has failed.  A system that only shares a file with a failed
+one is not taken as failed: the file may fail only with that system's
+dependencies."
   (let ((seen (make-hash-table :test 'equal)))
     (unless *verify-failed-systems*
       (return-from verify-failed-dependency nil))
@@ -127,13 +115,6 @@ system has failed."
                    (return-from verify-failed-dependency name))
                  (let ((found (ignore-errors (asdf:find-system name nil))))
                    (when (and found (not (asdf:component-loaded-p found)))
-                     ;; A system with the file at fault of a failed system:
-                     ;; lem-migemo/main for main.lisp, a component of
-                     ;; lem-migemo.
-                     (dolist (file (verify-component-files found))
-                       (let ((failed (gethash (verify-file-key file) *verify-failed-files*)))
-                         (when failed
-                           (return-from verify-failed-dependency failed))))
                      (dolist (dependency (asdf:system-depends-on found))
                        (let ((dependency-name (verify-dependency-name dependency)))
                          (when dependency-name
@@ -324,18 +305,13 @@ depends on one, is not loaded again for the next file."
                         nil)
                        (t
                         (format t "~&loading ~a for ~a~%" system file)
-                        (multiple-value-bind (loaded failing-systems
-                                              failing-file failing-file-system)
+                        (multiple-value-bind (loaded failing-systems)
                             (verify-quickload system)
                           (unless loaded
                             ;; Also the systems at fault, which may be
                             ;; dependencies of SYSTEM.
                             (dolist (name (cons system failing-systems))
-                              (pushnew name *verify-failed-systems* :test #'string=))
-                            (when failing-file
-                              (setf (gethash (verify-file-key failing-file)
-                                             *verify-failed-files*)
-                                    failing-file-system)))
+                              (pushnew name *verify-failed-systems* :test #'string=)))
                           loaded)))))
               (failed-asds
                ;; FILE may be in one of these.
