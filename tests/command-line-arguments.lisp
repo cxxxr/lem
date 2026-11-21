@@ -3,12 +3,16 @@
         :rove))
 (in-package :lem-tests/command-line-arguments)
 
+(defvar *delete-view-failed* nil
+  "True once the delete-view of failing-interface has failed.")
+
 (defclass failing-interface (lem-fake-interface:fake-interface) ()
   (:documentation "A fake interface whose views cannot be deleted, so that
 tearing the editor down fails."))
 
 (defmethod lem-if:delete-view ((implementation failing-interface) view)
   (declare (ignore view))
+  (setf *delete-view-failed* t)
   (error "This view cannot be deleted"))
 
 (defun command-line-arguments-equal (arg1 arg2)
@@ -159,7 +163,8 @@ tearing the editor down fails."))
     (ok (equal '((:report nil nil)) seen))))
 
 (deftest the-frontend-ends-also-when-the-teardown-fails
-  (let ((seen '()))
+  (let ((seen '())
+        (*delete-view-failed* nil))
     (lem-fake-interface:with-fake-interface ()
       (let ((lem-core::*in-the-editor* t))
         (lem:with-implementation (make-instance 'failing-interface)
@@ -167,4 +172,5 @@ tearing the editor down fails."))
                                 (lambda (report)
                                   (push (list report lem-core::*in-the-editor*)
                                         seen))))))
+    (ok *delete-view-failed*)
     (ok (equal '((:report nil)) seen))))

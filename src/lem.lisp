@@ -44,13 +44,20 @@ editor thread (send-event), then the display is redrawn."))
 frontend end (invoke returns, and launch with it). By then the editor is
 gone: a launch called next starts an editor rather than giving its
 arguments to this one (*in-the-editor*). A failure of the teardown is
-logged, not signalled: the frontend must end anyway, and a debugger in the
-editor thread would wait on a display that is going away."
-  (handler-case (teardown)
-    (error (condition)
-      (ignore-errors (log:error "Tearing down the editor failed: ~A" condition))))
-  (setf *in-the-editor* nil)
-  (when finalize (funcall finalize report)))
+logged with its backtrace, not signalled, and the frontend is finalized
+whatever way the teardown is left: a debugger in the editor thread would
+wait on a display that is going away."
+  (unwind-protect
+       (handler-case
+           (handler-bind ((error (lambda (condition)
+                                   (ignore-errors
+                                    (log:error "Tearing down the editor failed: ~A~%~A"
+                                               condition
+                                               (lem/common/backtrace:safe-backtrace))))))
+             (teardown))
+         (error () nil))
+    (setf *in-the-editor* nil)
+    (when finalize (funcall finalize report))))
 
 (defun get-preferred-init-file-path ()
   "Returns the full path to the preferred init file"
@@ -97,18 +104,22 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
     (bt2:make-thread
      (lambda ()
        (when initialize (funcall initialize))
-       ;; The editor ends (end-editor) also when the command loop is left by
-       ;; a non-local exit, so that the frontend is told to end.  Nothing of
-       ;; this thread runs after it: the next editor may have started.
-       (let ((report nil))
+       ;; When the command loop returns, end-editor ends the editor and the
+       ;; frontend; nothing of this thread changes *in-the-editor* after it,
+       ;; as the next editor may have started.  When the loop is left by a
+       ;; non-local exit (the process quitting), only the flag is cleared.
+       (let ((ended nil))
          (unwind-protect
               (let (#+lispworks (lw:*default-character-element-type* 'character))
                 (with-editor-stream ()
                   (set-global-timer-manager (make-instance 'lem-timer-manager))
                   (setf *in-the-editor* t)
                   (setup)
-                  (setf report (toplevel-command-loop (lambda () (init args))))))
-           (end-editor report finalize))))
+                  (let ((report (toplevel-command-loop (lambda () (init args)))))
+                    (setf ended t)
+                    (end-editor report finalize))))
+           (unless ended
+             (setf *in-the-editor* nil)))))
      :name "editor")))
 
 (defun find-editor-thread ()
