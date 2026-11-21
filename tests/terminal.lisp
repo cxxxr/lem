@@ -394,3 +394,17 @@ as a command of its own: the flags of the previous one are not carried on."
      (ok (= rows (lem:buffer-nlines buffer)) "the scrollback is gone")
      (ok (not (lem-terminal/terminal::terminal-copy-mode (buffer-terminal buffer)))
          "the terminal renders again"))))
+
+(deftest a-key-sent-from-m-x-in-copy-mode-keeps-the-history
+  (call-with-wheel-terminal
+   (lambda (buffer window rows)
+     (declare (ignore window))
+     (ok (wait-for-output buffer))
+     (lem-terminal/terminal-mode::terminal-copy-mode)
+     (let ((nlines (lem:buffer-nlines buffer)))
+       (ok (< rows nlines) "copy mode shows the history")
+       (let ((lem-terminal/terminal-mode::*running-bypass-command* t))
+         (lem:call-command 'lem-terminal/terminal-mode::terminal-key-return nil))
+       (ok (= nlines (lem:buffer-nlines buffer)) "the history stays")
+       (ok (lem-terminal/terminal::terminal-copy-mode (buffer-terminal buffer))
+           "the terminal stays frozen")))))

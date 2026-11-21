@@ -311,10 +311,12 @@ it away.  Returns the number of scrollback lines in BUFFER."
 
 (defun back-to-screen (buffer)
   "Show the screen of BUFFER's terminal again, for input sent to it: what the
-program does with it is to be seen."
+program does with it is to be seen.  Not in terminal-copy-mode, which keeps
+the history until one leaves it."
   (alexandria:when-let ((terminal (buffer-terminal buffer)))
-    (stop-scrolling terminal buffer)
-    (terminal:deactivate-scrollback terminal)))
+    (when (eq (buffer-major-mode buffer) 'terminal-mode)
+      (stop-scrolling terminal buffer)
+      (terminal:deactivate-scrollback terminal))))
 
 (defun call-with-scrollback (terminal window downward-p scroll)
   "Call SCROLL, a scroll of WINDOW (towards the end when DOWNWARD-P), with
