@@ -341,4 +341,6 @@ counts, in the order of NAMES."
           "frame-multiplexer is off")
       (ok (= 1 (length (all-frames))) "the hidden tab is freed")
       (ok (zerop (hash-table-count lem/frame-multiplexer::*virtual-frame-map*))
-          "the table of tabs is reset"))))
+          "the table of tabs is reset")
+      (ng (member tab-bar (frame-header-windows (current-frame)))
+          "the tab bar has left the frame"))))

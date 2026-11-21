@@ -531,7 +531,12 @@ module.exports = (win, app) => {
       let closing = false;
       let closed = false;
       win.once('close', () => { closing = true; });
-      win.once('closed', () => { closed = true; check('exit', true); finish(); });
+      win.once('closed', () => {
+        closed = true;
+        if (finished) return;   // (the run ended already: app.exit closes it)
+        check('exit', true);
+        finish();
+      });
       await key('x', ['control']); await key('c', ['control']);
       const pageSaysExited = async () => {
         if (closing) return false;
