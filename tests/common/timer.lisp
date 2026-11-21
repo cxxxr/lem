@@ -132,3 +132,60 @@ can delay by much more than the timer's own interval.")
       (start-timer timer 10)
       (testing "its time of the earlier idle time is not counted from"
         (ok (null (get-next-timer-timing-ms)))))))
+
+(defun due-idle-timer (function &key repeat (name "due"))
+  "Start an idle timer of FUNCTION, due 10 ms after *current-time*."
+  (let ((timer (make-idle-timer function :name name)))
+    (start-timer timer 10 :repeat repeat)
+    timer))
+
+(deftest a-failing-idle-timer-leaves-the-others-running
+  (with-testing-timer-manager ()
+    (let* ((ran '())
+           (failing (due-idle-timer (lambda () (error "An idle timer failed"))
+                                    :name "failing"))
+           (repeating (due-idle-timer (lambda () (push :repeating ran))
+                                      :repeat t :name "repeating"))
+           (other (due-idle-timer (lambda () (push :other ran)) :name "other"))
+           (signalled nil))
+      (declare (ignore failing other))
+      (handler-case
+          (with-idle-timers ()
+            (setf *current-time* 100)
+            (update-idle-timers))
+        (timer-error (condition)
+          (setf signalled (princ-to-string (timer-error-condition condition)))))
+      (testing "the failure is signalled after the other due timers ran"
+        (ok (equal "An idle timer failed" signalled))
+        (ok (equal '(:other :repeating) (sort (copy-list ran) #'string<))))
+      (testing "the repeating timer is back in the list, also after the failure left"
+        (ok (member repeating lem/common/timer::*idle-timer-list*))))))
+
+(deftest a-repeating-idle-timer-does-not-fire-inside-its-own-function
+  (with-testing-timer-manager ()
+    (let* ((count 0)
+           (timer (due-idle-timer
+                   (lambda ()
+                     (incf count)
+                     ;; As a prompt's command loop: read loops one after another.
+                     (with-idle-timers ())
+                     (with-idle-timers ()
+                       (setf *current-time* 1000)
+                       (update-idle-timers)))
+                   :repeat t :name "prompting")))
+      (with-idle-timers ()
+        (setf *current-time* 100)
+        (update-idle-timers))
+      (ok (= 1 count))
+      (testing "it is in the list once afterwards"
+        (ok (= 1 (count timer lem/common/timer::*idle-timer-list*)))))))
+
+(deftest a-repeating-idle-timer-stopped-by-its-own-function-stays-stopped
+  (with-testing-timer-manager ()
+    (let ((timer nil))
+      (setf timer (due-idle-timer (lambda () (stop-timer timer))
+                                  :repeat t :name "stopping itself"))
+      (with-idle-timers ()
+        (setf *current-time* 100)
+        (update-idle-timers))
+      (ok (not (member timer lem/common/timer::*idle-timer-list*))))))

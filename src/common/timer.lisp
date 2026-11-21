@@ -302,14 +302,22 @@ abort itself.")
     (inspire-idle-timers)))
 
 (defun stop-idle-timers ()
-  (setf *idle-timer-list* (nconc *processed-idle-timer-list* *idle-timer-list*))
+  ;; A repeating timer stopped while it was processed (by its own function
+  ;; or handle-function) is expired: it does not come back.
+  (setf *idle-timer-list* (nconc (remove-if #'timer-expired-p *processed-idle-timer-list*)
+                                 *idle-timer-list*))
   (setf *processed-idle-timer-list* '()))
 
 (defun call-with-idle-timers (function)
-  (start-idle-timers)
-  (prog1 (let ((*idle-p* t))
-           (funcall function))
-    (stop-idle-timers)))
+  ;; Each call has its own processed timers: one nested in a prompt a timer
+  ;; opened must not put that timer, still running, back to fire again.
+  ;; unwind-protect: a timer-error or an abort leaving FUNCTION must not
+  ;; leave the repeating timers that fired out of the list.
+  (let ((*processed-idle-timer-list* '()))
+    (start-idle-timers)
+    (unwind-protect (let ((*idle-p* t))
+                      (funcall function))
+      (stop-idle-timers))))
 
 (defmacro with-idle-timers (() &body body)
   `(call-with-idle-timers (lambda () ,@body)))
@@ -340,7 +348,17 @@ timer ran in before that loop enters with-idle-timers again."
     (dolist (timer updating-timers)
       (unless (timer-repeat-p timer)
         (set-timer-last-time tick-time timer)))
-    (mapc #'call-timer-function updating-timers)
+    ;; Every due timer runs, also after one failed; then the first failure is
+    ;; signalled (the others' handle-functions have run; their timer-errors
+    ;; are dropped).
+    (let ((first-error nil))
+      (dolist (timer updating-timers)
+        (handler-case (call-timer-function timer)
+          (timer-error (condition)
+            (unless first-error
+              (setf first-error condition)))))
+      (when first-error
+        (error first-error)))
     (not (null updating-timers))))
 
 (defun get-next-timer-timing-ms ()
