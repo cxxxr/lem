@@ -470,6 +470,9 @@ command after it runs on."
               (resize-terminal terminal window))))))))
 
 (define-command terminal-resize () ()
+  "Fit the current terminal to its windows now.  Asked for, it resizes also a
+terminal whose history is being read, which the automatic fitting leaves
+alone (see READING-HISTORY-P)."
   (alexandria:when-let ((terminal (get-current-terminal))
                         (window (current-window)))
     (resize-terminal terminal window)))
@@ -492,9 +495,9 @@ command after it runs on."
   ;; or hidden): the terminal fits the windows shown.  Not while its history
   ;; is read (see READING-HISTORY-P): FIT-SHOWN-TERMINALS fits it afterwards.
   (let ((buffer (window-buffer window)))
-    (alexandria:when-let (terminal (and (member window (frame-shown-windows))
-                                        (buffer-terminal buffer)))
-      (unless (reading-history-p buffer terminal)
+    (alexandria:when-let (terminal (buffer-terminal buffer))
+      (when (and (member window (frame-shown-windows))
+                 (not (reading-history-p buffer terminal)))
         (resize-terminal terminal window)))))
 
 (add-hook *window-size-change-functions*
@@ -516,7 +519,15 @@ only frozen terminals look at their windows."
                                        (terminal:frozen-scrollback-lines terminal))))
       (when (every (lambda (window) (> (view-line window) lines))
                    (terminal:buffer-windows buffer))
-        (stop-scrolling terminal)))))
+        (stop-scrolling terminal)
+        ;; and fit it now, whichever of the post-command hooks runs first
+        (alexandria:when-let ((window (find buffer (frame-shown-windows)
+                                            :key #'window-buffer)))
+          (resize-terminal terminal window))))))
+
+;; (fit-shown-terminals took the place of terminal-resize: a Lem loading this
+;; file again keeps no old hook)
+(remove-hook *post-command-hook* 'terminal-resize)
 
 (add-hook *post-command-hook*
           'fit-shown-terminals)
