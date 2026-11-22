@@ -317,59 +317,50 @@ told of the changes of the screen, the exit, the title and the bell."
   (unless (terminal-closed terminal)
     (js:call (terminal-pty terminal) "write" string)))
 
-(defun session-pids (sid)
-  "The pids of the processes in session SID, read from /proc, and T; NIL and
-NIL where there is no /proc (macOS).  A pid is not given to a new process
-while it is the session id of a live one, so these are the session's own."
-  (let ((fs (node-module "node:fs")))
-    (if (not (js:call fs "existsSync" "/proc/self/stat"))
-        (values nil nil)
-        (let ((names (js:call fs "readdirSync" "/proc"))
-              (pids '()))
-          (dotimes (i (js:get names "length"))
-            (let ((name (js:get names i)))
-              (when (every #'digit-char-p name)
-                ;; "pid (comm) state ppid pgrp session ...": comm may hold spaces
-                (let* ((stat (ignore-errors
-                              (js:call fs "readFileSync"
-                                       (format nil "/proc/~A/stat" name) "utf8")))
-                       (fields (and stat
-                                    (uiop:split-string
-                                     (string-trim " " (subseq stat (1+ (position #\) stat :from-end t))))))))
-                  (when (and fields
-                             (eql sid (ignore-errors (parse-integer (fourth fields)))))
-                    (push (parse-integer name) pids))))))
-          (values pids t)))))
+(defun process-start-time (pid)
+  "When process PID started (field starttime of /proc/PID/stat), or NIL
+where it cannot be read: no /proc (macOS), no such process, or one that has
+exited.  With its pid,
+it tells a process from a later one that got the same pid."
+  (ignore-errors
+   (let* ((stat (js:call (node-module "node:fs") "readFileSync"
+                         (format nil "/proc/~D/stat" pid) "utf8"))
+          ;; "pid (comm) state ppid ... starttime ...": comm may hold spaces
+          (fields (uiop:split-string
+                   (string-trim " " (subseq stat (1+ (position #\) stat :from-end t)))))))
+     ;; a zombie has exited: it counts as gone
+     (unless (equal (first fields) "Z")
+       (nth 19 fields)))))
 
-(defun kill-session (pid signal)
-  "Send SIGNAL to every process of the session PID leads: the shell, its
-jobs (in process groups of their own when it does job control) and what
-they started.  Without /proc, to PID's process group."
+(defun signal-shell (pid signal)
+  "Send SIGNAL to the process PID and its process group: node-pty makes it
+a session leader, so the group is the shell and its foreground job, and
+the kernel signals a group as one (a process forked meanwhile gets it too)."
   (let ((process (js:global "process")))
-    (multiple-value-bind (pids listed) (session-pids pid)
-      (if listed
-          (dolist (p pids)
-            (ignore-errors (js:call process "kill" p signal)))
-          (ignore-errors (js:call process "kill" (- pid) signal))))))
+    (ignore-errors (js:call process "kill" (- pid) signal))
+    (ignore-errors (js:call process "kill" pid signal))))
 
 (defun kill-process (terminal)
   "Kill TERMINAL's process if it still runs, and free its screen.  As Lem's
 native terminal does (terminal_delete), the process and its group get
-SIGHUP, and what is left of its session SIGKILL *KILL-GRACE-MS* later (a
-program can ignore SIGHUP).  Nothing is signalled once node-pty has seen the
-process exit: its pid may be another process's by then."
+SIGHUP, and SIGKILL *KILL-GRACE-MS* later if the process has not exited (a
+program can ignore SIGHUP).  Jobs that outlive the shell (nohup, disown)
+are left running, as a terminal closed does."
   (unless (terminal-closed terminal)
     (setf (terminal-closed terminal) t)
-    (let* ((pty (terminal-pty terminal))
-           (pid (js:get pty "pid")))
-      (unless (terminal-exited terminal)
-        (ignore-errors (js:call (js:global "process") "kill" (- pid) "SIGHUP"))
-        (ignore-errors (js:call pty "kill"))
+    ;; once node-pty has seen the exit, the pid may be another process's
+    (unless (terminal-exited terminal)
+      (let* ((pid (js:get (terminal-pty terminal) "pid"))
+             (start (process-start-time pid)))
+        (signal-shell pid "SIGHUP")
         (js:funcall (js:global "setTimeout")
                     (lambda ()
-                      ;; by the session id, not the pid: node-pty may have
-                      ;; reaped the shell without telling yet
-                      (ignore-errors (kill-session pid "SIGKILL"))
+                      ;; still the same process: node-pty reaps a process at
+                      ;; once but reports its exit up to 200 ms later
+                      (when (if start
+                                (equal start (process-start-time pid))
+                                (not (terminal-exited terminal)))
+                        (signal-shell pid "SIGKILL"))
                       nil)
                     *kill-grace-ms*))))
   (alexandria:when-let ((subscription (terminal-output-subscription terminal)))
