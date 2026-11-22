@@ -405,11 +405,26 @@ of every frame, including their floating and side windows, to another buffer."
     (setf *frame-buffer-list-function* 'workspace-buffer-list)))
 
 (defun call-logging-errors (what function)
-  "Call FUNCTION, logging an error it signals (as WHAT) instead of signalling
-it.  Printing the condition can fail too: that is ignored."
-  (handler-case (funcall function)
-    (error (condition)
-      (ignore-errors (log:error "~A: ~A" what condition)))))
+  "Call FUNCTION.  An error it signals is logged, as WHAT, with the backtrace
+taken where it was signalled, and shown in the echo area, instead of being
+signalled.  Failing to print or to show it is ignored."
+  (block call
+    (handler-bind ((error (lambda (condition)
+                            (let ((text (ignore-errors (condition-text condition))))
+                              (ignore-errors
+                               (log:error "~A: ~A~%~A" what text
+                                          (lem/common/backtrace:safe-backtrace :count 40)))
+                              (ignore-errors (message "~A: ~A" what text)))
+                            (return-from call))))
+      (funcall function))))
+
+(defun condition-text (condition &key (max 300))
+  "CONDITION printed, on one line and cut to MAX characters: its message may
+hold a whole buffer's text."
+  (let ((text (substitute #\Space #\Newline (princ-to-string condition))))
+    (if (> (length text) max)
+        (concatenate 'string (subseq text 0 max) "...")
+        text)))
 
 (defun free-hidden-frames (virtual-frame)
   "Tear down the frames of VIRTUAL-FRAME's tabs but the one shown: once its

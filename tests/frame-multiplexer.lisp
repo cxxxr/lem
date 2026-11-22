@@ -343,4 +343,34 @@ counts, in the order of NAMES."
       (ok (zerop (hash-table-count lem/frame-multiplexer::*virtual-frame-map*))
           "the table of tabs is reset")
       (ng (member tab-bar (frame-header-windows (current-frame)))
-          "the tab bar has left the frame"))))
+          "the tab bar has left the frame")
+      (ok (progn (delete-window tab-bar) t)
+          "it is freed and marked deleted: deleting it again runs no hook")
+      (ok (search "deleting the tab bar"
+                  (buffer-text (get-buffer "*Messages*")))
+          "the error is shown"))))
+
+(deftest turning-it-off-runs-the-delete-hooks-of-the-tabs-freed
+  (with-frame-multiplexer ()
+    (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+    (let ((ran nil))
+      (add-hook (window-delete-hook (current-window)) (lambda () (setf ran t)))
+      (lem/frame-multiplexer:frame-multiplexer-prev)
+      (lem/frame-multiplexer::disable-frame-multiplexer)
+      (ok ran "the hidden tab's window was told it is deleted"))))
+
+(deftest deleting-a-tab-runs-the-delete-hooks-of-its-windows
+  (with-frame-multiplexer ()
+    (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+    (let ((ran nil))
+      (add-hook (window-delete-hook (current-window)) (lambda () (setf ran t)))
+      (lem/frame-multiplexer:frame-multiplexer-delete)
+      (ok ran))))
+
+(deftest an-error-is-logged-cut-to-one-line
+  (let* ((message (format nil "~{~A~%~}" (loop :repeat 20000 :collect "12: (\"line\"")))
+         (text (lem/frame-multiplexer::condition-text
+                (make-condition 'simple-error :format-control "~A"
+                                              :format-arguments (list message)))))
+    (ok (<= (length text) 303) "cut")
+    (ng (find #\Newline text) "on one line")))
