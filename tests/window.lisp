@@ -630,3 +630,16 @@
             (setf (fdefinition 'lem-core::%free-window) original)))
         (ok ready-while-freeing)
         (ok (notany #'identity ready-while-freeing))))))
+
+(deftest delete-window/a-failing-hook-still-frees-the-window
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let ((window (lem:split-window-vertically (lem:current-window))))
+        (declare (ignore window))
+        (let ((other (lem:get-next-window (lem:current-window))))
+          (lem:add-hook (lem:window-delete-hook other)
+                        (lambda () (error "a failing hook")))
+          (ok (signals (lem:delete-window other)) "the hook's error is signalled")
+          (ok (lem:deleted-window-p other) "the window is out of the frame")
+          (ok (progn (lem:delete-window other) t)
+              "and marked deleted: deleting it again runs no hook"))))))

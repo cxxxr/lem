@@ -224,9 +224,11 @@ reuses its buffer and adds it to the current frame.")
   (declare (type frame frame))
   (let ((id (find-frame-id virtual-frame frame)))
     (assert id)
-    (teardown-frame frame)
-    (setf (aref (virtual-frame-id/frame-table virtual-frame) id)
-          nil)))
+    ;; The tab goes even if a window's delete hook signals: its windows are
+    ;; freed by then.
+    (unwind-protect (teardown-frame frame)
+      (setf (aref (virtual-frame-id/frame-table virtual-frame) id)
+            nil))))
 
 (defun get-frame-from-id (virtual-frame id)
   (let ((entry (aref (virtual-frame-id/frame-table virtual-frame) id)))
@@ -405,11 +407,35 @@ of every frame, including their floating and side windows, to another buffer."
     (setf *frame-buffer-list-function* 'workspace-buffer-list)))
 
 (defun call-logging-errors (what function)
-  "Call FUNCTION, logging an error it signals (as WHAT) instead of signalling
-it.  Printing the condition can fail too: that is ignored."
-  (handler-case (funcall function)
-    (error (condition)
-      (ignore-errors (log:error "~A: ~A" what condition)))))
+  "Call FUNCTION.  An error it signals is logged, as WHAT, with the backtrace
+taken where it was signalled, and shown in the echo area, instead of being
+signalled.  Failing to print or to show it is ignored.  (Not editor-error:
+signalling would stop what the caller must finish, turning the tabs off.)"
+  (let ((failure nil))
+    (block call
+      (handler-bind ((error (lambda (condition)
+                              (setf failure
+                                    (list (condition-text condition)
+                                          (ignore-errors
+                                           (lem/common/backtrace:safe-backtrace :count 80))))
+                              (return-from call))))
+        (funcall function)))
+    ;; Logged and shown once unwound, out of the code that failed.
+    (when failure
+      (destructuring-bind (text backtrace) failure
+        (ignore-errors (log:error "~A: ~A~%~A" what text backtrace))
+        (ignore-errors (message "~A: ~A" what text))))))
+
+(defun condition-text (condition &key (max 300))
+  "CONDITION printed on one line (control characters made spaces) and cut to
+MAX characters: its message may hold a whole buffer's text.  Its type when it
+cannot be printed."
+  (let ((text (or (ignore-errors (princ-to-string condition))
+                  (format nil "~S (unprintable)" (type-of condition)))))
+    (setf text (substitute-if #\Space (lambda (c) (< (char-code c) 32)) text))
+    (if (> (length text) max)
+        (concatenate 'string (subseq text 0 max) "...")
+        text)))
 
 (defun free-hidden-frames (virtual-frame)
   "Tear down the frames of VIRTUAL-FRAME's tabs but the one shown: once its

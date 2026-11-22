@@ -343,4 +343,58 @@ counts, in the order of NAMES."
       (ok (zerop (hash-table-count lem/frame-multiplexer::*virtual-frame-map*))
           "the table of tabs is reset")
       (ng (member tab-bar (frame-header-windows (current-frame)))
-          "the tab bar has left the frame"))))
+          "the tab bar has left the frame")
+      (ok (progn (delete-window tab-bar) t)
+          "it is freed and marked deleted: deleting it again runs no hook")
+      (ok (search "deleting the tab bar"
+                  (buffer-text (get-buffer "*Messages*")))
+          "the error is shown"))))
+
+(deftest turning-it-off-runs-the-delete-hooks-of-the-tabs-freed
+  (with-frame-multiplexer ()
+    (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+    (let ((ran nil))
+      (add-hook (window-delete-hook (current-window)) (lambda () (setf ran t)))
+      (lem/frame-multiplexer:frame-multiplexer-prev)
+      (lem/frame-multiplexer::disable-frame-multiplexer)
+      (ok ran "the hidden tab's window was told it is deleted"))))
+
+(deftest deleting-a-tab-runs-the-delete-hooks-of-its-windows
+  (with-frame-multiplexer ()
+    (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+    (let ((ran nil))
+      (add-hook (window-delete-hook (current-window)) (lambda () (setf ran t)))
+      (lem/frame-multiplexer:frame-multiplexer-delete)
+      (ok ran))))
+
+(deftest an-error-is-logged-cut-to-one-line
+  (let* ((message (format nil "~{~A~%~}" (loop :repeat 20000 :collect "12: (\"line\"")))
+         (text (lem/frame-multiplexer::condition-text
+                (make-condition 'simple-error :format-control "~A"
+                                              :format-arguments (list message)))))
+    (ok (<= (length text) 303) "cut")
+    (ng (find #\Newline text) "on one line")))
+
+(deftest deleting-a-tab-whose-window-hook-fails-removes-it
+  (with-frame-multiplexer ()
+    (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+    (add-hook (window-delete-hook (current-window))
+              (lambda () (error "a failing hook")))
+    (ok (signals (lem/frame-multiplexer:frame-multiplexer-delete)))
+    (let ((vf (gethash (implementation) lem/frame-multiplexer::*virtual-frame-map*)))
+      (ok (= 1 (lem/frame-multiplexer::num-frames vf)) "the tab is gone from the table"))
+    (ok (= 1 (length (all-frames))))))
+
+(define-condition unprintable-error (error) ()
+  (:report (lambda (condition stream)
+             (declare (ignore condition stream))
+             (error "cannot print"))))
+
+(deftest an-error-text-has-no-control-characters
+  (let ((text (lem/frame-multiplexer::condition-text
+               (make-condition 'simple-error :format-control "a~Cb~Cc"
+                                             :format-arguments (list #\Return #\Tab)))))
+    (ok (equal "a b c" text)))
+  (ok (search "UNPRINTABLE-ERROR"
+              (lem/frame-multiplexer::condition-text (make-condition 'unprintable-error)))
+      "an unprintable condition gives its type"))
