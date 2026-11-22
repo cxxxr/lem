@@ -322,9 +322,19 @@ to the frame again (balance-windows, a resize of the display)."
     (%delete-window window)
     ;; Out of the frame now: free it even if a hook signals, or its view and
     ;; points stay allocated and a later delete-window runs the hooks again.
-    (unwind-protect (run-hooks (window-delete-hook window))
-      (unwind-protect (%free-window window)
-        (setf (window-deleted-p window) t))))
+    (let ((hooks-done nil))
+      (unwind-protect (progn (run-hooks (window-delete-hook window))
+                             (setf hooks-done t))
+        (unwind-protect
+             (if hooks-done
+                 (%free-window window)
+                 ;; the hook's error is the one to see, not one freeing
+                 (handler-case (%free-window window)
+                   (error (condition)
+                     (ignore-errors
+                      (log:error "freeing a window after its delete hook failed: ~A"
+                                 condition)))))
+          (setf (window-deleted-p window) t)))))
   t)
 
 (defun setup-frame-windows (frame buffer)
@@ -343,9 +353,11 @@ to the frame again (balance-windows, a resize of the display)."
   "Free the windows of FRAME: the window tree, the floating windows (side
 windows among them), the windows attached to them, and the header windows
 that no other frame has.  Each is freed once and marked deleted, so that a
-later delete-window does nothing, after its window-delete-hook has run (as
-delete-window runs it: what was kept for the window is let go).  A frame
-never set up has no window tree.  All are freed even if freeing one, or a
+later delete-window does nothing, after its window-delete-hook has run, so
+that what was kept for the window is let go.  The hook runs as the frame
+goes: the window may still be in its tree, already marked deleted, so a hook
+must not rely on the frame's state.  A frame never set up has no window
+tree.  All are freed even if freeing one, or a
 hook, signals an error (see map-protected)."
   (labels ((free (window)
              ;; Marked first, so that a window whose freeing failed is not

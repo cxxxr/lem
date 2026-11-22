@@ -374,3 +374,27 @@ counts, in the order of NAMES."
                                               :format-arguments (list message)))))
     (ok (<= (length text) 303) "cut")
     (ng (find #\Newline text) "on one line")))
+
+(deftest deleting-a-tab-whose-window-hook-fails-removes-it
+  (with-frame-multiplexer ()
+    (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
+    (add-hook (window-delete-hook (current-window))
+              (lambda () (error "a failing hook")))
+    (ok (signals (lem/frame-multiplexer:frame-multiplexer-delete)))
+    (let ((vf (gethash (implementation) lem/frame-multiplexer::*virtual-frame-map*)))
+      (ok (= 1 (lem/frame-multiplexer::num-frames vf)) "the tab is gone from the table"))
+    (ok (= 1 (length (all-frames))))))
+
+(define-condition unprintable-error (error) ()
+  (:report (lambda (condition stream)
+             (declare (ignore condition stream))
+             (error "cannot print"))))
+
+(deftest an-error-text-has-no-control-characters
+  (let ((text (lem/frame-multiplexer::condition-text
+               (make-condition 'simple-error :format-control "a~Cb~Cc"
+                                             :format-arguments (list #\Return #\Tab)))))
+    (ok (equal "a b c" text)))
+  (ok (search "UNPRINTABLE-ERROR"
+              (lem/frame-multiplexer::condition-text (make-condition 'unprintable-error)))
+      "an unprintable condition gives its type"))
