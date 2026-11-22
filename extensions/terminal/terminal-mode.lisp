@@ -420,16 +420,59 @@ from the screen does nothing: there is nothing below it."
      ;; screen again (see BACK-TO-SCREEN).
      (terminal-input))))
 
+(defun window-text-rows (window)
+  (max 1 (- (window-height window) (if (window-use-modeline-p window) 1 0))))
+
+(defun frame-shown-windows ()
+  "The windows of the current frame: the tiled ones, the floating ones and the
+side windows (a side window is usually, not always, floating too)."
+  (let ((frame (current-frame)))
+    (remove-duplicates
+     (append (window-list)
+             (frame-floating-windows frame)
+             (remove nil (list (frame-leftside-window frame)
+                               (frame-rightside-window frame)
+                               (frame-bottomside-window frame)))))))
+
+(defun reading-history-p (buffer terminal)
+  "True while BUFFER's TERMINAL is frozen for its history to be read: by the
+wheel, or in terminal-copy-mode.  It is not resized then: a resize reflows
+the screen under the copy being read."
+  (or (terminal:frozen-scrollback-lines terminal)
+      (eq (buffer-major-mode buffer) 'terminal-copy-mode)))
+
 (defun resize-terminal (terminal window)
-  "Fit TERMINAL to the smallest window showing WINDOW's buffer, so no window
-loses the bottom rows (where the prompt is) when the buffer is shown in
-windows of different sizes."
-  (let ((windows (adjoin window (get-buffer-windows (window-buffer window)))))
+  "Fit TERMINAL to the smallest window of the current frame showing WINDOW's
+buffer, side and floating windows included, so no window loses the bottom
+rows (where the prompt is) when the buffer is shown in windows of different
+sizes.  Windows of other frames (hidden frame-multiplexer tabs) are not
+seen: the terminal fits them when their tab is shown (see
+FIT-SHOWN-TERMINALS)."
+  (let ((windows (adjoin window (get-buffer-windows (window-buffer window)
+                                                    :include-floating-windows t))))
     (terminal:resize terminal
-                     :rows (reduce #'min windows :key (lambda (w) (1- (window-height w))))
+                     :rows (reduce #'min windows :key #'window-text-rows)
                      :cols (reduce #'min windows :key #'window-width))))
 
+(defun fit-shown-terminals ()
+  "Fit each terminal shown in the current frame to its windows there, after
+every command: the command may have shown another tab, or split or closed a
+window, without the current buffer being the terminal.  A terminal whose
+history is being read is left as it is (see READING-HISTORY-P), until a
+command after it runs on."
+  (let ((seen '()))
+    (dolist (window (frame-shown-windows))
+      (let ((buffer (window-buffer window)))
+        (unless (member buffer seen)
+          (push buffer seen)
+          (alexandria:when-let ((terminal (buffer-terminal buffer)))
+            (unless (reading-history-p buffer terminal)
+              (resize-terminal terminal window))))))))
+
 (define-command terminal-resize () ()
+  "Fit the current terminal to its windows now.  Asked for, it resizes also a
+terminal whose history is being read, which the automatic fitting leaves
+alone (see READING-HISTORY-P)."
   (alexandria:when-let ((terminal (get-current-terminal))
                         (window (current-window)))
     (resize-terminal terminal window)))
@@ -448,8 +491,14 @@ windows of different sizes."
     (paste string)))
 
 (defun on-window-size-change (window)
-  (alexandria:when-let (terminal (buffer-terminal (window-buffer window)))
-    (resize-terminal terminal window)))
+  ;; Only for a window of the current frame (not one of a frame being set up
+  ;; or hidden): the terminal fits the windows shown.  Not while its history
+  ;; is read (see READING-HISTORY-P): FIT-SHOWN-TERMINALS fits it afterwards.
+  (let ((buffer (window-buffer window)))
+    (alexandria:when-let (terminal (buffer-terminal buffer))
+      (when (and (member window (frame-shown-windows))
+                 (not (reading-history-p buffer terminal)))
+        (resize-terminal terminal window)))))
 
 (add-hook *window-size-change-functions*
           'on-window-size-change)
@@ -470,10 +519,18 @@ only frozen terminals look at their windows."
                                        (terminal:frozen-scrollback-lines terminal))))
       (when (every (lambda (window) (> (view-line window) lines))
                    (terminal:buffer-windows buffer))
-        (stop-scrolling terminal)))))
+        (stop-scrolling terminal)
+        ;; and fit it now, whichever of the post-command hooks runs first
+        (alexandria:when-let ((window (find buffer (frame-shown-windows)
+                                            :key #'window-buffer)))
+          (resize-terminal terminal window))))))
+
+;; (fit-shown-terminals took the place of terminal-resize: a Lem loading this
+;; file again keeps no old hook)
+(remove-hook *post-command-hook* 'terminal-resize)
 
 (add-hook *post-command-hook*
-          'terminal-resize)
+          'fit-shown-terminals)
 
 (add-hook *post-command-hook*
           'release-read-terminals)

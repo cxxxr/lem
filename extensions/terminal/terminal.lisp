@@ -637,7 +637,8 @@ frozen while any of them reads the history."
 
 (defun buffer-view-points (buffer)
   "Return the buffer point, and the view points and points of every window
-showing BUFFER."
+showing BUFFER.  (The place kept for a window that left BUFFER, see
+switch-to-buffer, is right-inserting: the scrollback put in moves it.)"
   (cons (buffer-point buffer)
         (loop :for window :in (buffer-windows buffer)
               :collect (window-view-point window)
@@ -938,7 +939,8 @@ a visible terminal (bash's failed completion, ...) is left silent."
   (let ((buffer (terminal-buffer terminal)))
     (when (and (not (terminal-dead terminal))
                (not (deleted-buffer-p buffer))
-               (null (get-buffer-windows buffer)))
+               ;; side and floating windows show it too
+               (null (get-buffer-windows buffer :include-floating-windows t)))
       (message "Bell in ~A" (buffer-name buffer)))))
 
 (defun cb-bell (id)
