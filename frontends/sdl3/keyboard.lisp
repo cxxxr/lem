@@ -113,7 +113,7 @@
 
 (defun send-key-event (key)
   (if (lem:match-key key :ctrl t :sym "]")
-      ;; (No editor thread once the editor has ended.)
+      ;; (No editor thread once its thread has exited.)
       (alexandria:when-let ((editor-thread (lem:find-editor-thread)))
         (lem:send-abort-event editor-thread nil))
       (lem:send-event key)))
