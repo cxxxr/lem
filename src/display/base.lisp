@@ -32,7 +32,8 @@ Used to prevent recursive `redraw-display` calls.")
 
 (defun redraw-current-window (window force)
   (assert (eq window (current-window)))
-  (window-see window)
+  (unless (view-detached-p window)
+    (window-see window))
   (run-show-buffer-hooks window)
   (window-redraw window force))
 

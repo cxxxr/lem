@@ -2,6 +2,16 @@
 
 (define-editor-variable line-wrap t)
 
+(define-editor-variable variable-pitch nil
+  "When true, and the frontend supports proportional text, the buffer's text
+is drawn in a proportional font and wrapped by its pixel width.")
+
+(defun proportional-text-p (buffer)
+  "True if BUFFER's text is laid out proportionally (see variable-pitch)."
+  (and (support-proportional-text-p (implementation))
+       (variable-value 'variable-pitch :default buffer)
+       t))
+
 (defparameter *window-sufficient-width* 150)
 (defparameter *scroll-recenter-p* t)
 

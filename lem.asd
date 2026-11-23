@@ -199,6 +199,7 @@
                              (:file "kbdmacro")
                              (:file "isearch")
                              (:file "showparen")
+                             (:file "variable-pitch")
                              (:file "line-numbers")
                              (:file "peek-source")
                              (:file "grep")

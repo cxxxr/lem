@@ -22,7 +22,8 @@
 
 ;;;;;;;;;;;;;;;;;;
 
-(defparameter *scroll-speed* 3)
+(defparameter *scroll-speed* 3
+  "How many lines one notch of the mouse wheel scrolls.")
 
 (define-editor-variable mouse-button-down-functions '())
 
@@ -62,14 +63,28 @@
 (defmethod get-relative-mouse-coordinates-pixels ((mouse-event mouse-event) window)
   (let ((x (mouse-event-pixel-x mouse-event))
         (y (mouse-event-pixel-y mouse-event)))
-    (values (- x
-               (* (window-x window)
-                  (lem-if:get-char-width (implementation))))
-            (- y
-               (* (window-y window)
-                  (lem-if:get-char-height (implementation)))))))
+    (if (pixel-positioned-window-p window)
+        (multiple-value-bind (window-x window-y) (floating-window-pixel-bounds window)
+          (values (- x window-x) (- y window-y)))
+        (values (- x
+                   (* (window-x window)
+                      (lem-if:get-char-width (implementation))))
+                (- y
+                   (* (window-y window)
+                      (lem-if:get-char-height (implementation))))))))
+
+(defun focus-mouse-event-window (mouse-event)
+  "Return the window under MOUSE-EVENT and the cell position relative to it,
+as focus-window-position does, using the event's pixel position for floating
+windows placed by pixels."
+  (focus-window-position (current-frame)
+                         (mouse-event-x mouse-event)
+                         (mouse-event-y mouse-event)
+                         :pixel-x (mouse-event-pixel-x mouse-event)
+                         :pixel-y (mouse-event-pixel-y mouse-event)))
 
 (defun get-point-from-window-with-coordinates (window x y &optional (allow-overflow-column t))
+  (setf x (window-column-x window x))
   (with-point ((point (buffer-point (window-buffer window))))
     (move-point point (window-view-point window))
     (move-to-next-virtual-line point y window)
@@ -81,12 +96,37 @@
   (switch-to-window window)
   (move-point (current-point) (window-view-point window))
   (move-to-next-virtual-line (current-point) y)
-  (move-to-virtual-line-column (current-point) x))
+  (move-to-virtual-line-column (current-point) (window-column-x window x)))
 
 (defvar *last-mouse-event*)
 (defun last-mouse-event () *last-mouse-event*)
 (defun set-last-mouse-event (mouse-event)
   (setf *last-mouse-event* mouse-event))
+
+(defun last-mouse-pixel-x-in-column (window column)
+  "Return the last mouse event's pixel x relative to the start of WINDOW's
+text, if the event has one and it falls in cell COLUMN; otherwise NIL."
+  (let ((event (and (boundp '*last-mouse-event*) (last-mouse-event)))
+        (char-width (lem-if:get-char-width (implementation))))
+    (when (and event (mouse-event-pixel-x event))
+      (let* ((window-left (if (pixel-positioned-window-p window)
+                              (nth-value 0 (floating-window-pixel-bounds window))
+                              (* (window-x window) char-width)))
+             (x (- (mouse-event-pixel-x event)
+                   window-left
+                   (* (window-left-width window) char-width))))
+        (when (= column (floor x char-width))
+          x)))))
+
+(defun window-column-x (window column)
+  "Return cell COLUMN of WINDOW as the x move-to-virtual-line-column takes:
+the column itself for monospace text, and a pixel x for proportional text:
+the mouse's, when the last mouse event is in that column, so a click lands
+on the character under the pointer."
+  (if (proportional-text-p (window-buffer window))
+      (or (last-mouse-pixel-x-in-column window column)
+          (* column (lem-if:get-char-width (implementation))))
+      column))
 
 (defvar *last-dragged-separator* nil)
 
@@ -185,9 +225,7 @@
                         (mouse-button-down-clicks mouse-event)))
       (otherwise
        (multiple-value-bind (window x y)
-           (focus-window-position (current-frame)
-                                  (mouse-event-x mouse-event)
-                                  (mouse-event-y mouse-event))
+           (focus-mouse-event-window mouse-event)
          (when (and window
                     (window-clickable window))
            (handle-mouse-button-down (window-buffer window)
@@ -198,9 +236,7 @@
 
 (defmethod handle-mouse-event ((mouse-event mouse-button-up))
   (setf *last-dragged-separator* nil)
-  (alexandria:when-let ((window (focus-window-position (current-frame)
-                                                       (mouse-event-x mouse-event)
-                                                       (mouse-event-y mouse-event))))
+  (alexandria:when-let ((window (focus-mouse-event-window mouse-event)))
     (setf (window-last-mouse-button-down-point window) nil)
     (handle-mouse-button-up (window-buffer window)
                             mouse-event
@@ -252,9 +288,7 @@
 (defmethod handle-mouse-event ((mouse-event mouse-motion))
   (cond ((null *last-dragged-separator*)
          (multiple-value-bind (window x y)
-             (focus-window-position (current-frame)
-                                    (mouse-event-x mouse-event)
-                                    (mouse-event-y mouse-event))
+             (focus-mouse-event-window mouse-event)
            (when window
              (handle-mouse-hover (window-buffer window)
                                  mouse-event
@@ -308,9 +342,7 @@
 
 (defmethod handle-mouse-event ((mouse-event mouse-wheel))
   (unless (zerop (mouse-wheel-y mouse-event))
-    (let ((window (focus-window-position (current-frame)
-                                         (mouse-event-x mouse-event)
-                                         (mouse-event-y mouse-event))))
+    (let ((window (focus-mouse-event-window mouse-event)))
       (when window
         (with-current-window window
           (call-command (find-command "scroll-down")

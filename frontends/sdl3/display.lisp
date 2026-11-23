@@ -29,17 +29,28 @@
            :display-renderer
            :display-text-engine
            :display-text-shaper
+           :display-variable-pitch-font
+           :variable-pitch-advance
            :set-render-color
            :display-background-color
            :display-foreground-color
            :display-texture
-           :render-border
+           :texture-size-stale-p
+           :display-live-resize-request
+           :display-scroll-animation-timer
+           :display-scroll-precision
+           :display-last-wheel-time
+           :display-last-wheel-trackpad-p
+           :display-scrolling-windows
+           :render-border-by-pixels
            :render-line
            :clear
            :get-display-font
            :render-margin-line
            :scaled-char-width
            :scaled-char-height
+           :scaled-pixel-x
+           :scaled-pixel-y
            :notify-required-redisplay
            :update-texture
            :update-display
@@ -60,6 +71,17 @@
 
 (defvar *display* nil
   "The display, set once the SDL window has been created.")
+
+(defparameter *variable-pitch-font-candidates*
+  '("/System/Library/Fonts/Supplemental/Arial.ttf"
+    "/System/Library/Fonts/Helvetica.ttc"
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
+    "/usr/share/fonts/noto/NotoSans-Regular.ttf"
+    "/usr/share/fonts/TTF/DejaVuSans.ttf"
+    "C:/Windows/Fonts/arial.ttf")
+  "Proportional font files tried, in order, when :sdl3-variable-pitch-font
+is not set.")
 
 (defvar *post-display-change-hooks* '()
   "Hook variable (analogous to Lem's other `*...-hooks*' registries): a list
@@ -99,6 +121,36 @@ Retina to a 1x display).")
              :reader display-renderer)
    (texture :initarg :texture
             :accessor display-texture)
+   (scroll-precision :initform (make-hash-table)
+                     :reader display-scroll-precision
+                     :documentation "Whether each wheel event not yet handled
+scrolls precisely or by lines, by the event's timestamp, as the event watch
+learned it from the platform (see lem-darwin/scroll).")
+   (last-wheel-time :initform nil
+                    :accessor display-last-wheel-time
+                    :documentation "When the last wheel event was handled, in
+milliseconds, or NIL.")
+   (last-wheel-trackpad-p :initform nil
+                          :accessor display-last-wheel-trackpad-p
+                          :documentation "True if the last wheel event was
+taken for a trackpad's.")
+   (scroll-animation-timer :initform nil
+                           :accessor display-scroll-animation-timer
+                           :documentation "The timer running scroll animations,
+or NIL while none runs.")
+   (scrolling-windows :initform '()
+                      :accessor display-scrolling-windows
+                      :documentation "The windows with a scroll animation
+running.")
+   (live-resize-request :initform nil
+                        :accessor display-live-resize-request
+                        :documentation "The semaphore the editor thread signals
+when it has redrawn at the window's new size during a live resize, while it
+has not yet, or NIL.")
+   (texture-size :initform nil
+                 :accessor display-texture-size
+                 :documentation "The (WIDTH . HEIGHT) update-texture last made
+TEXTURE at, or NIL before it first runs.")
    (window :initarg :window
            :reader display-window)
    (char-width :initarg :char-width
@@ -123,6 +175,14 @@ lem-sdl3/text-engine), or NIL to draw every glyph from a surface.")
                 :reader display-text-shaper
                 :documentation "The renderer's text shaper (see
 lem-sdl3/text-shaping), or NIL when text runs are not shaped.")
+   (variable-pitch-font :initform nil
+                        :accessor %display-variable-pitch-font
+                        :documentation "The open proportional font (see
+display-variable-pitch-font), or NIL until it is first needed.")
+   (variable-pitch-advances :initform (make-hash-table)
+                            :reader display-variable-pitch-advances
+                            :documentation "Each character's advance in the
+proportional font, by character.")
    (scale :initform '(1 1)
           :initarg :scale
           :accessor display-scale)
@@ -259,12 +319,30 @@ box-drawing band, to be stretched to the cell height.  Otherwise NIL."
            (otherwise (display-cjk-normal-font display))))))
 
 (defmethod scaled-char-width ((display display) x)
-  (let ((scale-x (round (first (display-scale display)))))
-    (floor (* scale-x x) (display-char-width display))))
+  "Return the cell column under window coordinate X.  The pixels past the
+last whole column count as the last column, since the views there reach
+the edge."
+  (let ((scale-x (round (first (display-scale display))))
+        (columns (floor (display-width display) (display-char-width display))))
+    (min (floor (* scale-x x) (display-char-width display))
+         (max 0 (1- columns)))))
 
 (defmethod scaled-char-height ((display display) y)
-  (let ((scale-y (round (second (display-scale display)))))
-    (floor (* scale-y y) (display-char-height display))))
+  "Return the cell row under window coordinate Y.  The pixels past the last
+whole row count as the last row."
+  (let ((scale-y (round (second (display-scale display))))
+        (rows (floor (display-height display) (display-char-height display))))
+    (min (floor (* scale-y y) (display-char-height display))
+         (max 0 (1- rows)))))
+
+(defmethod scaled-pixel-x ((display display) x)
+  "Return window coordinate X in the display's render pixels, the unit
+views and pixel-placed floating windows are in."
+  (* (round (first (display-scale display))) x))
+
+(defmethod scaled-pixel-y ((display display) y)
+  "Return window coordinate Y in the display's render pixels."
+  (* (round (second (display-scale display))) y))
 
 (defmethod update-display ((display display))
   (lem-sdl3/ffi:render-present (display-renderer display)))
@@ -287,7 +365,17 @@ box-drawing band, to be stretched to the cell height.  Otherwise NIL."
     (setf (display-texture display)
           (utils:create-texture (display-renderer display)
                                 (display-width display)
-                                (display-height display)))))
+                                (display-height display))
+          (display-texture-size display)
+          (cons (display-width display) (display-height display)))))
+
+(defun texture-size-stale-p (display)
+  "True if DISPLAY's window no longer has the pixel size update-texture last
+made its texture at.  Before update-texture first runs the size is unknown,
+and not stale: the texture made at startup fits the window."
+  (and (display-texture-size display)
+       (not (equal (display-texture-size display)
+                   (cons (display-width display) (display-height display))))))
 
 (defmethod set-render-color ((display display) color)
   (when color
@@ -387,11 +475,14 @@ event handler pattern in `on-windowevent')."
     (set-render-color display color)
     (lem-sdl3/ffi:render-fill-rect (display-renderer display) rect)))
 
-(defmethod render-border ((display display) x y w h &key border-type)
-  (let* ((x1 (- (* x (display-char-width display)) (floor (display-char-width display) 2)))
-         (y1 (- (* y (display-char-height display)) (floor (display-char-height display) 2)))
-         (x2 (1- (+ x1 (* (+ w 1) (display-char-width display)))))
-         (y2 (+ y1 (* (+ h 1) (display-char-height display)))))
+(defmethod render-border-by-pixels ((display display) x y width height &key border-type)
+  "Draw a border half a cell outside the rectangle at X, Y of WIDTH by HEIGHT
+pixels, clearing the area inside it to the background colour first.
+BORDER-TYPE is :drop-curtain, :left-border or NIL for all four sides."
+  (let* ((x1 (- x (floor (display-char-width display) 2)))
+         (y1 (- y (floor (display-char-height display) 2)))
+         (x2 (1- (+ x1 width (display-char-width display))))
+         (y2 (+ y1 height (display-char-height display))))
     (with-scratch-rect (rect display x1 y1 (- x2 x1) (- y2 y1))
       (set-render-color display (display-background-color display))
       (lem-sdl3/ffi:render-fill-rect (display-renderer display) rect))
@@ -412,24 +503,64 @@ event handler pattern in `on-windowevent')."
       (lem-sdl3/ffi:render-lines renderer x2 y1 x2 y2 x1 y2))))
 
 (defmethod render-margin-line ((display display) x y height)
-  (let ((attribute (lem:ensure-attribute 'lem:modeline-inactive)))
-    (render-fill-rect display
-                      (1- x)
-                      y
-                      1
-                      height
-                      :color (lem-core:attribute-background-color attribute))
+  "Draw the separator in the cell column left of a window whose left edge
+is at pixel X, from pixel Y down HEIGHT pixels."
+  (let ((attribute (lem:ensure-attribute 'lem:modeline-inactive))
+        (column-x (- x (display-char-width display))))
     (render-fill-rect-by-pixels display
-                                (+ (* (1- x) (display-char-width display))
-                                   (floor (display-char-width display) 2)
-                                   -1)
-                                (* y (display-char-height display))
+                                column-x
+                                y
+                                (display-char-width display)
+                                height
+                                :color (lem-core:attribute-background-color attribute))
+    (render-fill-rect-by-pixels display
+                                (+ column-x (floor (display-char-width display) 2) -1)
+                                y
                                 2
-                                (* height (display-char-height display))
+                                height
                                 :color (lem-core:attribute-foreground-color attribute))))
+
+(defun variable-pitch-font-file ()
+  "Return the proportional font file to open: the :sdl3-variable-pitch-font
+config if set, otherwise the first of *variable-pitch-font-candidates* that
+exists, or NIL."
+  (or (lem:config :sdl3-variable-pitch-font)
+      (find-if #'probe-file *variable-pitch-font-candidates*)))
+
+(defun display-variable-pitch-font (display)
+  "Return the font proportional text is drawn in, at DISPLAY's font size:
+the proportional font, opened the first time it is needed, or the latin
+font if none can be opened."
+  (or (%display-variable-pitch-font display)
+      (setf (%display-variable-pitch-font display)
+            (let ((file (variable-pitch-font-file)))
+              (and file
+                   (handler-case
+                       (lem-sdl3/ffi:open-font file (font:font-config-size
+                                                     (display-font-config display)))
+                     (error () nil)))))
+      (display-latin-font display)))
+
+(defun variable-pitch-advance (display character)
+  "Return how far CHARACTER advances in DISPLAY's proportional font, in
+pixels, falling back to a cell for a character it has no glyph for."
+  (let ((advances (display-variable-pitch-advances display)))
+    (or (gethash character advances)
+        (setf (gethash character advances)
+              (or (nth-value 4 (lem-sdl3/ffi:glyph-metrics
+                                (display-variable-pitch-font display) character))
+                  (display-char-width display))))))
+
+(defun close-variable-pitch-font (display)
+  "Close DISPLAY's proportional font, if open, and forget its advances."
+  (when (%display-variable-pitch-font display)
+    (lem-sdl3/ffi:close-font (%display-variable-pitch-font display))
+    (setf (%display-variable-pitch-font display) nil))
+  (clrhash (display-variable-pitch-advances display)))
 
 (defmethod change-font ((display display) font-config &optional (save-font-size-p t))
   (let ((font-config (font:merge-font-config font-config (display-font-config display))))
+    (close-variable-pitch-font display)
     ;; Cached texts, shaped runs and atlas glyphs refer to the fonts being
     ;; closed.
     (when (display-text-engine display)
@@ -449,9 +580,8 @@ event handler pattern in `on-windowevent')."
     (lem:send-event :resize)))
 
 (defmethod create-view-texture ((display display) width height)
-  (utils:create-texture (display-renderer display)
-                        (* width (display-char-width display))
-                        (* height (display-char-height display))))
+  "Return a new render-target texture of WIDTH by HEIGHT pixels."
+  (utils:create-texture (display-renderer display) width height))
 
 (defmethod lem-if:set-font-name ((implementation lem-sdl3/sdl3:sdl3) font-name)
   (lem-sdl3/display:change-font

@@ -117,7 +117,10 @@ per-string SDL_ttf surface-width drift."
   (* 2 (display:display-char-width display)))
 
 (defmethod object-width ((drawing-object emoji-object) display)
-  (* (display:display-char-width display) 2 (length (text-object-string drawing-object))))
+  ;; The cells lem-core counts for the string, so a sequence (a flag's two
+  ;; letters, a joined family) takes the same width here as in its layout.
+  (* (display:display-char-width display)
+     (lem-core:string-width (text-object-string drawing-object))))
 
 (defmethod object-width ((drawing-object eol-cursor-object) display)
   0)
@@ -278,6 +281,18 @@ BACKGROUND."
                               (letter-top-y display drawing character bottom-y)
                               foreground)))
 
+(defun fit-rect (width height box-width box-height)
+  "Return the rectangle, as values X, Y, WIDTH and HEIGHT relative to a
+BOX-WIDTH by BOX-HEIGHT box, that a WIDTH by HEIGHT image takes when scaled
+down, never up, to fit the box with its shape kept, and centred in it."
+  (let* ((scale (min 1 (/ box-width (max width 1)) (/ box-height (max height 1))))
+         (fit-width (round (* width scale)))
+         (fit-height (round (* height scale))))
+    (values (floor (- box-width fit-width) 2)
+            (floor (- box-height fit-height) 2)
+            fit-width
+            fit-height)))
+
 (defun draw-text-glyph-surface (drawing-object x bottom-y display view cell-width
                                 &key clip (phase :both))
   "Draws DRAWING-OBJECT's cached SDL surface in a (CELL-WIDTH × cell-height) slot
@@ -326,9 +341,7 @@ the background phase draws anything."
          (cell-height (object-height drawing-object display))
          (attribute (text-object-attribute drawing-object))
          (background (lem-core:attribute-background-with-reverse attribute))
-         (y (- bottom-y cell-height))
-         (draw-width (if clip surface-width (min surface-width cell-width)))
-         (draw-height (min surface-height cell-height)))
+         (y (- bottom-y cell-height)))
     (when (member phase '(:bg :both))
       (cond ((and attribute (lem-core:cursor-attribute-p attribute))
              (lem-sdl3/view:set-cursor-position view x y)
@@ -389,11 +402,17 @@ the background phase draws anything."
                                                   nil
                                                   dst-rect))))))
           (t
-           (display:with-scratch-rect (dst-rect display x y draw-width draw-height)
-             (lem-sdl3/ffi:render-texture (display:display-renderer display)
-                                          texture
-                                          nil
-                                          dst-rect))))))
+           ;; Scale down to fit the cells, keeping the glyph's shape, and
+           ;; centre it: emoji fonts draw at a fixed size (Apple Color Emoji
+           ;; at 160 by 210 pixels) whatever the point size.
+           (multiple-value-bind (fit-x fit-y fit-width fit-height)
+               (fit-rect surface-width surface-height cell-width cell-height)
+             (display:with-scratch-rect (dst-rect display (+ x fit-x) (+ y fit-y)
+                                                  fit-width fit-height)
+               (lem-sdl3/ffi:render-texture (display:display-renderer display)
+                                            texture
+                                            nil
+                                            dst-rect)))))))
     (when (member phase '(:bg :both))
       (draw-underline display x y cell-width cell-height attribute))))
 
@@ -578,12 +597,18 @@ width so the rasterizer's right-edge anti-aliasing tail is preserved."
                  (eol-cursor-object-color drawing-object)))
   (object-width drawing-object display))
 
+(defun texture-size (view display)
+  "Return the WIDTH and HEIGHT in pixels of VIEW's texture on DISPLAY, which
+can reach past the area lem-core lays lines out in (see
+view:view-texture-size); fills run to its edge."
+  (view:view-texture-size view display))
+
 (defmethod draw-object ((drawing-object extend-to-eol-object) x bottom-y display view)
   (display:set-render-color display (extend-to-eol-object-color drawing-object))
   (display:with-scratch-rect (rect display
                               x
                               (- bottom-y (display:display-char-height display))
-                              (- (lem-if:view-width (lem-core:implementation) view) x)
+                              (- (texture-size view display) x)
                               (display:display-char-height display))
     (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect))
   (object-width drawing-object display))
@@ -674,7 +699,7 @@ rather than the row-wide two-pass)."
             (draw-object object current-x y display view)))
 
 (defun fill-to-end-of-line (display view x y height &optional default-attribute)
-  (display:with-scratch-rect (rect display x y (- (lem-if:view-width (lem-core:implementation) view) x) height)
+  (display:with-scratch-rect (rect display x y (- (texture-size view display) x) height)
     (display:set-render-color display
                               (lem-core:attribute-background-color default-attribute))
     (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect)))
@@ -691,6 +716,8 @@ rather than the row-wide two-pass)."
                                            default-attribute
                                            height)
   (display:with-display (display)
+    ;; The modeline is the last row lem-core draws the view in;
+    ;; view:render-view-texture-to-display puts it at the view's bottom edge.
     (fill-to-end-of-line display
                          view
                          0
@@ -710,18 +737,97 @@ rather than the row-wide two-pass)."
   (display:with-display (display)
     (display:set-render-color display
                               (display:display-background-color display))
-    (display:with-scratch-rect (rect display
-                                0
-                                y
-                                (lem-if:view-width implementation view)
-                                (- (lem-if:view-height implementation view) y))
-      (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect))))
+    (multiple-value-bind (width height) (texture-size view display)
+      (display:with-scratch-rect (rect display 0 y width (- height y))
+        (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect)))))
+
+(defun clear-below-layout (display view)
+  "Fill the strip of VIEW's texture below the area lem-core lays lines out
+in with the background colour.  Only a view without a modeline has one to
+fill; a modeline's background covers it."
+  (unless (view:view-use-modeline view)
+    (let ((layout-height (nth-value 1 (view:view-layout-size view display))))
+      (multiple-value-bind (width height) (texture-size view display)
+        (when (< layout-height height)
+          (display:set-render-color display (display:display-background-color display))
+          (display:with-scratch-rect (rect display 0 layout-height width (- height layout-height))
+            (lem-sdl3/ffi:render-fill-rect (display:display-renderer display) rect)))))))
 
 (defmethod lem-core:redraw-buffer :before ((implementation lem-sdl3/sdl3:sdl3) buffer window force)
   (display:with-display (display)
     (lem-sdl3/ffi:set-render-target (display:display-renderer display)
-                                    (view:view-texture (lem:window-view window)))))
+                                    (view:view-texture (lem:window-view window)))
+    (clear-below-layout display (lem:window-view window))))
 
 (defmethod lem-core:redraw-buffer :around ((implementation lem-sdl3/sdl3:sdl3) buffer window force)
   (lem-sdl3/ffi:in-main-thread ()
-    (call-next-method)))
+    ;; A new texture is blank, so the whole window must be drawn again.
+    (if (display:with-display (display)
+          (view:sync-texture (lem:window-view window) display))
+        (call-next-method implementation buffer window t)
+        (call-next-method))))
+
+;;; Proportional text (variable-text-object).  Each character advances by
+;;; its glyph's integer advance in the proportional font, the width lem-core
+;;; measures with lem-if:char-pixel-width, so wrapping, the cursor and the
+;;; mouse agree with what is drawn.  Glyphs are drawn one by one at those
+;;; advances; kerning and ligatures would make the drawn width differ.
+
+(defmethod lem-if:char-pixel-width ((implementation lem-sdl3/sdl3:sdl3) character)
+  "Return CHARACTER's advance in the proportional font, in pixels."
+  (display:with-display (display)
+    (display:variable-pitch-advance display character)))
+
+(defmethod object-width ((drawing-object variable-text-object) display)
+  "Return the sum of the advances of DRAWING-OBJECT's characters."
+  (loop :for character :across (text-object-string drawing-object)
+        :sum (display:variable-pitch-advance display character)))
+
+(defun variable-pitch-glyph-surface (display character attribute)
+  "Return the cached surface of CHARACTER in DISPLAY's proportional font,
+in ATTRIBUTE's foreground colour."
+  (let ((string (string character)))
+    (or (lem-sdl3/text-surface-cache:get-text-surface-cache string attribute :variable)
+        (let* ((foreground (lem-core:attribute-foreground-with-reverse attribute))
+               (surface (lem-sdl3/ffi:render-text-blended
+                         (display:display-variable-pitch-font display)
+                         string
+                         (lem:color-red foreground)
+                         (lem:color-green foreground)
+                         (lem:color-blue foreground))))
+          (when surface
+            (lem-sdl3/text-surface-cache:register-text-surface-cache
+             string attribute :variable surface))
+          surface))))
+
+(defmethod draw-object ((drawing-object variable-text-object) x bottom-y display view)
+  "Draw DRAWING-OBJECT's background or cursor, then its glyphs one by one at
+their advances from X, and return its width."
+  (let* ((attribute (text-object-attribute drawing-object))
+         (width (object-width drawing-object display))
+         (height (display:display-char-height display))
+         (y (- bottom-y height))
+         (background (lem-core:attribute-background-with-reverse attribute))
+         (glyph-attribute (glyph-attribute drawing-object display))
+         ;; The proportional font's baseline goes on the row's baseline.
+         (top (- (+ y (display:display-font-ascent display))
+                 (lem-sdl3/ffi:font-ascent (display:display-variable-pitch-font display))))
+         (renderer (display:display-renderer display)))
+    (cond ((and attribute (lem-core:cursor-attribute-p attribute))
+           (lem-sdl3/view:set-cursor-position view x y)
+           (draw-cursor display x y width height background))
+          (t
+           (draw-rect display x y width height background)))
+    (loop :with glyph-x := x
+          :for character :across (text-object-string drawing-object)
+          :for surface := (variable-pitch-glyph-surface display character glyph-attribute)
+          :do (when surface
+                (lem-sdl3/ffi:with-frect (rect glyph-x top
+                                               (lem-sdl3/ffi:surface-width surface)
+                                               (lem-sdl3/ffi:surface-height surface))
+                  (lem-sdl3/ffi:render-texture
+                   renderer
+                   (lem-sdl3/text-surface-cache:get-or-create-texture renderer surface)
+                   nil rect)))
+              (incf glyph-x (display:variable-pitch-advance display character)))
+    width))

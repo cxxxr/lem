@@ -96,6 +96,9 @@ The SCROLL-POSITION is influenced by the scrolloff option."
          (cursor-y (window-cursor-y window))
          (scroll-offset (scroll-offset window)))
     (cond
+      ;; The mouse scrolled the view away from the cursor (see scroll-view):
+      ;; leave it there until the cursor moves.
+      ((view-detached-p window))
       ((< cursor-y scroll-offset)
        (window-scroll window (- cursor-y scroll-offset)))
       ((and (<= (- window-height scroll-offset) cursor-y)

@@ -21,6 +21,7 @@
    :line-end-object
    :line-end-object-offset
    :text-object
+   :variable-text-object
    :text-object-attribute
    :text-object-string
    :text-object-surface
@@ -233,6 +234,7 @@
    :focus-window-position)
   ;; mouse.lisp
   (:export
+   :*scroll-speed*
    :mouse-button-down-functions
    :receive-mouse-button-down
    :receive-mouse-button-up
@@ -286,6 +288,8 @@
   ;; window.lisp
   (:export
    :line-wrap
+   :variable-pitch
+   :proportional-text-p
    :*window-sufficient-width*
    :*scroll-recenter-p*
    :*window-scroll-functions*
@@ -387,7 +391,11 @@
    :move-to-previous-virtual-line
    :point-virtual-line-column
    :move-to-virtual-line-column
-   :window-scroll)
+   :window-scroll
+   :scroll-view
+   :grapheme-offset
+   :grapheme-character-count
+   :view-detached-p)
   ;; header-window.lisp
   (:export
    :header-window
@@ -693,6 +701,7 @@
    :redraw-after-modifying-floating-window
    :support-floating-window
    :support-pixel-positioning-p
+   :support-proportional-text-p
    :html-support-p
    :underline-color-support-p
    :no-force-needed-p
@@ -835,6 +844,7 @@
    :get-font
    :get-mouse-position
    :get-char-width
+   :char-pixel-width
    :get-char-height
    :clear-to-end-of-window
    :js-eval

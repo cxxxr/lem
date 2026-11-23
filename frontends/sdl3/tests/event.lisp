@@ -79,3 +79,19 @@
       (bt2:join-thread worker)
       (ok (eql result 42))
       (ok (and elapsed-ms (< elapsed-ms 2000))))))
+
+;;; trackpad-scroll-p is internal to lem-sdl3's event handling; it is tested
+;;; directly because no exported function exposes the decision.
+(deftest trackpad-or-wheel
+  (ok (lem-sdl3::trackpad-scroll-p :precise 5.0 nil nil)
+      "the platform's answer wins: a trackpad's whole-number delta is precise")
+  (ng (lem-sdl3::trackpad-scroll-p :lines 0.4 8 t)
+      "and a wheel's fractional (accelerated) delta is notches")
+  (ok (lem-sdl3::trackpad-scroll-p nil 0.3 nil nil)
+      "without an answer, a fraction is taken for a trackpad")
+  (ok (lem-sdl3::trackpad-scroll-p nil -5.0 8 t)
+      "and so is a whole number in the middle of a trackpad's stream")
+  (ng (lem-sdl3::trackpad-scroll-p nil -1.0 400 t)
+      "but a whole number after a pause is a notch")
+  (ng (lem-sdl3::trackpad-scroll-p nil -1.0 20 nil)
+      "as is one following another notch quickly"))

@@ -3,4 +3,5 @@
   :depends-on ("cffi"
                "log4cl"
                (:feature (:and :darwin :arm64) "cl-objc"))
-  :components ((:file "appearance")))
+  :components ((:file "appearance")
+               (:file "scroll")))
