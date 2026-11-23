@@ -10,6 +10,8 @@
    :in-main-thread
    :run-pending-main-thread-tasks
    :call-with-main-thread-tasks-drained
+   :notify-main-thread-work
+   :wait-for-main-thread-work
    :running-main-thread-task-p
    :wakeup-event-type
    ;; surfaces
@@ -152,6 +154,10 @@ Unlike SDL3:GET-CLIPBOARD-TEXT, this frees the buffer SDL allocates."
   "True while the main thread runs queued tasks itself, from code that keeps
 it from pumping events (see call-with-main-thread-tasks-drained).  Read and
 written only with *main-thread-tasks-lock* held.")
+(defvar *main-thread-work* (bt2:make-semaphore :name "lem-sdl3 main thread work")
+  "Signaled, while the main thread drains the queue itself, each time a task
+is queued or something it waits for may be done (see notify-main-thread-work),
+so that it can sleep until then instead of polling.")
 (defvar *running-main-thread-task* nil
   "True on the main thread while it runs a task another thread is waiting
 for (see call-in-main-thread).")
@@ -159,10 +165,14 @@ for (see call-in-main-thread).")
 (defun register-main-thread-task (function)
   "Queue FUNCTION for the main thread and return its id, and whether the main
 thread is draining the queue itself, so nothing else needs to run it."
-  (bt2:with-lock-held (*main-thread-tasks-lock*)
-    (let ((id (incf *main-thread-task-counter*)))
-      (setf (gethash id *main-thread-tasks*) function)
-      (values id *draining-main-thread-tasks*))))
+  (multiple-value-bind (id draining)
+      (bt2:with-lock-held (*main-thread-tasks-lock*)
+        (let ((id (incf *main-thread-task-counter*)))
+          (setf (gethash id *main-thread-tasks*) function)
+          (values id *draining-main-thread-tasks*)))
+    (when draining
+      (notify-main-thread-work))
+    (values id draining)))
 
 (defun take-main-thread-task (id)
   (bt2:with-lock-held (*main-thread-tasks-lock*)
@@ -198,13 +208,29 @@ that thread cannot do anything else until the task returns."
 (defun call-with-main-thread-tasks-drained (function)
   "Call FUNCTION on the main thread while it runs queued tasks itself (with
 run-pending-main-thread-tasks): other threads queue tasks without waking it
-through SDL.  Tasks queued before draining ends are run before returning."
+through SDL, and FUNCTION can sleep until there is work with
+wait-for-main-thread-work.  Tasks queued before draining ends are run before
+returning."
+  ;; Forget wake-ups left over from an earlier drain.
+  (loop :while (bt2:wait-on-semaphore *main-thread-work* :timeout 0))
   (bt2:with-lock-held (*main-thread-tasks-lock*)
     (setf *draining-main-thread-tasks* t))
   (unwind-protect (funcall function)
     (bt2:with-lock-held (*main-thread-tasks-lock*)
       (setf *draining-main-thread-tasks* nil))
     (run-pending-main-thread-tasks)))
+
+(defun notify-main-thread-work ()
+  "Wake the main thread if it sleeps in wait-for-main-thread-work: a task was
+queued, or something it waits for may be done."
+  (bt2:signal-semaphore *main-thread-work*))
+
+(defun wait-for-main-thread-work (timeout)
+  "Sleep on the main thread, while it drains the queue itself, until another
+thread calls notify-main-thread-work or TIMEOUT seconds pass.  A notification
+that came since the last wait returns at once, so none is missed between
+checking for work and calling this."
+  (bt2:wait-on-semaphore *main-thread-work* :timeout timeout))
 
 (defun run-pending-main-thread-tasks ()
   "Run every task queued by call-in-main-thread that has not run yet, on the

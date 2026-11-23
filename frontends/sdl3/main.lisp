@@ -520,20 +520,26 @@ so the last frame stays whole until then."
             (progn
               (ffi:in-main-thread () (display:update-texture display))
               (lem:update-on-display-resized))
-         (bt2:signal-semaphore done))))
+         (bt2:signal-semaphore done)
+         (ffi:notify-main-thread-work))))
     done))
 
 (defun wait-for-editor-redraw (done timeout)
   "Run the main-thread tasks the editor thread queues while it redraws, until
 it signals DONE, and return true; or return NIL after TIMEOUT seconds.  The
-second value is how many tasks ran."
+second value is how many tasks ran.  Between tasks this thread sleeps until
+the editor queues another or is done, so each task runs as soon as it is
+queued."
   (loop :with deadline := (+ (get-internal-real-time)
                              (* timeout internal-time-units-per-second))
         :sum (ffi:run-pending-main-thread-tasks) :into tasks
-        :do (when (bt2:wait-on-semaphore done :timeout 0.001)
+        :do (when (bt2:wait-on-semaphore done :timeout 0)
               (return (values t tasks)))
-        :while (< (get-internal-real-time) deadline)
-        :finally (return (values nil tasks))))
+            (let ((remaining (/ (- deadline (get-internal-real-time))
+                                internal-time-units-per-second)))
+              (unless (plusp remaining)
+                (return (values nil tasks)))
+              (ffi:wait-for-main-thread-work remaining))))
 
 (defun redraw-with-editor (display)
   "Have the editor thread redraw DISPLAY at the window's size, running the
