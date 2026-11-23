@@ -12,9 +12,11 @@
 with 10 by 20 pixel cells."))
 
 (defmethod lem-if:get-char-width ((implementation pixel-fake-interface))
+  "Cells are 10 pixels wide."
   10)
 
 (defmethod lem-if:get-char-height ((implementation pixel-fake-interface))
+  "Cells are 20 pixels high."
   20)
 
 (deftest delete-window-test
