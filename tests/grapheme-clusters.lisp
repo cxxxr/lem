@@ -4,14 +4,11 @@
                 :with-fake-interface))
 (in-package :lem-tests/grapheme-clusters)
 
-(defun string-of (&rest codes)
-  (map 'string #'code-char codes))
-
-(defparameter *family* (string-of #x1F468 #x200D #x1F469 #x200D #x1F467))
-(defparameter *thumbs-up-medium* (string-of #x1F44D #x1F3FD))
-(defparameter *two-flags* (string-of #x1F1EF #x1F1F5 #x1F1FA #x1F1F8))
-(defparameter *red-heart* (string-of #x2764 #xFE0F))
-(defparameter *keycap-one* (string-of #x31 #xFE0F #x20E3))
+(defparameter *family* (map 'string #'code-char (list #x1F468 #x200D #x1F469 #x200D #x1F467)))
+(defparameter *thumbs-up-medium* (map 'string #'code-char (list #x1F44D #x1F3FD)))
+(defparameter *two-flags* (map 'string #'code-char (list #x1F1EF #x1F1F5 #x1F1FA #x1F1F8)))
+(defparameter *red-heart* (map 'string #'code-char (list #x2764 #xFE0F)))
+(defparameter *keycap-one* (map 'string #'code-char (list #x31 #xFE0F #x20E3)))
 
 (deftest widths-by-grapheme-cluster
   (let ((lem:*grapheme-clusters* t))

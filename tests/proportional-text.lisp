@@ -5,7 +5,8 @@
 (in-package :lem-tests/proportional-text)
 
 ;;; These are white-box tests of lem-core's line layout: they call the
-;;; unexported map-wrapping-line, and build a mouse event with the unexported
+;;; unexported map-wrapping-line, read the cursor's x with the unexported
+;;; window-cursor-x (the x the frontend draws the cursor at), and build a mouse event with the unexported
 ;;; mouse-button-down class and set-last-mouse-event, as a frontend's event
 ;;; would, because no exported function exposes either.
 
