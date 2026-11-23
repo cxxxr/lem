@@ -13,26 +13,33 @@
 frontends do: each cell is 10 by 10 pixels."))
 
 (defmethod lem-if:get-char-width ((implementation pixel-fake-interface))
+  "Cells are 10 pixels wide."
   10)
 
 (defmethod lem-if:get-char-height ((implementation pixel-fake-interface))
+  "Cells are 10 pixels high."
   10)
 
 (defmethod lem-if:view-width ((implementation pixel-fake-interface) view)
+  "The view's width in pixels."
   (* 10 (call-next-method)))
 
 (defmethod lem-if:view-height ((implementation pixel-fake-interface) view)
+  "The view's height in pixels."
   (* 10 (call-next-method)))
 
 (defmethod lem-if:object-width ((implementation pixel-fake-interface) object)
+  "Text is 10 pixels a cell; anything else is one cell."
   (if (typep object 'lem-core/display:text-object)
       (* 10 (lem:string-width (lem-core/display:text-object-string object)))
       10))
 
 (defmethod lem-if:object-height ((implementation pixel-fake-interface) object)
+  "Every object is one cell high."
   10)
 
 (defmethod lem-if:render-line ((implementation pixel-fake-interface) view x y objects height)
+  "Record the row's text at Y instead of drawing it (see rendered-rows)."
   (push (cons y (format nil "~{~A~}"
                         (loop :for object :in objects
                               :when (typep object 'lem-core/display:text-object)

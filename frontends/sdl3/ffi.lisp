@@ -138,6 +138,12 @@ Unlike SDL3:GET-CLIPBOARD-TEXT, this frees the buffer SDL allocates."
   (error "~?: ~A" format-control format-arguments (sdl3:get-error)))
 
 ;;; Main thread
+;;;
+;;; The task queue and its flags are global, not passed as arguments,
+;;; because they are shared between threads: the editor thread queues tasks
+;;; and the main thread runs them, from SDL callbacks that take no Lisp
+;;; arguments.  All of it is read and written with *main-thread-tasks-lock*
+;;; held.
 
 (defvar *main-thread-tasks* (make-hash-table))
 (defvar *main-thread-tasks-lock* (bt2:make-lock :name "lem-sdl3 main thread tasks"))
