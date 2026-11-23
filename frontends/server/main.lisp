@@ -160,9 +160,14 @@ limitations."
        (typep height '(integer 1))))
 
 (defmethod resize-display ((jsonrpc jsonrpc) width height)
+  "Apply the client-reported display size (character units) when valid.
+Return non-NIL when the size was applied, NIL when rejected (e.g. JSON
+null from a client that has no layout yet), so callers can avoid
+propagating a rejected size to other clients."
   (when (valid-display-size-p width height)
     (setf (jsonrpc-display-width jsonrpc) width
-          (jsonrpc-display-height jsonrpc) height)))
+          (jsonrpc-display-height jsonrpc) height)
+    t))
 
 (defmethod notify ((jsonrpc jsonrpc) method argument)
   (jsonrpc:broadcast (jsonrpc-server jsonrpc) method argument))
@@ -212,8 +217,11 @@ limitations."
       (when size
         (let ((width (gethash "width" size))
               (height (gethash "height" size)))
-          (resize-display (lem:implementation) width height)
-          (notify (lem:implementation) "resize-display" size)))
+          ;; Only rebroadcast a size the server actually applied, so a
+          ;; client reporting a bogus size (JSON null with no layout)
+          ;; doesn't resize every other client to null x null.
+          (when (resize-display (lem:implementation) width height)
+            (notify (lem:implementation) "resize-display" size))))
       (lem:send-event (lambda ()
                         (lem-core::adjust-all-window-size)
                         (lem:redraw-display :force t))))))

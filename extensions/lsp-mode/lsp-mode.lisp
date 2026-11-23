@@ -993,7 +993,10 @@ Use this when lsp-mode has side effects that you want to avoid."
     (unbound-slot () nil)))
 
 (defun insert-markdown (point markdown-text)
-  (insert-buffer point (lem/markdown-buffer:markdown-buffer markdown-text)))
+  (insert-buffer point (lem/markdown-buffer:markdown-buffer markdown-text))
+  ;; insert-buffer no longer appends a trailing newline; keep one so
+  ;; signature help keeps a blank line between consecutive signatures.
+  (insert-character point #\newline))
 
 (defun insert-markup-content (point markup-content)
   (switch ((lsp:markup-content-kind markup-content) :test #'equal)

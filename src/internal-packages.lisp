@@ -363,7 +363,6 @@
    :floating-window-set-pixel-size
    :floating-window-pixel-bounds
    :attached-window-p
-   :get-previous-window
    :attach-buffer
    :update-on-display-resized
    :covered-with-floating-window-p
@@ -763,7 +762,7 @@
    :*inits-directory-name*
    :load-site-init)
   ;; system.lisp
-  (:export 
+  (:export
    :exec-path)
   ;; command-line-arguments
   (:export
