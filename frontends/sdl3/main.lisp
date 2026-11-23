@@ -26,6 +26,10 @@
   "Seconds a live-resize step waits for the editor thread to redraw at the
 window's new size before showing the last frame unscaled instead.")
 
+(defvar *log-live-resize-timing* nil
+  "When true, log how long each live-resize step takes the editor to redraw,
+and how many main-thread tasks it ran, to Lem's log (~/.lem/logs/debug.log).")
+
 (defvar *scroll-keeps-cursor* t
   "When true, the mouse wheel and trackpad scroll a window's view and leave
 its cursor where it is, even off screen, as most GUI editors do; the view
@@ -521,14 +525,15 @@ so the last frame stays whole until then."
 
 (defun wait-for-editor-redraw (done timeout)
   "Run the main-thread tasks the editor thread queues while it redraws, until
-it signals DONE, and return true; or return NIL after TIMEOUT seconds."
+it signals DONE, and return true; or return NIL after TIMEOUT seconds.  The
+second value is how many tasks ran."
   (loop :with deadline := (+ (get-internal-real-time)
                              (* timeout internal-time-units-per-second))
-        :do (ffi:run-pending-main-thread-tasks)
-            (when (bt2:wait-on-semaphore done :timeout 0.001)
-              (return t))
+        :sum (ffi:run-pending-main-thread-tasks) :into tasks
+        :do (when (bt2:wait-on-semaphore done :timeout 0.001)
+              (return (values t tasks)))
         :while (< (get-internal-real-time) deadline)
-        :finally (return nil)))
+        :finally (return (values nil tasks))))
 
 (defun redraw-with-editor (display)
   "Have the editor thread redraw DISPLAY at the window's size, running the
@@ -544,12 +549,23 @@ has changed size again since, the editor is asked once more."
            :for request := (or (display:display-live-resize-request display)
                                (setf (display:display-live-resize-request display)
                                      (request-editor-redraw display)))
-           :do (unless (wait-for-editor-redraw
-                        request
-                        (max 0 (/ (- deadline (get-internal-real-time))
-                                  internal-time-units-per-second)))
-                 (present-texture-unscaled display)
-                 (return))
+           :for start := (get-internal-real-time)
+           :do (multiple-value-bind (drawn tasks)
+                   (wait-for-editor-redraw
+                    request
+                    (max 0 (/ (- deadline (get-internal-real-time))
+                              internal-time-units-per-second)))
+                 (when *log-live-resize-timing*
+                   (log:info "Live resize to ~Dx~D: ~:[timed out~;drawn~] in ~,1F ms, ~D main-thread tasks"
+                             (display:display-width display)
+                             (display:display-height display)
+                             drawn
+                             (/ (* 1000 (- (get-internal-real-time) start))
+                                internal-time-units-per-second)
+                             tasks))
+                 (unless drawn
+                   (present-texture-unscaled display)
+                   (return)))
                (setf (display:display-live-resize-request display) nil)
            :while (display:texture-size-stale-p display)))))
 
