@@ -217,7 +217,29 @@ This is the sum of all header window heights in FRAME."
   (and (<= (window-x window) x (+ (window-x window) (window-width window) -1))
        (<= (window-y window) y (+ (window-y window) (window-height window) -1))))
 
-(defun focus-window-position (frame x y)
+(defun pixel-positioned-window-p (window)
+  "True if WINDOW is a floating window the frontend places by pixels."
+  (and (support-pixel-positioning-p (implementation))
+       (floating-window-p window)
+       (or (floating-window-pixel-x window)
+           (floating-window-pixel-y window)
+           (floating-window-pixel-width window)
+           (floating-window-pixel-height window))
+       t))
+
+(defun window-cell-at-pixel (window pixel-x pixel-y)
+  "If PIXEL-X, PIXEL-Y is inside WINDOW's pixel bounds, return the cell
+column and row it falls in, relative to WINDOW; otherwise NIL."
+  (multiple-value-bind (x y width height) (floating-window-pixel-bounds window)
+    (when (and (<= x pixel-x (+ x width -1))
+               (<= y pixel-y (+ y height -1)))
+      (values (floor (- pixel-x x) (lem-if:get-char-width (implementation)))
+              (floor (- pixel-y y) (lem-if:get-char-height (implementation)))))))
+
+(defun focus-window-position (frame x y &key pixel-x pixel-y)
+  "Return the window at cell X, Y of FRAME and the cell position relative to
+it.  A floating window placed by pixels is hit-tested at PIXEL-X, PIXEL-Y
+when they are given."
   (check-type x integer)
   (check-type y integer)
   (dolist (window (append (frame-header-windows frame)
@@ -225,12 +247,18 @@ This is the sum of all header window heights in FRAME."
                           (reverse (frame-floating-windows frame))
                           (window-list frame)))
     (dolist (target (list (window-attached-window window) window))
-      (when (and target (within-window-p target x y))
-        (let ((overlay-x-offset (window-left-width target)))
-          (return-from focus-window-position
-            (values target
-                    (- x (window-x target) overlay-x-offset)
-                    (- y (window-y target)))))))))
+      (when target
+        (if (and pixel-x pixel-y (pixel-positioned-window-p target))
+            (multiple-value-bind (column row) (window-cell-at-pixel target pixel-x pixel-y)
+              (when column
+                (return-from focus-window-position
+                  (values target (- column (window-left-width target)) row))))
+            (when (within-window-p target x y)
+              (let ((overlay-x-offset (window-left-width target)))
+                (return-from focus-window-position
+                  (values target
+                          (- x (window-x target) overlay-x-offset)
+                          (- y (window-y target)))))))))))
 
 (defun focus-separator-position (frame x y)
   (when (and (frame-leftside-window frame)

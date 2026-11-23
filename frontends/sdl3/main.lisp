@@ -12,7 +12,8 @@
                     (:view :lem-sdl3/view)
                     (:event :lem-sdl3/event)
                     (:ffi :lem-sdl3/ffi))
-  (:export :change-font
+  (:export :*smooth-scroll*
+           :change-font
            :set-keyboard-layout
            :render
            :current-renderer))
@@ -20,6 +21,249 @@
 
 (defconstant +display-width+ 100)
 (defconstant +display-height+ 40)
+
+(defvar *live-resize-redraw-timeout* 0.1
+  "Seconds a live-resize step waits for the editor thread to redraw at the
+window's new size before showing the last frame unscaled instead.")
+
+(defvar *scroll-keeps-cursor* t
+  "When true, the mouse wheel and trackpad scroll a window's view and leave
+its cursor where it is, even off screen, as most GUI editors do; the view
+returns to the cursor when it moves or the buffer changes (see
+lem:scroll-view).  When NIL, the cursor is kept on screen, as the scroll
+commands do.")
+
+(defvar *scroll-animation* t
+  "When true, a mouse wheel's notch scrolls a window over a short eased
+animation instead of at once (see *smooth-scroll*).")
+
+(defparameter *trackpad-points-per-unit* 10
+  "Points of finger travel in one unit of a trackpad's wheel delta: SDL
+reports macOS's precise scrolling deltas divided by 10.  The text moves with
+the fingers, as in other macOS applications.")
+
+(defparameter *scroll-stream-gap-ms* 50
+  "A wheel event within this many milliseconds of a trackpad's is taken for
+a trackpad's too, when the platform cannot say (see trackpad-scroll-p).")
+
+(defvar *momentum* t
+  "When true, a trackpad flick glides on after the fingers lift, where the
+platform does not supply the momentum itself.")
+
+(defparameter *momentum-start-ms* 40
+  "Milliseconds without trackpad scrolling after which the fingers are taken
+to have lifted and the glide starts.")
+
+(defparameter *momentum-sample-ms* 100
+  "The span of trackpad scrolling, in milliseconds before the fingers lift,
+whose velocity the glide starts with.")
+
+(defparameter *momentum-friction* 95/100
+  "The share of its velocity a glide keeps each frame.")
+
+(defparameter *momentum-minimum* 1/50
+  "Pixels per millisecond below which a glide stops.")
+
+(defparameter *scroll-animation-frame-ms* 16
+  "Milliseconds between frames of a scroll animation.")
+
+(defparameter *scroll-animation-easing* 3/10
+  "The share of the remaining distance a scroll animation moves each frame;
+the animation settles in about ten frames.")
+
+(defvar *smooth-scroll* t
+  "When true, the mouse wheel and trackpad scroll a window with a modeline
+by pixels, including fractions of a line, instead of by whole lines.")
+
+(defun view-point-anchor (window)
+  "Return where WINDOW's view point is, as (LINE-NUMBER . CHARPOS)."
+  (let ((point (lem:window-view-point window)))
+    (cons (lem:line-number-at-point point) (lem:point-charpos point))))
+
+(defun custom-rendered-buffer-p (window buffer)
+  "True if BUFFER draws its own content in WINDOW, with a render method for
+its class (the tree view, the colour picker), rather than as lines of text."
+  (some (lambda (method)
+          (not (eq (find-class t) (third (c2mop:method-specializers method)))))
+        (compute-applicable-methods #'render (list nil window buffer))))
+
+(defun smooth-scroll-window-p (window)
+  "True if WINDOW is scrolled by pixels (see *smooth-scroll*).  A buffer that
+draws its own content scrolls with its own scroll commands instead."
+  (let ((view (lem:window-view window)))
+    (and *smooth-scroll*
+         (typep view 'view:view)
+         (view:view-use-modeline view)
+         (not (custom-rendered-buffer-p window (lem:window-buffer window))))))
+
+(defun notch-pixels (display notches)
+  "Return how many pixels NOTCHES of the wheel scroll on DISPLAY, positive
+toward the end of the buffer: *scroll-speed* lines a notch, and SDL's
+positive wheel values scroll toward the start."
+  (- (round (* notches (display:display-char-height display) lem:*scroll-speed*))))
+
+(defun trackpad-pixels (display delta)
+  "Return how many pixels a trackpad's wheel DELTA scrolls on DISPLAY,
+positive toward the end of the buffer: its finger travel, in the display's
+pixels."
+  (- (round (* delta *trackpad-points-per-unit*
+               (second (display:display-scale display))))))
+
+(defun scroll-window-by-pixels (window display pixels)
+  "Scroll WINDOW's body by PIXELS (positive toward the end of the buffer).
+Whole lines are scrolled by lem-core; the rest is the view's scroll offset.
+Return NIL if the window could not move because it is at the top or bottom
+of its buffer, true otherwise."
+  (let* ((view (lem:window-view window))
+         (char-height (display:display-char-height display))
+         (anchor (view-point-anchor window))
+         (lines (view:add-scroll-delta view pixels char-height))
+         (moved t))
+    (unless (zerop lines)
+      (if *scroll-keeps-cursor*
+          (lem:scroll-view window lines)
+          (lem:with-current-window window
+            (lem:call-command (lem:find-command "scroll-down") lines)))
+      (when (equal anchor (view-point-anchor window))
+        (setf (view:view-scroll-offset view) 0
+              moved nil)))
+    (setf (view:view-scroll-anchor view) (view-point-anchor window))
+    moved))
+
+(defun notch-delta-p (delta)
+  "True if the wheel DELTA is a whole number of notches, as a mouse wheel
+reports; a trackpad, and macOS's momentum after it, report fractions."
+  (= delta (fround delta)))
+
+(defun now-ms ()
+  "Return the current time in milliseconds."
+  (floor (* 1000 (get-internal-real-time)) internal-time-units-per-second))
+
+(defun stop-scroll-motion (view)
+  "End VIEW's scroll animation and glide."
+  (setf (view:view-scroll-remaining view) 0
+        (view:view-momentum-velocity view) 0
+        (view:view-scroll-samples view) '()))
+
+(defun notch-animation-step (window display)
+  "Move WINDOW's body one frame of its notch animation: *scroll-animation-
+easing* of what remains, at least a pixel.  Return true while some remains."
+  (let* ((view (lem:window-view window))
+         (step (view:next-scroll-step (view:view-scroll-remaining view)
+                                      *scroll-animation-easing*)))
+    (unless (zerop step)
+      (decf (view:view-scroll-remaining view) step)
+      (unless (scroll-window-by-pixels window display step)
+        (setf (view:view-scroll-remaining view) 0)))
+    (/= 0 (view:view-scroll-remaining view))))
+
+(defun momentum-step (window display now)
+  "Move WINDOW's body one frame of its glide.  While trackpad scrolls keep
+arriving there is none; once they have stopped for *momentum-start-ms* the
+glide starts at their velocity and slows by *momentum-friction* a frame.
+Return true while the fingers are moving or the glide goes on."
+  (let* ((view (lem:window-view window))
+         (samples (view:view-scroll-samples view)))
+    (cond ((and samples (< (- now (car (first samples))) *momentum-start-ms*))
+           t)
+          (t
+           (when samples
+             (let ((velocity (view:scroll-velocity samples (car (first samples))
+                                                   *momentum-sample-ms*)))
+               (setf (view:view-scroll-samples view) '()
+                     (view:view-momentum-velocity view)
+                     (if (< (abs velocity) *momentum-minimum*) 0 velocity))))
+           (let ((velocity (view:view-momentum-velocity view)))
+             (unless (zerop velocity)
+               (setf (view:view-momentum-velocity view)
+                     (if (scroll-window-by-pixels
+                          window display (round (* velocity *scroll-animation-frame-ms*)))
+                         (view:next-momentum-velocity velocity *momentum-friction*
+                                                      *momentum-minimum*)
+                         0))))
+           (/= 0 (view:view-momentum-velocity view))))))
+
+(defun scroll-animation-step (window display)
+  "Run one frame of WINDOW's notch animation and glide; return true while
+either goes on."
+  (let ((notch (notch-animation-step window display))
+        (momentum (momentum-step window display (now-ms))))
+    (or notch momentum)))
+
+(defun scroll-animation-frame (display)
+  "Run one frame of every scroll animation on DISPLAY, and stop the
+animation timer once none is left.  Runs on the editor thread, which redraws
+after each frame."
+  (setf (display:display-scrolling-windows display)
+        (loop :for window :in (display:display-scrolling-windows display)
+              :when (and (member window (lem:window-list))
+                         (scroll-animation-step window display))
+                :collect window))
+  (when (and (null (display:display-scrolling-windows display))
+             (display:display-scroll-animation-timer display))
+    (lem:stop-timer (display:display-scroll-animation-timer display))
+    (setf (display:display-scroll-animation-timer display) nil)))
+
+(defun start-scroll-animation (window display)
+  "Run WINDOW's scroll animation and glide on DISPLAY's animation timer,
+starting it if needed."
+  (pushnew window (display:display-scrolling-windows display))
+  (unless (display:display-scroll-animation-timer display)
+    (setf (display:display-scroll-animation-timer display)
+          (lem:start-timer (lem:make-timer (lambda () (scroll-animation-frame display))
+                                           :name "lem-sdl3 scroll animation")
+                           *scroll-animation-frame-ms*
+                           :repeat t))))
+
+(defun animate-scroll (window display pixels)
+  "Scroll WINDOW's body by PIXELS over a short eased animation, as an editor
+scrolls a mouse wheel's notch, adding to any animation still running.  A
+glide stops."
+  (let ((view (lem:window-view window)))
+    (setf (view:view-momentum-velocity view) 0
+          (view:view-scroll-samples view) '())
+    (incf (view:view-scroll-remaining view) pixels))
+  (start-scroll-animation window display))
+
+(defun record-trackpad-scroll (window display pixels)
+  "Note a trackpad scroll of PIXELS in WINDOW, for the glide after the
+fingers lift (see momentum-step).  A glide in progress stops: the fingers
+are on the trackpad again."
+  (let ((view (lem:window-view window))
+        (now (now-ms)))
+    (setf (view:view-momentum-velocity view) 0
+          (view:view-scroll-samples view)
+          (cons (cons now pixels)
+                (remove-if (lambda (sample)
+                             (< (car sample) (- now (* 2 *momentum-sample-ms*))))
+                           (view:view-scroll-samples view)))))
+  (start-scroll-animation window display))
+
+(defun scrolled-char-y (display char-x char-y pixel-y)
+  "Return the cell row under the pointer at PIXEL-Y, for a window with a
+modeline drawn as view:render-view-texture-to-display draws it: its body
+shifted up by the scroll offset, and its modeline at the bottom edge of the
+view, which can be past its last cell.  CHAR-X and CHAR-Y are the cell
+position SDL's coordinates give; other windows keep CHAR-Y."
+  (let ((window (lem:focus-window-position (lem:current-frame) char-x char-y)))
+    (if (null window)
+        char-y
+        (let ((view (lem:window-view window)))
+          (if (not (and (typep view 'view:view) (view:view-use-modeline view)))
+              char-y
+              (destructuring-bind (view-y body-height)
+                  (ffi:in-main-thread ()
+                    (list (nth-value 1 (view:view-pixel-rect view display))
+                          (view:view-body-height view display)))
+                (let ((char-height (display:display-char-height display))
+                      (window-y (lem:window-y window))
+                      (body-rows (1- (lem:window-height window))))
+                  (if (< pixel-y (+ view-y body-height))
+                      (+ window-y
+                         (min (floor (+ (- pixel-y view-y) (view:view-scroll-offset view))
+                                     char-height)
+                              (1- body-rows)))
+                      (+ window-y body-rows)))))))))
 
 (defun on-mouse-button-down (display button x y clicks)
   (show-cursor)
@@ -30,11 +274,14 @@
                 ((eql button event:+button-x1+) :button-4))))
     (when button
       (let ((char-x (display:scaled-char-width display x))
-            (char-y (display:scaled-char-height display y)))
+            (char-y (display:scaled-char-height display y))
+            (pixel-x (display:scaled-pixel-x display x))
+            (pixel-y (display:scaled-pixel-y display y)))
         (lem:send-event
          (lambda ()
-           (lem:receive-mouse-button-down char-x char-y x y button
-                                          clicks)))))))
+           (lem:receive-mouse-button-down char-x
+                                          (scrolled-char-y display char-x char-y pixel-y)
+                                          pixel-x pixel-y button clicks)))))))
 
 (defun on-mouse-button-up (display button x y)
   (show-cursor)
@@ -44,10 +291,14 @@
                 ((eql button event:+button-middle+) :button-2)
                 ((eql button event:+button-x1+) :button-4)))
         (char-x (display:scaled-char-width display x))
-        (char-y (display:scaled-char-height display y)))
+        (char-y (display:scaled-char-height display y))
+        (pixel-x (display:scaled-pixel-x display x))
+        (pixel-y (display:scaled-pixel-y display y)))
     (lem:send-event
      (lambda ()
-       (lem:receive-mouse-button-up char-x char-y x y button)))))
+       (lem:receive-mouse-button-up char-x
+                                    (scrolled-char-y display char-x char-y pixel-y)
+                                    pixel-x pixel-y button)))))
 
 (defun on-mouse-motion (display x y state)
   (show-cursor)
@@ -55,19 +306,76 @@
                     :button-1
                     nil)))
     (let ((char-x (display:scaled-char-width display x))
-          (char-y (display:scaled-char-height display y)))
+          (char-y (display:scaled-char-height display y))
+          (pixel-x (display:scaled-pixel-x display x))
+          (pixel-y (display:scaled-pixel-y display y)))
       (lem:send-event
        (lambda ()
-         (lem:receive-mouse-motion char-x char-y x y button))))))
+         (lem:receive-mouse-motion char-x
+                                   (scrolled-char-y display char-x char-y pixel-y)
+                                   pixel-x pixel-y button))))))
 
-(defun on-mouse-wheel (display wheel-x wheel-y)
+(defun trackpad-scroll-p (precision delta gap previous-trackpad-p)
+  "True if a wheel event scrolls precisely, with a trackpad or its momentum,
+rather than by a mouse wheel's notches.  PRECISION is what the platform said
+(:precise or :lines), or NIL if it could not tell.  Then a fraction is a
+trackpad's, and so is a whole number arriving within *scroll-stream-gap-ms*
+(GAP, or NIL for none before) of a trackpad's (PREVIOUS-TRACKPAD-P): a fast
+flick reports whole numbers in the middle of its stream, while a wheel's
+notches come apart."
+  (case precision
+    (:precise t)
+    (:lines nil)
+    (otherwise (or (not (notch-delta-p delta))
+                   (and previous-trackpad-p
+                        gap
+                        (< gap *scroll-stream-gap-ms*))))))
+
+(defun classify-wheel-event (display precision delta timestamp-ms)
+  "Return true if the wheel event with DELTA at TIMESTAMP-MS is a
+trackpad's (see trackpad-scroll-p), and remember it for the next one."
+  (let* ((last (display:display-last-wheel-time display))
+         (trackpad (trackpad-scroll-p precision delta
+                                      (and last (- timestamp-ms last))
+                                      (display:display-last-wheel-trackpad-p display))))
+    (setf (display:display-last-wheel-time display) timestamp-ms
+          (display:display-last-wheel-trackpad-p display) trackpad)
+    trackpad))
+
+(defun on-mouse-wheel (display wheel-x wheel-y precise-y precision timestamp-ms)
+  "Scroll by a wheel event.  WHEEL-X and WHEEL-Y are whole notches;
+PRECISE-Y is the vertical scroll with its fraction, used to scroll a window
+by pixels (see *smooth-scroll*).  PRECISION is what the platform said about
+its source, and TIMESTAMP-MS when it happened (see trackpad-scroll-p).  A
+trackpad scrolls with the fingers, gliding on afterwards where the platform
+gives no momentum; a wheel's notch animates."
   (show-cursor)
   (multiple-value-bind (x y) (mouse-position)
     (let ((char-x (display:scaled-char-width display x))
-          (char-y (display:scaled-char-height display y)))
+          (char-y (display:scaled-char-height display y))
+          (pixel-x (display:scaled-pixel-x display x))
+          (pixel-y (display:scaled-pixel-y display y))
+          (trackpad (and (/= 0 precise-y)
+                         (classify-wheel-event display precision precise-y timestamp-ms))))
       (lem:send-event
        (lambda ()
-         (lem:receive-mouse-wheel char-x char-y x y wheel-x wheel-y)
+         (let ((window (lem:focus-window-position (lem:current-frame) char-x char-y)))
+           (cond ((not (and window
+                            (/= 0 precise-y)
+                            (smooth-scroll-window-p window)))
+                  (lem:receive-mouse-wheel char-x char-y pixel-x pixel-y wheel-x wheel-y))
+                 (trackpad
+                  (let ((pixels (trackpad-pixels display precise-y)))
+                    (scroll-window-by-pixels window display pixels)
+                    ;; Where the platform says nothing, it gives no momentum
+                    ;; either (macOS on Apple silicon does both).
+                    (when (and *momentum* (null precision))
+                      (record-trackpad-scroll window display pixels))))
+                 (*scroll-animation*
+                  (animate-scroll window display (notch-pixels display precise-y)))
+                 (t
+                  (scroll-window-by-pixels window display
+                                           (notch-pixels display precise-y)))))
          (when (= 0 (lem:event-queue-length))
            (lem:redraw-display)))))))
 
@@ -163,7 +471,12 @@ single :windowevent; SDL3 gives each its own event type."
                         (event:mouse-state event))
        nil)
       (event:+mouse-wheel+
-       (on-mouse-wheel display (event:wheel-x event) (event:wheel-y event))
+       (on-mouse-wheel display
+                       (event:wheel-x event)
+                       (event:wheel-y event)
+                       (event:wheel-precise-y event)
+                       (take-scroll-precision display event)
+                       (floor (event:event-timestamp event) 1000000))
        nil)
       (event:+drop-file+
        (on-filedrop (event:drop-file-name event))
@@ -174,6 +487,129 @@ single :windowevent; SDL3 gives each its own event type."
       (otherwise
        (on-window-event display type)
        nil))))
+
+(defun present-texture-unscaled (display)
+  "Show DISPLAY's texture as it is, at 1:1 in the window's top-left corner
+on the background colour, rather than letting the window server stretch the
+last frame to the window's new size."
+  (let* ((renderer (display:display-renderer display))
+         (texture (display:display-texture display))
+         (previous (ffi:get-render-target renderer)))
+    (multiple-value-bind (width height) (ffi:texture-size texture)
+      (ffi:set-render-target renderer nil)
+      (display:set-render-color display (display:display-background-color display))
+      (ffi:render-clear renderer)
+      (ffi:with-frect (rect 0 0 width height)
+        (ffi:render-texture renderer texture rect rect))
+      (display:update-display display)
+      (ffi:set-render-target renderer previous))))
+
+(defun request-editor-redraw (display)
+  "Ask the editor thread to remake DISPLAY's texture at the window's size and
+lay out and redraw the editor there, and return a semaphore it signals when
+it is done.  The texture is remade only when the editor gets to the request,
+so the last frame stays whole until then."
+  (let ((done (bt2:make-semaphore :name "lem-sdl3 live resize")))
+    (lem:send-event
+     (lambda ()
+       (unwind-protect
+            (progn
+              (ffi:in-main-thread () (display:update-texture display))
+              (lem:update-on-display-resized))
+         (bt2:signal-semaphore done))))
+    done))
+
+(defun wait-for-editor-redraw (done timeout)
+  "Run the main-thread tasks the editor thread queues while it redraws, until
+it signals DONE, and return true; or return NIL after TIMEOUT seconds."
+  (loop :with deadline := (+ (get-internal-real-time)
+                             (* timeout internal-time-units-per-second))
+        :do (ffi:run-pending-main-thread-tasks)
+            (when (bt2:wait-on-semaphore done :timeout 0.001)
+              (return t))
+        :while (< (get-internal-real-time) deadline)
+        :finally (return nil)))
+
+(defun redraw-with-editor (display)
+  "Have the editor thread redraw DISPLAY at the window's size, running the
+drawing it asks of this, the main thread, until it is done; or, if that takes
+longer than *live-resize-redraw-timeout*, show the last frame unscaled.  A
+request still running from an earlier step is waited for, and if the window
+has changed size again since, the editor is asked once more."
+  (ffi:call-with-main-thread-tasks-drained
+   (lambda ()
+     (loop :with deadline := (+ (get-internal-real-time)
+                                (* *live-resize-redraw-timeout*
+                                   internal-time-units-per-second))
+           :for request := (or (display:display-live-resize-request display)
+                               (setf (display:display-live-resize-request display)
+                                     (request-editor-redraw display)))
+           :do (unless (wait-for-editor-redraw
+                        request
+                        (max 0 (/ (- deadline (get-internal-real-time))
+                                  internal-time-units-per-second)))
+                 (present-texture-unscaled display)
+                 (return))
+               (setf (display:display-live-resize-request display) nil)
+           :while (display:texture-size-stale-p display)))))
+
+(defun redraw-during-live-resize (display)
+  "Redraw DISPLAY at the window's new size from inside the platform's resize
+loop or animation, where the event loop cannot run.  The editor thread lays
+out and redraws, as after any resize, while this thread runs the drawing it
+asks for (see redraw-with-editor).  When the editor is waiting for this
+thread, because the resize came from an editor command, it cannot, and the
+last frame is shown unscaled instead."
+  (handler-case
+      (ffi:with-float-traps-masked
+        (if (ffi:running-main-thread-task-p)
+            (present-texture-unscaled display)
+            (redraw-with-editor display)))
+    ;; This runs in a C callback: an error must not unwind through it.
+    (error (condition)
+      (log:error "Redraw during live resize failed: ~A" condition))))
+
+(defun record-scroll-precision (display event)
+  "Remember whether the wheel EVENT, which SDL is adding now, scrolls
+precisely, asking the platform while it still handles the scroll."
+  (let ((precision (lem-darwin/scroll:current-scroll-precision))
+        (table (display:display-scroll-precision display)))
+    (when precision
+      ;; Entries are taken as their events are handled; never let lost ones
+      ;; pile up.
+      (when (< 256 (hash-table-count table))
+        (clrhash table))
+      (setf (gethash (event:event-timestamp event) table) precision))))
+
+(defun take-scroll-precision (display event)
+  "Return, and forget, what record-scroll-precision learned about EVENT, or
+NIL."
+  (let* ((table (display:display-scroll-precision display))
+         (timestamp (event:event-timestamp event)))
+    (prog1 (gethash timestamp table)
+      (remhash timestamp table))))
+
+(cffi:defcallback live-resize-watch :bool ((userdata :pointer) (event :pointer))
+  ;; While the user drags a window edge, and while macOS animates a zoom or
+  ;; maximize, the platform runs its own loop and SDL_WaitEvent does not
+  ;; return until it ends, so the window server stretches the last frame to
+  ;; the window's changing size.  SDL reports each step with
+  ;; SDL_EVENT_WINDOW_EXPOSED (data1 = 1 for a drag, 0 for an animation) and
+  ;; lets an event watch redraw then; the watch redraws whenever the window's
+  ;; pixel size has changed since the texture was made.  Watches run on the
+  ;; thread that adds the event, so only the main thread's events are handled.
+  (declare (ignore userdata))
+  ;; A wheel event: note whether the platform says it is precise.
+  (when (and (= (event:event-type event) event:+mouse-wheel+)
+             (sdl3:is-main-thread)
+             (display:current-display))
+    (ignore-errors (record-scroll-precision (display:current-display) event)))
+  (when (and (= (event:event-type event) event:+window-exposed+)
+             (sdl3:is-main-thread)
+             (display:current-display)
+             (display:texture-size-stale-p (display:current-display)))
+    (redraw-during-live-resize (display:current-display)))
+  t)
 
 (defun event-loop (display)
   (event:with-event (event)
@@ -229,7 +665,11 @@ single :windowevent; SDL3 gives each its own event type."
                          (display:adapt-high-dpi-font-size display)
                          (ffi:start-text-input window)
                          (funcall function)
-                         (event-loop display)))
+                         (ffi:add-event-watch (cffi:callback live-resize-watch)
+                                              (cffi:null-pointer))
+                         (unwind-protect (event-loop display)
+                           (ffi:remove-event-watch (cffi:callback live-resize-watch)
+                                                   (cffi:null-pointer)))))
                   (when text-shaper
                     (lem-sdl3/text-shaping:destroy-text-shaper text-shaper))
                   (lem-sdl3/text-engine:destroy-text-engine text-engine)
@@ -255,9 +695,15 @@ single :windowevent; SDL3 gives each its own event type."
   ;; SDL3 may report keycodes already changed by Shift/AltGr.  The keyboard
   ;; code applies shift itself (see make-key-with-shift-careful), so ask for
   ;; the unmodified keycodes SDL2 delivered.
-  (ffi:set-hint "SDL_KEYCODE_OPTIONS" "unmodified"))
+  (ffi:set-hint "SDL_KEYCODE_OPTIONS" "unmodified")
+  ;; Deliver the trackpad's momentum after the fingers lift as wheel events,
+  ;; as macOS applications glide; SDL drops it by default.
+  (ffi:set-hint "SDL_MAC_SCROLL_MOMENTUM" "1"))
 
 (defmethod lem-if:invoke ((implementation sdl3) function)
+  ;; Emoji sequences are drawn as one glyph, so the editor measures and moves
+  ;; over them as one character.
+  (setf lem:*grapheme-clusters* t)
   (flet ((thunk ()
            (let ((editor-thread
                    (funcall function
@@ -403,6 +849,40 @@ nothing. Can be called from any thread."
       (display:with-renderer (display)
         (view:move-position view x y)))))
 
+(defmethod lem-if:make-view-with-pixels ((implementation sdl3) window x y width height
+                                         pixel-x pixel-y pixel-width pixel-height
+                                         use-modeline)
+  "Create a view at cell X, Y of WIDTH by HEIGHT cells, placed and sized by
+the PIXEL- arguments where they are not NIL."
+  (with-debug ("lem-if:make-view-with-pixels" window x y width height
+               pixel-x pixel-y pixel-width pixel-height use-modeline)
+    (display:with-display (display)
+      (display:with-renderer (display)
+        (view:create-view display window x y width height use-modeline
+                          :pixel-x pixel-x
+                          :pixel-y pixel-y
+                          :pixel-width pixel-width
+                          :pixel-height pixel-height)))))
+
+(defmethod lem-if:set-view-pos-pixels ((implementation sdl3) view x y pixel-x pixel-y)
+  "Move VIEW to cell X, Y, at PIXEL-X, PIXEL-Y where they are not NIL."
+  (with-debug ("lem-if:set-view-pos-pixels" view x y pixel-x pixel-y)
+    (display:with-display (display)
+      (display:with-renderer (display)
+        (view:move-position view x y pixel-x pixel-y)))))
+
+(defmethod lem-if:set-view-size-pixels ((implementation sdl3) view width height
+                                        pixel-width pixel-height)
+  "Resize VIEW to PIXEL-WIDTH by PIXEL-HEIGHT where they are not NIL,
+keeping its cell size."
+  ;; WIDTH and HEIGHT are the window's cell size, modeline row included, as
+  ;; floating-window-set-pixel-size passes them; the view already has it.
+  (declare (ignore width height))
+  (with-debug ("lem-if:set-view-size-pixels" view pixel-width pixel-height)
+    (display:with-display (display)
+      (display:with-renderer (display)
+        (view:resize-pixels view display pixel-width pixel-height)))))
+
 (defmethod lem-if:redraw-view-before ((implementation sdl3) view)
   (with-debug ("lem-if:redraw-view-before" view)
     (display:with-display (display)
@@ -413,13 +893,21 @@ nothing. Can be called from any thread."
 
 (defmethod lem-if:redraw-view-after ((implementation sdl3) view)
   (with-debug ("lem-if:redraw-view-after" view)
+    ;; Something other than the wheel scrolled the window (the cursor moved
+    ;; off screen, a recenter, a new buffer): drop the partial line.
+    (let ((anchor (view-point-anchor (view:view-window view))))
+      (unless (equal anchor (view:view-scroll-anchor view))
+        (setf (view:view-scroll-offset view) 0
+              (view:view-scroll-anchor view) anchor)
+        (stop-scroll-motion view)))
     (display:with-display (display)
       (display:with-renderer (display)
-        (ffi:set-render-viewport (display:display-renderer display)
-                                 0
-                                 0
-                                 (* (view:view-width view) (display:display-char-width display))
-                                 (* (1- (view:view-height view)) (display:display-char-height display)))
+        (multiple-value-bind (width height) (view:view-layout-size view display)
+          (ffi:set-render-viewport (display:display-renderer display)
+                                   0
+                                   0
+                                   width
+                                   (- height (display:display-char-height display))))
         (render (view:view-texture view)
                 (view:view-window view)
                 (lem:window-buffer (view:view-window view)))
@@ -442,10 +930,8 @@ nothing. Can be called from any thread."
          (cursor-x (view:last-cursor-x view display))
          (cursor-y (view:last-cursor-y view display))
          (text lem-sdl3/keyboard::*textediting-text*)
-         (x (+ (* (view:view-x view) (display:display-char-width display))
-               cursor-x))
-         (y (+ (* (view:view-y view) (display:display-char-height display))
-               cursor-y)))
+         (x (+ (nth-value 0 (view:view-pixel-rect view display)) cursor-x))
+         (y (+ (nth-value 1 (view:view-pixel-rect view display)) cursor-y)))
     ;; x/y are in pixels; SDL_SetTextInputArea wants window coordinates.
     (destructuring-bind (scale-x scale-y) (display:display-scale display)
       (ffi:set-text-input-area (display:display-window display)
@@ -540,13 +1026,11 @@ nothing. Can be called from any thread."
 
 (defmethod lem-if:view-width ((implementation sdl3) view)
   (display:with-display (display)
-    (* (display:display-char-width display)
-       (lem-sdl3/view:view-width view))))
+    (nth-value 0 (view:view-layout-size view display))))
 
 (defmethod lem-if:view-height ((implementation sdl3) view)
   (display:with-display (display)
-    (* (display:display-char-height display)
-       (lem-sdl3/view:view-height view))))
+    (view:view-render-height view display)))
 
 #-windows
 (defmethod lem-if:clipboard-paste ((implementation sdl3))

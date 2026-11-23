@@ -44,7 +44,14 @@ When rendering the DOM and a window in a one-to-one manner, no redraw is require
     :initform nil
     :initarg :support-pixel-positioning
     :reader support-pixel-positioning-p
-    :documentation "When true, the frontend supports pixel-based floating window positioning.")))
+    :documentation "When true, the frontend supports pixel-based floating window positioning.")
+   (support-proportional-text
+    :initform nil
+    :initarg :support-proportional-text
+    :reader support-proportional-text-p
+    :documentation "When true, the frontend draws the text of buffers whose
+variable-pitch is true in a proportional font, measured by
+lem-if:char-pixel-width.")))
 
 (defun get-default-implementation (&key implementation)
   (let ((classes (c2mop:class-direct-subclasses (find-class 'implementation)))
@@ -176,6 +183,12 @@ PIXEL-X, PIXEL-Y, PIXEL-WIDTH, PIXEL-HEIGHT are in pixels (may be nil for auto-c
     (values -1 -1)))
 
 (defgeneric lem-if:get-char-width (implementation))
+(defgeneric lem-if:char-pixel-width (implementation character)
+  (:documentation "Return how far CHARACTER advances proportional text, in
+the units lem-if:view-width is in.  Only called when the implementation
+supports proportional text.")
+  (:method (implementation character)
+    (* (char-width character 0) (lem-if:get-char-width implementation))))
 (defgeneric lem-if:get-char-height (implementation))
 
 (defgeneric lem-if:render-line (implementation view x y objects height))

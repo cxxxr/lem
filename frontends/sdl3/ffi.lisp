@@ -8,6 +8,9 @@
    ;; main thread
    :call-in-main-thread
    :in-main-thread
+   :run-pending-main-thread-tasks
+   :call-with-main-thread-tasks-drained
+   :running-main-thread-task-p
    :wakeup-event-type
    ;; surfaces
    :surface
@@ -83,6 +86,9 @@
    :maximize-window
    :minimize-window
    :cocoa-window
+   :add-event-watch
+   :texture-size
+   :remove-event-watch
    :start-text-input
    :set-text-input-area
    :get-mouse-state
@@ -136,12 +142,21 @@ Unlike SDL3:GET-CLIPBOARD-TEXT, this frees the buffer SDL allocates."
 (defvar *main-thread-tasks* (make-hash-table))
 (defvar *main-thread-tasks-lock* (bt2:make-lock :name "lem-sdl3 main thread tasks"))
 (defvar *main-thread-task-counter* 0)
+(defvar *draining-main-thread-tasks* nil
+  "True while the main thread runs queued tasks itself, from code that keeps
+it from pumping events (see call-with-main-thread-tasks-drained).  Read and
+written only with *main-thread-tasks-lock* held.")
+(defvar *running-main-thread-task* nil
+  "True on the main thread while it runs a task another thread is waiting
+for (see call-in-main-thread).")
 
 (defun register-main-thread-task (function)
+  "Queue FUNCTION for the main thread and return its id, and whether the main
+thread is draining the queue itself, so nothing else needs to run it."
   (bt2:with-lock-held (*main-thread-tasks-lock*)
     (let ((id (incf *main-thread-task-counter*)))
       (setf (gethash id *main-thread-tasks*) function)
-      id)))
+      (values id *draining-main-thread-tasks*))))
 
 (defun take-main-thread-task (id)
   (bt2:with-lock-held (*main-thread-tasks-lock*)
@@ -155,13 +170,50 @@ Unlike SDL3:GET-CLIPBOARD-TEXT, this frees the buffer SDL allocates."
   #-sbcl
   `(progn ,@body))
 
+(defun run-main-thread-task-function (task)
+  "Run TASK, a function queued by call-in-main-thread, on the main thread."
+  (let ((*running-main-thread-task* t))
+    (with-float-traps-masked
+      (funcall task))))
+
 (cffi:defcallback run-main-thread-task :void ((userdata :pointer))
   ;; Runs inside SDL's event processing on the main thread.  The task never
-  ;; unwinds through this C frame: it captures its own values or error.
+  ;; unwinds through this C frame: it captures its own values or error.  It
+  ;; is gone if run-pending-main-thread-tasks already ran it.
   (let ((task (take-main-thread-task (cffi:pointer-address userdata))))
     (when task
-      (with-float-traps-masked
-        (funcall task)))))
+      (run-main-thread-task-function task))))
+
+(defun running-main-thread-task-p ()
+  "True if the main thread is running a task another thread waits for, so
+that thread cannot do anything else until the task returns."
+  *running-main-thread-task*)
+
+(defun call-with-main-thread-tasks-drained (function)
+  "Call FUNCTION on the main thread while it runs queued tasks itself (with
+run-pending-main-thread-tasks): other threads queue tasks without waking it
+through SDL.  Tasks queued before draining ends are run before returning."
+  (bt2:with-lock-held (*main-thread-tasks-lock*)
+    (setf *draining-main-thread-tasks* t))
+  (unwind-protect (funcall function)
+    (bt2:with-lock-held (*main-thread-tasks-lock*)
+      (setf *draining-main-thread-tasks* nil))
+    (run-pending-main-thread-tasks)))
+
+(defun run-pending-main-thread-tasks ()
+  "Run every task queued by call-in-main-thread that has not run yet, on the
+main thread, and return how many ran.  For code that keeps the main thread
+from pumping events, such as a platform's live-resize loop, while it waits
+on another thread that queues tasks."
+  (let ((tasks (bt2:with-lock-held (*main-thread-tasks-lock*)
+                 (loop :for id :being :the :hash-keys :of *main-thread-tasks*
+                         :using (:hash-value task)
+                       :collect (cons id task)))))
+    (loop :for (id . nil) :in (sort tasks #'< :key #'car)
+          :for task := (take-main-thread-task id)
+          :when task
+            :do (run-main-thread-task-function task)
+          :count task)))
 
 (defvar *wakeup-event-type* nil
   "SDL event type registered for waking the main thread's event loop.")
@@ -193,19 +245,24 @@ blocks on a Lisp semaphore until the callback has run."
       (funcall function)
       (let* ((values nil)
              (condition nil)
-             (done (bt2:make-semaphore :name "lem-sdl3 main thread call"))
-             (id (register-main-thread-task
-                  (lambda ()
-                    (unwind-protect
-                         (handler-case (setf values (multiple-value-list (funcall function)))
-                           (error (c) (setf condition c)))
-                      (bt2:signal-semaphore done))))))
-        (unless (sdl3:run-on-main-thread (cffi:callback run-main-thread-task)
-                                         (cffi:make-pointer id)
-                                         nil)
-          (take-main-thread-task id)
-          (sdl-error "SDL_RunOnMainThread failed"))
-        (wake-main-thread)
+             (done (bt2:make-semaphore :name "lem-sdl3 main thread call")))
+        (multiple-value-bind (id draining)
+            (register-main-thread-task
+             (lambda ()
+               (unwind-protect
+                    (handler-case (setf values (multiple-value-list (funcall function)))
+                      (error (c) (setf condition c)))
+                 (bt2:signal-semaphore done))))
+          ;; While the main thread drains the queue itself it runs the task
+          ;; directly; it may be inside an SDL event watch, where pushing the
+          ;; wake-up event would block on SDL's watch lock until it returns.
+          (unless draining
+            (unless (sdl3:run-on-main-thread (cffi:callback run-main-thread-task)
+                                             (cffi:make-pointer id)
+                                             nil)
+              (take-main-thread-task id)
+              (sdl-error "SDL_RunOnMainThread failed"))
+            (wake-main-thread)))
         (bt2:wait-on-semaphore done)
         (when condition
           (error condition))
@@ -614,6 +671,28 @@ no rectangle."
       (with-int-rect (rect x y w h)
         (%set-render-viewport renderer rect))
       (%set-render-viewport renderer (cffi:null-pointer))))
+
+(cffi:defcfun ("SDL_AddEventWatch" add-event-watch) :bool
+  "Call the C callback FILTER with USERDATA and each event as it is added to
+the queue, on the thread that adds it.  Return true on success."
+  (filter :pointer)
+  (userdata :pointer))
+
+(cffi:defcfun ("SDL_GetTextureSize" %get-texture-size) :bool
+  (texture :pointer)
+  (w :pointer)
+  (h :pointer))
+
+(defun texture-size (texture)
+  "Return TEXTURE's width and height in pixels."
+  (cffi:with-foreign-objects ((w :float) (h :float))
+    (%get-texture-size texture w h)
+    (values (round (cffi:mem-ref w :float)) (round (cffi:mem-ref h :float)))))
+
+(cffi:defcfun ("SDL_RemoveEventWatch" remove-event-watch) :void
+  "Stop calling FILTER with USERDATA (see add-event-watch)."
+  (filter :pointer)
+  (userdata :pointer))
 
 (defun cocoa-window (window)
   "Return the NSWindow behind WINDOW, as a foreign pointer, or NIL if

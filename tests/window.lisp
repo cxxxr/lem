@@ -5,6 +5,18 @@
                 :with-fake-interface))
 (in-package :lem-tests/window)
 
+(defclass pixel-fake-interface (fake-interface)
+  ()
+  (:default-initargs :support-pixel-positioning t)
+  (:documentation "A fake interface that places floating windows by pixels,
+with 10 by 20 pixel cells."))
+
+(defmethod lem-if:get-char-width ((implementation pixel-fake-interface))
+  10)
+
+(defmethod lem-if:get-char-height ((implementation pixel-fake-interface))
+  20)
+
 (deftest delete-window-test
   (lem:with-current-buffers ()
     (with-fake-interface ()
@@ -209,4 +221,45 @@
           (ok (= 20 pw))   ; calculated: 20 * 1
           (ok (= 10 ph)))  ; calculated: 10 * 1
         ;; Cleanup
+        (lem:delete-window window)))))
+
+(defun call-with-pixel-floating-window (function)
+  "Call FUNCTION with a floating window whose cells say x 5, y 3, 20 by 10,
+but which is placed by pixels at 300, 200, 100 by 40."
+  (lem:with-current-buffers ()
+    (lem:with-implementation (make-instance 'pixel-fake-interface)
+      (lem:setup-first-frame)
+      (let* ((buffer (lem:make-buffer "test-floating" :temporary t))
+             (window (lem:make-floating-window :buffer buffer
+                                               :x 5 :y 3
+                                               :width 20 :height 10
+                                               :pixel-x 300 :pixel-y 200
+                                               :pixel-width 100 :pixel-height 40)))
+        (unwind-protect (funcall function window)
+          (lem:delete-window window))))))
+
+(deftest floating-window/hit-test-by-pixels
+  (call-with-pixel-floating-window
+   (lambda (window)
+     (multiple-value-bind (target x y)
+         (lem:focus-window-position (lem:current-frame) 31 10 :pixel-x 315 :pixel-y 225)
+       (ok (eq target window) "a click inside the pixel bounds hits it")
+       (ok (equal (list x y) '(1 1)) "at the cell under the pointer"))
+     (ng (eq window (lem:focus-window-position (lem:current-frame) 6 4
+                                               :pixel-x 60 :pixel-y 80))
+         "a click inside its cell bounds but outside its pixel bounds misses it")
+     (ok (eq window (lem:focus-window-position (lem:current-frame) 6 4))
+         "without a pixel position, cells are used"))))
+
+(deftest floating-window/hit-test-ignores-pixels-without-support
+  (lem:with-current-buffers ()
+    (with-fake-interface ()
+      (let* ((buffer (lem:make-buffer "test-floating" :temporary t))
+             (window (lem:make-floating-window :buffer buffer
+                                               :x 5 :y 3
+                                               :width 20 :height 10
+                                               :pixel-x 300 :pixel-y 200)))
+        (ok (eq window (lem:focus-window-position (lem:current-frame) 6 4
+                                                  :pixel-x 6 :pixel-y 4))
+            "a frontend without pixel positioning draws it at its cells")
         (lem:delete-window window)))))

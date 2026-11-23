@@ -69,6 +69,9 @@
    :mouse-state
    :wheel-x
    :wheel-y
+   :wheel-precise-y
+   :window-event-data1
+   :event-timestamp
    :drop-file-name))
 (in-package :lem-sdl3/event)
 
@@ -155,6 +158,7 @@
 (defconstant +offset-mouse-y+ 32)       ; ... .y
 (defconstant +offset-button+ 24)        ; SDL_MouseButtonEvent.button
 (defconstant +offset-clicks+ 26)        ; SDL_MouseButtonEvent.clicks
+(defconstant +offset-window-data1+ 20)   ; SDL_WindowEvent.data1
 (defconstant +offset-wheel-x+ 24)       ; SDL_MouseWheelEvent.x (float)
 (defconstant +offset-wheel-y+ 28)       ; SDL_MouseWheelEvent.y (float)
 (defconstant +offset-wheel-integer-x+ 44) ; SDL_MouseWheelEvent.integer_x (SDL >= 3.2.12)
@@ -238,6 +242,20 @@ Computed on first use.")
   (if (integer-wheel-p)
       (cffi:mem-ref event :int32 +offset-wheel-integer-y+)
       (round (cffi:mem-ref event :float +offset-wheel-y+))))
+
+(defun wheel-precise-y (event)
+  "Return the vertical scroll of a wheel event in notches, with the
+fraction a trackpad or high-resolution wheel reports."
+  (cffi:mem-ref event :float +offset-wheel-y+))
+
+(defun event-timestamp (event)
+  "Return EVENT's timestamp, in nanoseconds."
+  (cffi:mem-ref event :uint64 8))
+
+(defun window-event-data1 (event)
+  "Return the data1 field of a window event: for SDL_EVENT_WINDOW_EXPOSED,
+1 during a live resize and 0 otherwise."
+  (cffi:mem-ref event :int32 +offset-window-data1+))
 
 (defun drop-file-name (event)
   "Return the file name of a drop-file event."

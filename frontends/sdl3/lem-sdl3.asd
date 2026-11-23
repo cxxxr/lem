@@ -30,6 +30,7 @@
 (defsystem "lem-sdl3"
   :description "SDL3 frontend for Lem."
   :depends-on ("sdl3"
+               "closer-mop"
                "lem/core"
                "lem/extensions"
                "lem-darwin"
@@ -82,5 +83,6 @@
                              (:file "shaper")
                              (:file "glyph-atlas")
                              (:file "text-shaping")
+                             (:file "view")
                              (:file "rendering"))))
   :perform (test-op (op c) (symbol-call :rove '#:run c)))

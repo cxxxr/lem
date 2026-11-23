@@ -127,7 +127,9 @@
   (unless (end-buffer-p (current-point))
     (let ((repeat-command (continue-flag :kill))
           (killp (not (null n)))
-          (killed-string (delete-character (current-point) (or n 1))))
+          (killed-string (delete-character (current-point)
+                                           (grapheme-character-count (current-point)
+                                                                     (or n 1)))))
       (when killp
         (with-killring-context (:appending repeat-command)
           (copy-to-clipboard-with-killring killed-string))))))

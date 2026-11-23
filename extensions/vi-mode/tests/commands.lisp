@@ -119,3 +119,17 @@
     (with-vi-buffer (#?"foo\nbar\nfoo\nbar\nf[o]o")
       (cmd "2#")
       (ok (buf= #?"[f]oo\nbar\nfoo\nbar\nfoo")))))
+
+(deftest vi-leaves-a-detached-view
+  (with-fake-interface ()
+    (with-vi-buffer ((format nil "[0]~{~%~A~}" (loop :for i :from 1 :below 100 :collect i)))
+      (let ((window (current-window)))
+        (testing "the view stays where the mouse scrolled it"
+          (scroll-view window 50)
+          (lem-vi-mode/window:adjust-window-scroll)
+          (ok (= 51 (line-number-at-point (window-view-point window))))
+          (ok (= 1 (line-number-at-point (current-point)))))
+        (testing "once the cursor moves, the view follows it again"
+          (line-offset (current-point) 1)
+          (lem-vi-mode/window:adjust-window-scroll)
+          (ok (>= 2 (line-number-at-point (window-view-point window)))))))))
