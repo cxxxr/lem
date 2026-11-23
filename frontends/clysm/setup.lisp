@@ -29,6 +29,11 @@
       (probe-file (merge-pathnames (format nil "~A/~A.system" name name) stubs)))))
 
 (pushnew 'cl-user::lem-clysm-stub-search *system-definition-search-functions*)
+;; One fasl a file, not a fasl of the whole system (Clysm's system fasls,
+;; on by default since 2026-11): prepare.lisp records each file that ASDF
+;; loads for the boot list, and the page has only the fasls that its pack
+;; recorded, so a system fasl that the page's ASDF would load is not there.
+(setf *clysm-system-fasls* nil)
 
 (let ((here (uiop:pathname-directory-pathname *load-truename*))
       (world (merge-pathnames "contrib/world/" (sys::%clysm-root))))
