@@ -11,6 +11,16 @@
   (:documentation "A fake interface that places floating windows by pixels,
 with 10 by 20 pixel cells."))
 
+(defclass resizable-fake-interface (fake-interface)
+  ((rows :initform 24
+         :accessor resizable-fake-interface-rows))
+  (:documentation "A fake interface whose display height can change, as when
+the user resizes the editor's window."))
+
+(defmethod lem-if:display-height ((implementation resizable-fake-interface))
+  "The display is ROWS rows high."
+  (resizable-fake-interface-rows implementation))
+
 (defmethod lem-if:get-char-width ((implementation pixel-fake-interface))
   "Cells are 10 pixels wide."
   10)
@@ -265,3 +275,29 @@ but which is placed by pixels at 300, 200, 100 by 40."
                                                   :pixel-x 6 :pixel-y 4))
             "a frontend without pixel positioning draws it at its cells")
         (lem:delete-window window)))))
+
+(defun window-heights ()
+  "Return the height of each window of the current frame, in order."
+  (mapcar #'lem:window-height (lem:window-list)))
+
+(deftest balance-windows/leaves-windows-when-the-display-is-too-small
+  (lem:with-current-buffers ()
+    (let ((implementation (make-instance 'resizable-fake-interface)))
+      (lem:with-implementation implementation
+        (lem:setup-first-frame)
+        (lem:split-window-vertically (lem:current-window))
+        (let ((heights (window-heights)))
+          (setf (resizable-fake-interface-rows implementation) 3)
+          (ng (lem:balance-windows)
+              "two windows with modelines do not fit in 3 rows")
+          (ok (equal heights (window-heights)) "so they keep their sizes")
+          (ok (progn (lem:update-on-display-resized) t)
+              "the display shrinking to 3 rows signals nothing")
+          (ok (equal heights (window-heights)) "nor changes the windows")
+          (setf (resizable-fake-interface-rows implementation) 1)
+          (ok (progn (lem:update-on-display-resized) t)
+              "nor does it shrinking to 1 row")
+          (setf (resizable-fake-interface-rows implementation) 24)
+          (lem:update-on-display-resized)
+          (ok (equal heights (window-heights))
+              "when it grows back, the windows share it again"))))))

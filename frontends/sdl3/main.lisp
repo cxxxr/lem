@@ -22,9 +22,33 @@
 (defconstant +display-width+ 100)
 (defconstant +display-height+ 40)
 
+(defparameter *minimum-window-width* 360
+  "The narrowest the user can resize the window to, in window coordinates
+(points on macOS).  Zed's minimum, 360 by 240.")
+
+(defparameter *minimum-window-height* 240
+  "The shortest the user can resize the window to, in window coordinates.
+With a very large font this can be fewer rows than the windows need; lem-core
+then leaves them as they are (see lem:balance-windows).")
+
 (defvar *live-resize-redraw-timeout* 0.1
   "Seconds a live-resize step waits for the editor thread to redraw at the
 window's new size before showing the last frame unscaled instead.")
+
+(defvar *log-live-resize-timing* nil
+  "When true, log how long each live-resize step takes the editor to redraw,
+and how many main-thread tasks it ran, to Lem's log (~/.lem/logs/debug.log).")
+
+(defvar *log-resize-timing* nil
+  "When true, log each update of the window after window events (resizes,
+exposures, display changes): how many events it handled at once, and how long
+it took the editor to lay out and redraw, to Lem's log
+(~/.lem/logs/debug.log).")
+
+(defparameter *window-changes* '(:redisplay :resize :pixel-size :display)
+  "What window events can ask of the window, each including the ones before
+it: draw it again; also remake its texture at its new size; also check
+whether its pixel scale changed; also adapt to a new display or scale.")
 
 (defvar *scroll-keeps-cursor* t
   "When true, the mouse wheel and trackpad scroll a window's view and leave
@@ -394,34 +418,81 @@ gives no momentum; a wheel's notch animates."
 (defun on-keyup (key-event)
   (handle-key-up (get-platform) key-event))
 
+(defun note-window-change (display change)
+  "Record that a window event asks CHANGE (one of *window-changes*) of
+DISPLAY's window, to be done by update-window with the others handled
+before it."
+  (let ((pending (display:display-pending-window-change display)))
+    (when (or (null pending)
+              (> (position change *window-changes*)
+                 (position pending *window-changes*)))
+      (setf (display:display-pending-window-change display) change))
+    (incf (display:display-pending-window-events display))))
+
 (defun on-window-event (display type)
   "Handle the SDL3 window event TYPE.  SDL2 delivered these as sub-codes of a
-single :windowevent; SDL3 gives each its own event type."
+single :windowevent; SDL3 gives each its own event type.  Events that change
+what the window shows are only noted here: SDL often sends several at once,
+e.g. a resize, its pixel-size change and an exposure, and the window is
+updated once for all of them (see update-window)."
   (alexandria:switch (type)
     (event:+window-shown+
-     (display:notify-required-redisplay display))
+     (note-window-change display :redisplay))
     (event:+window-exposed+
-     (display:notify-required-redisplay display))
+     (note-window-change display :redisplay))
     (event:+window-resized+
-     (display:update-texture display)
-     (display:notify-required-redisplay display))
-    ;; SDL fires this on backing-pixel-size changes that do not correspond
-    ;; to a user resize — most notably when the window moves between
-    ;; displays with different DPI (Retina ↔ standard).  Re-derive the
-    ;; high-DPI scale, re-open the font, and resize the backing texture.
-    ;; (SDL2: SDL_WINDOWEVENT_SIZE_CHANGED.)
+     (note-window-change display :resize))
+    ;; SDL sends this with every resize, and also when the backing pixel
+    ;; size changes without one: most notably when the window moves between
+    ;; displays with different DPI (Retina <-> standard).
     (event:+window-pixel-size-changed+
-     (display:handle-display-changed display))
+     (note-window-change display :pixel-size))
     (event:+window-display-changed+
-     (display:handle-display-changed display))
+     (note-window-change display :display))
     ;; New in SDL3: the display's content scale changed (e.g. the user
     ;; changed the OS scaling setting) without the window moving.
     (event:+window-display-scale-changed+
-     (display:handle-display-changed display))
+     (note-window-change display :display))
     (event:+window-focus-gained+
      (setf (display:display-focus-p display) t))
     (event:+window-focus-lost+
      (setf (display:display-focus-p display) nil))))
+
+(defun resize-window (display)
+  "Remake DISPLAY's texture at the window's pixel size, and lay out and
+redraw the editor.  If the texture already has that size, this has been done
+since the window took it: everything that remakes the texture lays out and
+redraws after, e.g. redraw-during-live-resize."
+  (unless (display:texture-fits-window-p display)
+    (display:update-texture display)
+    (display:notify-required-redisplay display)))
+
+(defun update-window (display)
+  "Do, once, what the window events handled since the last update asked of
+DISPLAY's window (see note-window-change).  A display change adapts the
+scale and font and redraws (display:handle-display-changed); so does a pixel
+size change that changed the scale, and any other is a resize."
+  (let ((change (display:display-pending-window-change display))
+        (events (display:display-pending-window-events display)))
+    (setf (display:display-pending-window-change display) nil
+          (display:display-pending-window-events display) 0)
+    (when change
+      (let ((start (get-internal-real-time)))
+        (ecase change
+          (:redisplay (display:notify-required-redisplay display))
+          (:resize (resize-window display))
+          (:pixel-size (if (display:scale-changed-p display)
+                           (display:handle-display-changed display)
+                           (resize-window display)))
+          (:display (display:handle-display-changed display)))
+        (when *log-resize-timing*
+          (log:info "Window update (~(~A~)) at ~Dx~D: ~D window event~:P in ~,1F ms"
+                    change
+                    (display:display-width display)
+                    (display:display-height display)
+                    events
+                    (/ (* 1000 (- (get-internal-real-time) start))
+                       internal-time-units-per-second)))))))
 
 (defun on-filedrop (file)
   (lem:send-event (lambda () (lem:find-file file))))
@@ -504,6 +575,36 @@ last frame to the window's new size."
       (display:update-display display)
       (ffi:set-render-target renderer previous))))
 
+(defun pin-layer-contents (display)
+  "Have the window server show DISPLAY's last frame unscaled in the window's
+top-left corner, on the background colour, whenever it no longer fits the
+window, as while the window is resized, instead of stretching it.  Only a
+Metal renderer on macOS supports this; elsewhere DISPLAY is left as it is."
+  (let ((layer (ffi:render-metal-layer (display:display-renderer display)))
+        (color (display:display-background-color display)))
+    (when (lem-darwin/layer:pin-layer-contents layer
+                                               (lem:color-red color)
+                                               (lem:color-green color)
+                                               (lem:color-blue color))
+      (setf (display:display-pinned-layer display) layer))))
+
+(defun sync-pinned-layer-background (display)
+  "Give DISPLAY's pinned layer, if any, the editor's background colour, which
+shows where the window has grown past the last frame."
+  (alexandria:when-let ((layer (display:display-pinned-layer display)))
+    (let ((color (display:display-background-color display)))
+      (lem-darwin/layer:set-layer-background-color layer
+                                                   (lem:color-red color)
+                                                   (lem:color-green color)
+                                                   (lem:color-blue color)))))
+
+(defun show-last-frame (display)
+  "Show DISPLAY's last frame unscaled while the editor cannot draw at the
+window's new size.  When its layer is pinned, the window server already does,
+so nothing needs drawing."
+  (unless (display:display-pinned-layer display)
+    (present-texture-unscaled display)))
+
 (defun request-editor-redraw (display)
   "Ask the editor thread to remake DISPLAY's texture at the window's size and
 lay out and redraw the editor there, and return a semaphore it signals when
@@ -516,19 +617,26 @@ so the last frame stays whole until then."
             (progn
               (ffi:in-main-thread () (display:update-texture display))
               (lem:update-on-display-resized))
-         (bt2:signal-semaphore done))))
+         (bt2:signal-semaphore done)
+         (ffi:notify-main-thread-work))))
     done))
 
 (defun wait-for-editor-redraw (done timeout)
   "Run the main-thread tasks the editor thread queues while it redraws, until
-it signals DONE, and return true; or return NIL after TIMEOUT seconds."
+it signals DONE, and return true; or return NIL after TIMEOUT seconds.  The
+second value is how many tasks ran.  Between tasks this thread sleeps until
+the editor queues another or is done, so each task runs as soon as it is
+queued."
   (loop :with deadline := (+ (get-internal-real-time)
                              (* timeout internal-time-units-per-second))
-        :do (ffi:run-pending-main-thread-tasks)
-            (when (bt2:wait-on-semaphore done :timeout 0.001)
-              (return t))
-        :while (< (get-internal-real-time) deadline)
-        :finally (return nil)))
+        :sum (ffi:run-pending-main-thread-tasks) :into tasks
+        :do (when (bt2:wait-on-semaphore done :timeout 0)
+              (return (values t tasks)))
+            (let ((remaining (/ (- deadline (get-internal-real-time))
+                                internal-time-units-per-second)))
+              (unless (plusp remaining)
+                (return (values nil tasks)))
+              (ffi:wait-for-main-thread-work remaining))))
 
 (defun redraw-with-editor (display)
   "Have the editor thread redraw DISPLAY at the window's size, running the
@@ -544,12 +652,23 @@ has changed size again since, the editor is asked once more."
            :for request := (or (display:display-live-resize-request display)
                                (setf (display:display-live-resize-request display)
                                      (request-editor-redraw display)))
-           :do (unless (wait-for-editor-redraw
-                        request
-                        (max 0 (/ (- deadline (get-internal-real-time))
-                                  internal-time-units-per-second)))
-                 (present-texture-unscaled display)
-                 (return))
+           :for start := (get-internal-real-time)
+           :do (multiple-value-bind (drawn tasks)
+                   (wait-for-editor-redraw
+                    request
+                    (max 0 (/ (- deadline (get-internal-real-time))
+                              internal-time-units-per-second)))
+                 (when *log-live-resize-timing*
+                   (log:info "Live resize to ~Dx~D: ~:[timed out~;drawn~] in ~,1F ms, ~D main-thread tasks"
+                             (display:display-width display)
+                             (display:display-height display)
+                             drawn
+                             (/ (* 1000 (- (get-internal-real-time) start))
+                                internal-time-units-per-second)
+                             tasks))
+                 (unless drawn
+                   (show-last-frame display)
+                   (return)))
                (setf (display:display-live-resize-request display) nil)
            :while (display:texture-size-stale-p display)))))
 
@@ -562,8 +681,9 @@ thread, because the resize came from an editor command, it cannot, and the
 last frame is shown unscaled instead."
   (handler-case
       (ffi:with-float-traps-masked
+        (sync-pinned-layer-background display)
         (if (ffi:running-main-thread-task-p)
-            (present-texture-unscaled display)
+            (show-last-frame display)
             (redraw-with-editor display)))
     ;; This runs in a C callback: an error must not unwind through it.
     (error (condition)
@@ -589,6 +709,12 @@ NIL."
     (prog1 (gethash timestamp table)
       (remhash timestamp table))))
 
+(defun modal-resize-loop-p ()
+  "True if the platform resizes windows in a loop of its own, where the event
+loop cannot run, as macOS and Windows do.  X11 and Wayland report each step
+of a resize to the event loop, which draws it (see update-window)."
+  (not (member (ffi:video-driver-name) '("x11" "wayland") :test #'equal)))
+
 (cffi:defcallback live-resize-watch :bool ((userdata :pointer) (event :pointer))
   ;; While the user drags a window edge, and while macOS animates a zoom or
   ;; maximize, the platform runs its own loop and SDL_WaitEvent does not
@@ -607,14 +733,20 @@ NIL."
   (when (and (= (event:event-type event) event:+window-exposed+)
              (sdl3:is-main-thread)
              (display:current-display)
-             (display:texture-size-stale-p (display:current-display)))
+             (display:texture-size-stale-p (display:current-display))
+             (modal-resize-loop-p))
     (redraw-during-live-resize (display:current-display)))
   t)
 
 (defun event-loop (display)
+  "Handle SDL events until the application quits.  The window is updated
+once no more window events are queued, so a batch of them, such as each
+step of a resize, is drawn once."
   (event:with-event (event)
     (loop :while (event:wait-event event)
-          :until (dispatch-event display event))))
+          :until (dispatch-event display event)
+          :do (unless (event:window-events-pending-p)
+                (update-window display)))))
 
 (defun init-application-icon (window)
   (let ((image (ffi:load-image (get-resource-pathname "resources/icon.png"))))
@@ -640,6 +772,9 @@ NIL."
        (unwind-protect
             (let ((renderer (ffi:create-renderer window)))
               (init-application-icon window)
+              (ffi:set-window-minimum-size window
+                                           *minimum-window-width*
+                                           *minimum-window-height*)
               (let ((text-engine (lem-sdl3/text-engine:make-text-engine renderer))
                     (text-shaper (lem-sdl3/text-shaping:make-text-shaper renderer)))
                 (unwind-protect
@@ -663,6 +798,7 @@ NIL."
                                                       :scale (list scale-x scale-y))))
                          (setf (display:current-display) display)
                          (display:adapt-high-dpi-font-size display)
+                         (pin-layer-contents display)
                          (ffi:start-text-input window)
                          (funcall function)
                          (ffi:add-event-watch (cffi:callback live-resize-watch)
