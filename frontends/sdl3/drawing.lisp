@@ -692,7 +692,12 @@ rather than the row-wide two-pass)."
               :do (draw-text-pass object obj-x :glyph)))))
 
 (defun redraw-physical-line-from-behind (display view objects)
-  (loop :with current-x := (lem-if:view-width (lem-core:implementation) view)
+  "Draw OBJECTS on VIEW's modeline, the last ending at VIEW's right edge in
+pixels.  A view on the window's right edge reaches past its last cell (see
+view:edge-extra); ending there, rather than at the last cell, keeps the
+objects against the edge while the window is resized, instead of jumping a
+cell each time another column fits."
+  (loop :with current-x := (nth-value 0 (texture-size view display))
         :and y := (lem-if:view-height (lem-core:implementation) view)
         :for object :in objects
         :do (decf current-x (object-width object display))
