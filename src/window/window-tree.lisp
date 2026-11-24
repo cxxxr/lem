@@ -121,60 +121,85 @@
         (cons (window-node-split-type node)
               (rec node)))))
 
+(defun balanced-window-layout (&optional (window-tree (window-tree)))
+  "Return where balance-windows would put each window of WINDOW-TREE, as a
+list of (WINDOW X Y WIDTH HEIGHT), without changing any.  Each split shares
+its space evenly between its children."
+  (let ((layout '()))
+    (labels ((rec (node x y width height)
+               (cond ((windowp node)
+                      (push (list node x y width height) layout))
+                     (t
+                      (destructuring-bind (split-type &rest children) node
+                        (let ((n (length children)))
+                          (ecase split-type
+                            (:hsplit
+                             (multiple-value-bind (child-width remaining) (floor width n)
+                               (loop :with rest-width := width
+                                     :for (child . rest-children) :on children
+                                     :do (let ((child-width child-width))
+                                           (cond ((null rest-children)
+                                                  (setf child-width rest-width))
+                                                 ((plusp remaining)
+                                                  (decf remaining)
+                                                  (incf child-width)))
+                                           (rec child
+                                                x
+                                                y
+                                                (if (null rest-children)
+                                                    child-width
+                                                    (- child-width
+                                                       (frame-window-left-margin (current-frame))))
+                                                height)
+                                           (incf x child-width)
+                                           (decf rest-width child-width)))))
+                            (:vsplit
+                             (multiple-value-bind (child-height rem) (floor height n)
+                               (loop :with rest-height := height
+                                     :for (child . rest-children) :on children
+                                     :do (let ((child-height child-height))
+                                           (cond ((null rest-children)
+                                                  (setf child-height rest-height))
+                                                 ((plusp rem)
+                                                  (decf rem)
+                                                  (incf child-height)))
+                                           (rec child
+                                                x
+                                                y
+                                                width
+                                                (if (null rest-children)
+                                                    child-height
+                                                    (- child-height
+                                                       (if (frame-enable-window-modeline-per-window (current-frame))
+                                                           0
+                                                           (frame-window-bottom-margin (current-frame))))))
+                                           (incf y child-height)
+                                           (decf rest-height child-height))))))))))))
+      (rec (convert-window-n-tree window-tree)
+           (topleft-window-x (current-frame))
+           (topleft-window-y (current-frame))
+           (max-window-width (current-frame))
+           (max-window-height (current-frame))))
+    (nreverse layout)))
+
+(defun window-layout-fits-p (layout)
+  "True if every window in LAYOUT, a list of (WINDOW X Y WIDTH HEIGHT), is
+wide enough and shows at least one line besides its modeline.  It does not
+when the display is smaller than the windows need, e.g. while the user
+shrinks the editor's window."
+  (loop :for (window nil nil width height) :in layout
+        :always (and (valid-window-width-p width)
+                     (valid-window-height-p
+                      (if (window-use-modeline-p window) (1- height) height)))))
+
 (defun balance-windows (&optional (window-tree (window-tree)))
-  (labels ((rec (node x y width height)
-             (cond ((windowp node)
-                    (window-set-size node width height)
-                    (window-set-pos node x y))
-                   (t
-                    (destructuring-bind (split-type &rest children) node
-                      (let ((n (length children)))
-                        (ecase split-type
-                          (:hsplit
-                           (multiple-value-bind (child-width remaining) (floor width n)
-                             (loop :with rest-width := width
-                                   :for (child . rest-children) :on children
-                                   :for first := t :then nil
-                                   :do (let ((child-width child-width))
-                                         (cond ((null rest-children)
-                                                (setf child-width rest-width))
-                                               ((plusp remaining)
-                                                (decf remaining)
-                                                (incf child-width)))
-                                         (rec child
-                                              x
-                                              y
-                                              (if (null rest-children)
-                                                  child-width
-                                                  (- child-width
-                                                     (frame-window-left-margin (current-frame))))
-                                              height)
-                                         (incf x child-width)
-                                         (decf rest-width child-width)))))
-                          (:vsplit
-                           (multiple-value-bind (child-height rem) (floor height n)
-                             (loop :with rest-height := height
-                                   :for (child . rest-children) :on children
-                                   :do (let ((child-height child-height))
-                                         (cond ((null rest-children)
-                                                (setf child-height rest-height))
-                                               ((plusp rem)
-                                                (decf rem)
-                                                (incf child-height)))
-                                         (rec child
-                                              x
-                                              y
-                                              width
-                                              (if (null rest-children)
-                                                  child-height
-                                                  (- child-height
-                                                     (if (frame-enable-window-modeline-per-window (current-frame))
-                                                         0
-                                                         (frame-window-bottom-margin (current-frame))))))
-                                         (incf y child-height)
-                                         (decf rest-height child-height))))))))))))
-    (rec (convert-window-n-tree window-tree)
-         (topleft-window-x (current-frame))
-         (topleft-window-y (current-frame))
-         (max-window-width (current-frame))
-         (max-window-height (current-frame)))))
+  "Share the frame's space evenly between the windows of WINDOW-TREE, and
+return true.  If the space is too small for every window to fit (see
+window-layout-fits-p), leave them as they are and return NIL: they are drawn
+clipped until the display grows."
+  (let ((layout (balanced-window-layout window-tree)))
+    (when (window-layout-fits-p layout)
+      (loop :for (window x y width height) :in layout
+            :do (window-set-size window width height)
+                (window-set-pos window x y))
+      t)))
