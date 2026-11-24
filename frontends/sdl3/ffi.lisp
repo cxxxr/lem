@@ -81,6 +81,7 @@
    :destroy-renderer
    :set-render-viewport
    :set-window-icon
+   :set-window-minimum-size
    :get-window-title
    :set-window-title
    :window-fullscreen-p
@@ -749,6 +750,11 @@ WINDOW is not a Cocoa window."
                                                  (cffi:null-pointer))))
         (unless (cffi:null-pointer-p nswindow)
           nswindow)))))
+
+(defun set-window-minimum-size (window width height)
+  "Keep the user from resizing WINDOW below WIDTH by HEIGHT, in window
+coordinates."
+  (sdl3:set-window-minimum-size window width height))
 
 (defun set-window-icon (window surface)
   "Use SURFACE (a SURFACE struct) as WINDOW's icon."

@@ -22,6 +22,15 @@
 (defconstant +display-width+ 100)
 (defconstant +display-height+ 40)
 
+(defparameter *minimum-window-width* 360
+  "The narrowest the user can resize the window to, in window coordinates
+(points on macOS).  Zed's minimum, 360 by 240.")
+
+(defparameter *minimum-window-height* 240
+  "The shortest the user can resize the window to, in window coordinates.
+With a very large font this can be fewer rows than the windows need; lem-core
+then leaves them as they are (see lem:balance-windows).")
+
 (defvar *live-resize-redraw-timeout* 0.1
   "Seconds a live-resize step waits for the editor thread to redraw at the
 window's new size before showing the last frame unscaled instead.")
@@ -763,6 +772,9 @@ step of a resize, is drawn once."
        (unwind-protect
             (let ((renderer (ffi:create-renderer window)))
               (init-application-icon window)
+              (ffi:set-window-minimum-size window
+                                           *minimum-window-width*
+                                           *minimum-window-height*)
               (let ((text-engine (lem-sdl3/text-engine:make-text-engine renderer))
                     (text-shaper (lem-sdl3/text-shaping:make-text-shaper renderer)))
                 (unwind-protect
