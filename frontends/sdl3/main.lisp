@@ -508,6 +508,36 @@ last frame to the window's new size."
       (display:update-display display)
       (ffi:set-render-target renderer previous))))
 
+(defun pin-layer-contents (display)
+  "Have the window server show DISPLAY's last frame unscaled in the window's
+top-left corner, on the background colour, whenever it no longer fits the
+window, as while the window is resized, instead of stretching it.  Only a
+Metal renderer on macOS supports this; elsewhere DISPLAY is left as it is."
+  (let ((layer (ffi:render-metal-layer (display:display-renderer display)))
+        (color (display:display-background-color display)))
+    (when (lem-darwin/layer:pin-layer-contents layer
+                                               (lem:color-red color)
+                                               (lem:color-green color)
+                                               (lem:color-blue color))
+      (setf (display:display-pinned-layer display) layer))))
+
+(defun sync-pinned-layer-background (display)
+  "Give DISPLAY's pinned layer, if any, the editor's background colour, which
+shows where the window has grown past the last frame."
+  (alexandria:when-let ((layer (display:display-pinned-layer display)))
+    (let ((color (display:display-background-color display)))
+      (lem-darwin/layer:set-layer-background-color layer
+                                                   (lem:color-red color)
+                                                   (lem:color-green color)
+                                                   (lem:color-blue color)))))
+
+(defun show-last-frame (display)
+  "Show DISPLAY's last frame unscaled while the editor cannot draw at the
+window's new size.  When its layer is pinned, the window server already does,
+so nothing needs drawing."
+  (unless (display:display-pinned-layer display)
+    (present-texture-unscaled display)))
+
 (defun request-editor-redraw (display)
   "Ask the editor thread to remake DISPLAY's texture at the window's size and
 lay out and redraw the editor there, and return a semaphore it signals when
@@ -570,7 +600,7 @@ has changed size again since, the editor is asked once more."
                                 internal-time-units-per-second)
                              tasks))
                  (unless drawn
-                   (present-texture-unscaled display)
+                   (show-last-frame display)
                    (return)))
                (setf (display:display-live-resize-request display) nil)
            :while (display:texture-size-stale-p display)))))
@@ -584,8 +614,9 @@ thread, because the resize came from an editor command, it cannot, and the
 last frame is shown unscaled instead."
   (handler-case
       (ffi:with-float-traps-masked
+        (sync-pinned-layer-background display)
         (if (ffi:running-main-thread-task-p)
-            (present-texture-unscaled display)
+            (show-last-frame display)
             (redraw-with-editor display)))
     ;; This runs in a C callback: an error must not unwind through it.
     (error (condition)
@@ -685,6 +716,7 @@ NIL."
                                                       :scale (list scale-x scale-y))))
                          (setf (display:current-display) display)
                          (display:adapt-high-dpi-font-size display)
+                         (pin-layer-contents display)
                          (ffi:start-text-input window)
                          (funcall function)
                          (ffi:add-event-watch (cffi:callback live-resize-watch)

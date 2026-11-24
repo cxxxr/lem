@@ -37,6 +37,7 @@
            :display-texture
            :texture-size-stale-p
            :display-live-resize-request
+           :display-pinned-layer
            :display-scroll-animation-timer
            :display-scroll-precision
            :display-last-wheel-time
@@ -147,6 +148,12 @@ running.")
                         :documentation "The semaphore the editor thread signals
 when it has redrawn at the window's new size during a live resize, while it
 has not yet, or NIL.")
+   (pinned-layer :initform nil
+                 :accessor display-pinned-layer
+                 :documentation "The Core Animation layer the window shows,
+when its contents are pinned to its top-left corner (see
+lem-darwin/layer:pin-layer-contents), so the window server shows the last
+frame unscaled whenever it no longer fits the window; or NIL.")
    (texture-size :initform nil
                  :accessor display-texture-size
                  :documentation "The (WIDTH . HEIGHT) update-texture last made

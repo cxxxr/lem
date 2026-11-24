@@ -65,6 +65,7 @@
    :render-point
    :render-points
    :render-texture
+   :render-metal-layer
    ;; sizes
    :get-render-output-size
    :get-window-size
@@ -625,6 +626,13 @@ whole texture / whole target."
                    (incf i 2))
              points))
       (%render-points renderer array count))))
+
+(defun render-metal-layer (renderer)
+  "Return the CAMetalLayer RENDERER draws into, or NIL if it does not draw
+with Metal."
+  (let ((layer (sdl3:get-render-metal-layer renderer)))
+    (unless (cffi:null-pointer-p layer)
+      layer)))
 
 ;;; Sizes
 
