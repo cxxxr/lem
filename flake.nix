@@ -596,6 +596,9 @@
               SDL2
               SDL2_ttf
               SDL2_image
+              sdl3
+              sdl3-ttf
+              sdl3-image
 
               # Spell checking
               enchant
@@ -632,6 +635,9 @@
               direnv
             ]
             ++ lib.optionals stdenv.hostPlatform.isLinux [
+			  # Terminal extension
+			  pkgs.libvterm-neovim
+
               # Linux-specific dependencies for webview frontend
               webkitgtk_4_1
               gtk3
@@ -640,10 +646,14 @@
           # Set up library paths for native dependencies
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
             [
+			  pkgs.libffi
               pkgs.ncurses
               pkgs.SDL2
               pkgs.SDL2_ttf
               pkgs.SDL2_image
+              pkgs.sdl3
+              pkgs.sdl3-ttf
+              pkgs.sdl3-image
               pkgs.enchant
               pkgs.openssl
               pkgs.tree-sitter
@@ -680,7 +690,9 @@
             echo "Quick start:"
             echo "  qlot install    # Install dependencies"
             echo "  make ncurses    # Build terminal version"
-            echo "  make sdl2       # Build GUI version"
+            echo "  make webview    # Build GUI (Webview) version"
+            echo "  make sdl2       # Build GUI (SDL2) version"
+            echo "  make sdl3       # Build GUI (SDL3) version"
             echo ""
             echo "Clojure tools:"
             echo "  clojure-lsp     # Clojure Language Server"
