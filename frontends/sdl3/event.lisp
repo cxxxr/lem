@@ -12,6 +12,7 @@
    :+mouse-button-up+
    :+mouse-wheel+
    :+drop-file+
+   :window-events-pending-p
    :+window-shown+
    :+window-exposed+
    :+window-resized+
@@ -88,6 +89,10 @@
 ;;; Event types (SDL_EventType)
 (defconstant +quit+ #x100)
 (defconstant +window-shown+ #x202)
+(defconstant +window-events-last+ #x2ff
+  "The last event type in the block SDL keeps for window events, past
+SDL_EVENT_WINDOW_LAST, so that window events newer SDL versions add count
+too.")
 (defconstant +window-exposed+ #x204)
 (defconstant +window-resized+ #x206)
 (defconstant +window-pixel-size-changed+ #x207)
@@ -181,6 +186,11 @@ Computed on first use.")
   `(cffi:with-foreign-object (,var :uint8 +sdl-event-size+)
      (dotimes (i +sdl-event-size+) (setf (cffi:mem-aref ,var :uint8 i) 0))
      ,@body))
+
+(defun window-events-pending-p ()
+  "True if window events wait in SDL's queue, among the events SDL has
+already taken from the platform."
+  (sdl3:has-events +window-shown+ +window-events-last+))
 
 (defun wait-event (event)
   "Block until an event arrives and store it in EVENT.  Return true on success."

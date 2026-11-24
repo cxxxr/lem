@@ -30,6 +30,17 @@ window's new size before showing the last frame unscaled instead.")
   "When true, log how long each live-resize step takes the editor to redraw,
 and how many main-thread tasks it ran, to Lem's log (~/.lem/logs/debug.log).")
 
+(defvar *log-resize-timing* nil
+  "When true, log each update of the window after window events (resizes,
+exposures, display changes): how many events it handled at once, and how long
+it took the editor to lay out and redraw, to Lem's log
+(~/.lem/logs/debug.log).")
+
+(defparameter *window-changes* '(:redisplay :resize :pixel-size :display)
+  "What window events can ask of the window, each including the ones before
+it: draw it again; also remake its texture at its new size; also check
+whether its pixel scale changed; also adapt to a new display or scale.")
+
 (defvar *scroll-keeps-cursor* t
   "When true, the mouse wheel and trackpad scroll a window's view and leave
 its cursor where it is, even off screen, as most GUI editors do; the view
@@ -398,34 +409,81 @@ gives no momentum; a wheel's notch animates."
 (defun on-keyup (key-event)
   (handle-key-up (get-platform) key-event))
 
+(defun note-window-change (display change)
+  "Record that a window event asks CHANGE (one of *window-changes*) of
+DISPLAY's window, to be done by update-window with the others handled
+before it."
+  (let ((pending (display:display-pending-window-change display)))
+    (when (or (null pending)
+              (> (position change *window-changes*)
+                 (position pending *window-changes*)))
+      (setf (display:display-pending-window-change display) change))
+    (incf (display:display-pending-window-events display))))
+
 (defun on-window-event (display type)
   "Handle the SDL3 window event TYPE.  SDL2 delivered these as sub-codes of a
-single :windowevent; SDL3 gives each its own event type."
+single :windowevent; SDL3 gives each its own event type.  Events that change
+what the window shows are only noted here: SDL often sends several at once,
+e.g. a resize, its pixel-size change and an exposure, and the window is
+updated once for all of them (see update-window)."
   (alexandria:switch (type)
     (event:+window-shown+
-     (display:notify-required-redisplay display))
+     (note-window-change display :redisplay))
     (event:+window-exposed+
-     (display:notify-required-redisplay display))
+     (note-window-change display :redisplay))
     (event:+window-resized+
-     (display:update-texture display)
-     (display:notify-required-redisplay display))
-    ;; SDL fires this on backing-pixel-size changes that do not correspond
-    ;; to a user resize — most notably when the window moves between
-    ;; displays with different DPI (Retina ↔ standard).  Re-derive the
-    ;; high-DPI scale, re-open the font, and resize the backing texture.
-    ;; (SDL2: SDL_WINDOWEVENT_SIZE_CHANGED.)
+     (note-window-change display :resize))
+    ;; SDL sends this with every resize, and also when the backing pixel
+    ;; size changes without one: most notably when the window moves between
+    ;; displays with different DPI (Retina <-> standard).
     (event:+window-pixel-size-changed+
-     (display:handle-display-changed display))
+     (note-window-change display :pixel-size))
     (event:+window-display-changed+
-     (display:handle-display-changed display))
+     (note-window-change display :display))
     ;; New in SDL3: the display's content scale changed (e.g. the user
     ;; changed the OS scaling setting) without the window moving.
     (event:+window-display-scale-changed+
-     (display:handle-display-changed display))
+     (note-window-change display :display))
     (event:+window-focus-gained+
      (setf (display:display-focus-p display) t))
     (event:+window-focus-lost+
      (setf (display:display-focus-p display) nil))))
+
+(defun resize-window (display)
+  "Remake DISPLAY's texture at the window's pixel size, and lay out and
+redraw the editor.  If the texture already has that size, this has been done
+since the window took it: everything that remakes the texture lays out and
+redraws after, e.g. redraw-during-live-resize."
+  (unless (display:texture-fits-window-p display)
+    (display:update-texture display)
+    (display:notify-required-redisplay display)))
+
+(defun update-window (display)
+  "Do, once, what the window events handled since the last update asked of
+DISPLAY's window (see note-window-change).  A display change adapts the
+scale and font and redraws (display:handle-display-changed); so does a pixel
+size change that changed the scale, and any other is a resize."
+  (let ((change (display:display-pending-window-change display))
+        (events (display:display-pending-window-events display)))
+    (setf (display:display-pending-window-change display) nil
+          (display:display-pending-window-events display) 0)
+    (when change
+      (let ((start (get-internal-real-time)))
+        (ecase change
+          (:redisplay (display:notify-required-redisplay display))
+          (:resize (resize-window display))
+          (:pixel-size (if (display:scale-changed-p display)
+                           (display:handle-display-changed display)
+                           (resize-window display)))
+          (:display (display:handle-display-changed display)))
+        (when *log-resize-timing*
+          (log:info "Window update (~(~A~)) at ~Dx~D: ~D window event~:P in ~,1F ms"
+                    change
+                    (display:display-width display)
+                    (display:display-height display)
+                    events
+                    (/ (* 1000 (- (get-internal-real-time) start))
+                       internal-time-units-per-second)))))))
 
 (defun on-filedrop (file)
   (lem:send-event (lambda () (lem:find-file file))))
@@ -642,6 +700,12 @@ NIL."
     (prog1 (gethash timestamp table)
       (remhash timestamp table))))
 
+(defun modal-resize-loop-p ()
+  "True if the platform resizes windows in a loop of its own, where the event
+loop cannot run, as macOS and Windows do.  X11 and Wayland report each step
+of a resize to the event loop, which draws it (see update-window)."
+  (not (member (ffi:video-driver-name) '("x11" "wayland") :test #'equal)))
+
 (cffi:defcallback live-resize-watch :bool ((userdata :pointer) (event :pointer))
   ;; While the user drags a window edge, and while macOS animates a zoom or
   ;; maximize, the platform runs its own loop and SDL_WaitEvent does not
@@ -660,14 +724,20 @@ NIL."
   (when (and (= (event:event-type event) event:+window-exposed+)
              (sdl3:is-main-thread)
              (display:current-display)
-             (display:texture-size-stale-p (display:current-display)))
+             (display:texture-size-stale-p (display:current-display))
+             (modal-resize-loop-p))
     (redraw-during-live-resize (display:current-display)))
   t)
 
 (defun event-loop (display)
+  "Handle SDL events until the application quits.  The window is updated
+once no more window events are queued, so a batch of them, such as each
+step of a resize, is drawn once."
   (event:with-event (event)
     (loop :while (event:wait-event event)
-          :until (dispatch-event display event))))
+          :until (dispatch-event display event)
+          :do (unless (event:window-events-pending-p)
+                (update-window display)))))
 
 (defun init-application-icon (window)
   (let ((image (ffi:load-image (get-resource-pathname "resources/icon.png"))))

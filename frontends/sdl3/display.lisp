@@ -38,6 +38,10 @@
            :texture-size-stale-p
            :display-live-resize-request
            :display-pinned-layer
+           :display-pending-window-change
+           :display-pending-window-events
+           :texture-fits-window-p
+           :scale-changed-p
            :display-scroll-animation-timer
            :display-scroll-precision
            :display-last-wheel-time
@@ -154,6 +158,15 @@ has not yet, or NIL.")
 when its contents are pinned to its top-left corner (see
 lem-darwin/layer:pin-layer-contents), so the window server shows the last
 frame unscaled whenever it no longer fits the window; or NIL.")
+   (pending-window-change :initform nil
+                          :accessor display-pending-window-change
+                          :documentation "What the window events handled
+since the window was last updated ask of it: NIL, :REDISPLAY, :RESIZE,
+:PIXEL-SIZE or :DISPLAY, each including the ones before it.")
+   (pending-window-events :initform 0
+                          :accessor display-pending-window-events
+                          :documentation "How many window events have been
+handled since the window was last updated.")
    (texture-size :initform nil
                  :accessor display-texture-size
                  :documentation "The (WIDTH . HEIGHT) update-texture last made
@@ -384,12 +397,33 @@ and not stale: the texture made at startup fits the window."
        (not (equal (display-texture-size display)
                    (cons (display-width display) (display-height display))))))
 
+(defun texture-fits-window-p (display)
+  "True if DISPLAY's texture is known to have the window's pixel size: it
+was made by update-texture at that size."
+  (and (display-texture-size display)
+       (not (texture-size-stale-p display))))
+
 (defmethod set-render-color ((display display) color)
   (when color
     (lem-sdl3/ffi:set-render-draw-color (display-renderer display)
                                         (lem:color-red color)
                                         (lem:color-green color)
                                         (lem:color-blue color))))
+
+(defun scale-changed-p (display)
+  "True if the ratio of DISPLAY's pixels to window coordinates is no longer
+the scale it adapted its font to (see adapt-high-dpi-display-scale).  Only
+macOS adapts to it; elsewhere this is always false."
+  #+darwin
+  (multiple-value-bind (pixel-width pixel-height)
+      (lem-sdl3/ffi:get-render-output-size (display-renderer display))
+    (destructuring-bind (scale-x scale-y) (display-scale display)
+      (or (< 1/100 (abs (- scale-x (/ pixel-width (display-window-width display)))))
+          (< 1/100 (abs (- scale-y (/ pixel-height (display-window-height display))))))))
+  #-darwin
+  (declare (ignore display))
+  #-darwin
+  nil)
 
 (defun adapt-high-dpi-display-scale (display)
   (with-renderer (display)
@@ -426,11 +460,13 @@ Idempotent."
       (lem-sdl3/ffi:set-render-target (display-renderer display) (display-texture display))
       (set-render-color display (display-background-color display))
       (lem-sdl3/ffi:render-clear (display-renderer display))
-      #+darwin
-      (adapt-high-dpi-display-scale display)
-      #+darwin
-      (adapt-high-dpi-font-size display)
-      (run-post-display-change-hooks display)
+      ;; Reopening the font clears every text cache and lays the editor out
+      ;; once more, and the hooks remake every view's texture, so do it only
+      ;; when the scale changed.
+      (when (scale-changed-p display)
+        (adapt-high-dpi-display-scale display)
+        (adapt-high-dpi-font-size display)
+        (run-post-display-change-hooks display))
       (lem:update-on-display-resized))))
 
 (defun handle-display-changed (display)

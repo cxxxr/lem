@@ -4,6 +4,7 @@
    ;; misc
    :get-clipboard-text
    :platform-name
+   :video-driver-name
    :sdl-error
    ;; main thread
    :call-in-main-thread
@@ -135,6 +136,11 @@ Unlike SDL3:GET-CLIPBOARD-TEXT, this frees the buffer SDL allocates."
 (defun platform-name ()
   "Return the platform name reported by SDL, e.g. \"macOS\", \"Linux\" or \"Windows\"."
   (sdl3:get-platform))
+
+(defun video-driver-name ()
+  "Return the name of the video driver SDL uses, e.g. \"cocoa\", \"windows\",
+\"x11\" or \"wayland\"."
+  (sdl3:get-current-video-driver))
 
 (defun sdl-error (format-control &rest format-arguments)
   "Signal an error whose message ends with SDL's last error string."
