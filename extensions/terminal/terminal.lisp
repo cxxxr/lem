@@ -70,9 +70,10 @@ render hot path, and the cache refills quickly for the active palette.")
 (defparameter *blue-to-fix* (make-color 0 0 #xe0)
   "vterm's default \"blue\" — too dark on most terminals; replaced with `*fixed-blue*'.")
 
-;; Byte offsets into the packed cell-data struct (14 bytes per cell):
+;; Byte offsets into the packed cell-data struct (16 bytes per cell):
 ;; uint32 ch (0), uint8 fg_r(4), fg_g(5), fg_b(6), bg_r(7), bg_g(8), bg_b(9),
-;; bold(10), underline(11), reverse(12), width(13)
+;; bold(10), underline(11), reverse(12), width(13), default_fg(14),
+;; default_bg(15)
 (defconstant +cell-off-ch+ 0)
 (defconstant +cell-off-fg-r+ 4)
 (defconstant +cell-off-fg-g+ 5)
@@ -84,6 +85,8 @@ render hot path, and the cache refills quickly for the active palette.")
 (defconstant +cell-off-underline+ 11)
 (defconstant +cell-off-reverse+ 12)
 (defconstant +cell-off-width+ 13)
+(defconstant +cell-off-default-fg+ 14)
+(defconstant +cell-off-default-bg+ 15)
 
 ;;; --- id generator ----------------------------------------------------
 
@@ -404,32 +407,36 @@ history can be browsed and copied with ordinary Lem commands."
       color))
 
 (declaim (inline pack-attribute-key))
-(defun pack-attribute-key (fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr)
-  "Pack cell style into a single fixnum key (51 bits — fits in a 64-bit fixnum).
+(defun pack-attribute-key (fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr
+                           default-fg default-bg)
+  "Pack cell style into a single fixnum key (53 bits — fits in a 64-bit fixnum).
 Attr flags are masked to one bit each: some vterm builds expose underline as
 a multi-bit style enum, and an unmasked value would collide with the bg-b
 field (bits 3..10) or with neighbouring flags."
-  (logior (ash fg-r 43) (ash fg-g 35) (ash fg-b 27)
+  (logior (ash (logand default-bg 1) 52) (ash (logand default-fg 1) 51)
+          (ash fg-r 43) (ash fg-g 35) (ash fg-b 27)
           (ash bg-r 19) (ash bg-g 11) (ash bg-b 3)
           (ash (logand bold 1) 2)
           (ash (logand underline 1) 1)
           (logand reverse-attr 1)))
 
-(defun default-bg-p (r g b)
-  "Return T if the RGB values represent the terminal default background (black)."
-  (and (zerop r) (zerop g) (zerop b)))
-
-(defun get-attribute-for-cell (terminal fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr)
-  "Return a cached attribute for the given cell style components."
-  (let* ((key (pack-attribute-key fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr))
+(defun get-attribute-for-cell (terminal fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr
+                               default-fg default-bg)
+  "Return a cached attribute for the given cell style components.  Cells in
+the terminal's default colors get no color, so they follow the editor
+theme (a light theme would otherwise show near-white text on white)."
+  (let* ((key (pack-attribute-key fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr
+                                  default-fg default-bg))
          (cache (terminal-attribute-cache terminal)))
     (or (gethash key cache)
         (progn
           (when (>= (hash-table-count cache) *attribute-cache-limit*)
             (clrhash cache))
           (setf (gethash key cache)
-                (make-attribute :foreground (fix-blue-color (make-color fg-r fg-g fg-b))
-                                :background (if (default-bg-p bg-r bg-g bg-b)
+                (make-attribute :foreground (if (= 1 default-fg)
+                                                nil
+                                                (fix-blue-color (make-color fg-r fg-g fg-b)))
+                                :background (if (= 1 default-bg)
                                                 nil
                                                 (fix-blue-color (make-color bg-r bg-g bg-b)))
                                 :reverse (= 1 (logand reverse-attr 1))
@@ -515,10 +522,13 @@ that may be edited by the user or watched by other features."
                          (underline (cffi:mem-ref ptr :uint8 +cell-off-underline+))
                          (reverse-attr (cffi:mem-ref ptr :uint8 +cell-off-reverse+))
                          (width (cffi:mem-ref ptr :uint8 +cell-off-width+))
+                         (default-fg (cffi:mem-ref ptr :uint8 +cell-off-default-fg+))
+                         (default-bg (cffi:mem-ref ptr :uint8 +cell-off-default-bg+))
                          (attribute (get-attribute-for-cell terminal
                                                            fg-r fg-g fg-b
                                                            bg-r bg-g bg-b
-                                                           bold underline reverse-attr))
+                                                           bold underline reverse-attr
+                                                           default-fg default-bg))
                          ;; Fast validity check instead of ignore-errors + code-char
                          (char (if (and (plusp ch) (<= ch #x10FFFF))
                                    (code-char ch)

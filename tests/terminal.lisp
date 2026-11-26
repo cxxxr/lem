@@ -187,3 +187,20 @@ NIL on timeout."
     (testing "a blank row becomes empty"
       (ok (equal "" (lem-terminal/terminal::trim-trailing-blanks
                      "    " (list (list 0 4 plain))))))))
+
+(defun cell-slot (viscus row col slot &key (cols 80))
+  (cffi:with-foreign-object (buf '(:struct ffi::cell-data) cols)
+    (ffi::terminal-get-row viscus row buf cols)
+    (cffi:foreign-slot-value (cffi:mem-aptr buf '(:struct ffi::cell-data) col)
+                             '(:struct ffi::cell-data) slot)))
+
+(deftest default-colors-are-reported
+  ;; col 0: default colors, col 1: red fg, col 2: explicit black bg
+  (with-test-terminal (viscus "printf 'a\\033[31mb\\033[0;40mc\\033[0m'")
+    (ok (drain-until-eof viscus))
+    (ok (= 1 (cell-slot viscus 0 0 'ffi::default-fg)))
+    (ok (= 1 (cell-slot viscus 0 0 'ffi::default-bg)))
+    (ok (= 0 (cell-slot viscus 0 1 'ffi::default-fg)))
+    (ok (= 1 (cell-slot viscus 0 1 'ffi::default-bg)))
+    (ok (= 1 (cell-slot viscus 0 2 'ffi::default-fg)))
+    (ok (= 0 (cell-slot viscus 0 2 'ffi::default-bg)))))
