@@ -7,6 +7,10 @@
 
 (defvar *in-the-editor* nil)
 
+(defvar *editor-thread* nil
+  "The thread of the editor started last (run-editor-thread), which may have
+ended: it is kept until the next editor starts.")
+
 (defparameter *init-file-name* "init.lisp"
   "The name of the init file found within (lem-home)")
 
@@ -110,23 +114,31 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
   (without-timer-manager-binding ()
     (bt2:make-thread
      (lambda ()
+       ;; Set by the thread itself, before any code of the editor runs,
+       ;; and not cleared when it ends (find-editor-thread checks that
+       ;; it is alive): a clear could undo the next editor's.
+       (setf *editor-thread* (bt2:current-thread))
        (when initialize (funcall initialize))
-       ;; When the command loop returns, end-editor ends the editor and the
-       ;; frontend; nothing of this thread changes *in-the-editor* after it
-       ;; has finalized, as the next editor may have started.  When the loop
-       ;; or the teardown is left by a non-local exit (the process quitting),
-       ;; only the flag is cleared.
+       ;; When the command loop returns, end-editor ends the editor
+       ;; and the frontend; nothing of this thread changes
+       ;; *in-the-editor* after it has finalized, as the next editor
+       ;; may have started.  When the loop or the teardown is left by
+       ;; a non-local exit (the process quitting), only the flag is
+       ;; cleared.
        (let ((ended nil))
          (unwind-protect
-              (let (#+lispworks (lw:*default-character-element-type* 'character))
+              (let (#+lispworks
+                    (lw:*default-character-element-type* 'character))
                 (with-editor-stream ()
-                  (set-global-timer-manager (make-instance 'lem-timer-manager))
+                  (set-global-timer-manager
+                   (make-instance 'lem-timer-manager))
                   (setf *in-the-editor* t)
                   (setup)
-                  (end-editor (toplevel-command-loop (lambda () (init args)))
-                              ;; ENDED once end-editor has cleared the flag:
-                              ;; a teardown left by a non-local exit clears
-                              ;; it below.
+                  (end-editor (toplevel-command-loop
+                               (lambda () (init args)))
+                              ;; ENDED once end-editor has cleared the
+                              ;; flag: a teardown left by a non-local
+                              ;; exit clears it below.
                               (lambda (report)
                                 (setf ended t)
                                 (when finalize (funcall finalize report))))))
@@ -135,9 +147,12 @@ See scripts/build-ncurses.lisp or scripts/build-sdl2.lisp"
      :name "editor")))
 
 (defun find-editor-thread ()
-  (find "editor" (bt2:all-threads)
-        :test #'equal
-        :key #'bt2:thread-name))
+  "Return the thread of the editor started last while it is alive, or NIL.
+Not found by its name: right after the editor ends, launch can start
+another while the old thread, also named \"editor\", is still finishing."
+  (let ((thread *editor-thread*))
+    (when (and thread (bt2:thread-alive-p thread))
+      thread)))
 
 ;; NOTE: so that it can be processed during compilation.
 (defvar *version* (get-version-string))

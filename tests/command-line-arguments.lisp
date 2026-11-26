@@ -194,3 +194,26 @@ whether the teardown failed and what the finalize saw."
   (testing "with a serious condition that is not an error"
     (ok (equal '(t ((:report nil)))
                (finalized-after-a-failing-teardown 'troubled-interface)))))
+
+(deftest find-editor-thread-is-the-editor-started-last
+  ;; Another thread named "editor", as an editor that has ended but is still
+  ;; finishing when the next one starts.  (*editor-thread* is internal: only
+  ;; run-editor-thread sets it.)
+  (flet ((editor-thread (may-end)
+           (bt2:make-thread (lambda () (lem-mailbox:receive-message may-end))
+                            :name "editor")))
+    (let* ((old-may-end (lem-mailbox:make-mailbox))
+           (new-may-end (lem-mailbox:make-mailbox))
+           (old (editor-thread old-may-end))
+           (new (editor-thread new-may-end)))
+      (unwind-protect
+           (let ((lem-core::*editor-thread* new))
+             (ok (eq new (lem:find-editor-thread)))
+             (lem-mailbox:send-message new-may-end t)
+             (bt2:join-thread new)
+             (testing "none once it has ended"
+               (ok (null (lem:find-editor-thread)))))
+        (lem-mailbox:send-message new-may-end t)
+        (lem-mailbox:send-message old-may-end t)
+        (bt2:join-thread new)
+        (bt2:join-thread old)))))
