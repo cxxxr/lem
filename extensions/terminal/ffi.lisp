@@ -91,7 +91,8 @@
   (cb_bell :pointer)
   (cb_resize :pointer)
   (cb_sb_pushline :pointer)
-  (cb_sb_popline :pointer))
+  (cb_sb_popline :pointer)
+  (cb_sb_clear :pointer))
 
 (defun terminal-new (directory id rows cols &key program argv)
   "Create a new terminal PTY running PROGRAM with ARGV.
@@ -114,7 +115,8 @@ in DIRECTORY (via 'cd <directory>; <shell>')."
                    (cffi:callback cb-bell)
                    (cffi:callback cb-resize)
                    (cffi:callback cb-sb-pushline)
-                   (cffi:callback cb-sb-popline))))
+                   (cffi:callback cb-sb-popline)
+                   (cffi:callback cb-sb-clear))))
 
 (cffi:defcfun ("terminal_delete" terminal-delete) :void
   (terminal :pointer))
@@ -129,7 +131,61 @@ in DIRECTORY (via 'cd <directory>; <shell>')."
   (key :int)
   (mod :int))
 
-(cffi:defcfun ("terminal_process_input_wait" terminal-process-input-wait) :void
+(cffi:defcfun ("terminal_paste_start" terminal-paste-start) :void
+  (terminal :pointer))
+
+(cffi:defcfun ("terminal_paste_end" terminal-paste-end) :void
+  (terminal :pointer))
+
+(cffi:defcfun ("terminal_process_input_wait" terminal-process-input-wait) :int
+  "Block until the PTY is readable (returns 1) or TERMINAL-WAKE was called /
+the PTY already hung up (returns 0)."
+  (terminal :pointer))
+
+(cffi:defcfun ("terminal_wake" terminal-wake) :void
+  "Interrupt a blocked TERMINAL-PROCESS-INPUT-WAIT from another thread."
+  (terminal :pointer))
+
+(cffi:defcfun ("terminal_title" %terminal-title) :pointer
+  (terminal :pointer))
+
+(defun terminal-title (terminal)
+  "Return the window title last set by the program in TERMINAL.  Bytes that
+are not valid UTF-8 (e.g. a title truncated mid-character) fall back to
+latin-1 rather than signalling, since this runs on the I/O thread."
+  (let ((pointer (%terminal-title terminal)))
+    (handler-case (cffi:foreign-string-to-lisp pointer :encoding :utf-8)
+      (error ()
+        (cffi:foreign-string-to-lisp pointer :encoding :iso-8859-1)))))
+
+(cffi:defcfun ("terminal_cwd" %terminal-cwd) :int
+  (terminal :pointer)
+  (buf :pointer)
+  (size :int))
+
+(defun terminal-cwd (terminal)
+  "Return the current working directory of TERMINAL's child process as a
+string, or NIL when the OS cannot tell (see terminal_cwd in terminal.c)."
+  (cffi:with-foreign-pointer (buf 4096 size)
+    (let ((len (%terminal-cwd terminal buf size)))
+      (when (plusp len)
+        (handler-case (cffi:foreign-string-to-lisp buf :count len :encoding :utf-8)
+          (error () nil))))))
+
+(cffi:defcfun ("terminal_pid" terminal-pid) :int
+  "Return the process id of the terminal's child process."
+  (terminal :pointer))
+
+(cffi:defcfun ("terminal_eof_p" %terminal-eof-p) :int
+  (terminal :pointer))
+
+(defun terminal-eof-p (terminal)
+  "Return T once the PTY has hung up, i.e. the child process closed its side."
+  (= 1 (%terminal-eof-p terminal)))
+
+(cffi:defcfun ("terminal_collect_exit_status" terminal-collect-exit-status) :int
+  "Reap the exited child and return its status: the exit code, 128+signal
+when it was killed by a signal, or -1 when unknown."
   (terminal :pointer))
 
 (cffi:defcfun ("terminal_process_input_nonblock" terminal-process-input-nonblock) :size
@@ -160,7 +216,9 @@ in DIRECTORY (via 'cd <directory>; <shell>')."
   (bold :uint8)
   (underline :uint8)
   (reverse-attr :uint8)
-  (width :uint8))
+  (width :uint8)
+  (default-fg :uint8)
+  (default-bg :uint8))
 
 (cffi:defcfun ("terminal_get_row" terminal-get-row) :int
   (terminal :pointer)
@@ -289,6 +347,7 @@ in DIRECTORY (via 'cd <directory>; <shell>')."
 (defvar *resize-callback* nil)
 (defvar *sb-pushline-callback* nil)
 (defvar *sb-popline-callback* nil)
+(defvar *sb-clear-callback* nil)
 
 (defun set-callbacks (&key damage
                            moverect
@@ -297,7 +356,8 @@ in DIRECTORY (via 'cd <directory>; <shell>')."
                            bell
                            resize
                            sb-pushline
-                           sb-popline)
+                           sb-popline
+                           sb-clear)
   (setf *damage-callback* damage
         *moverect-callback* moverect
         *movecursor-callback* movecursor
@@ -305,7 +365,8 @@ in DIRECTORY (via 'cd <directory>; <shell>')."
         *bell-callback* bell
         *resize-callback* resize
         *sb-pushline-callback* sb-pushline
-        *sb-popline-callback* sb-popline)
+        *sb-popline-callback* sb-popline
+        *sb-clear-callback* sb-clear)
   (values))
 
 (cffi:defcallback cb-damage :int ((rect (:pointer (:struct vterm-rect))) (id :int))
@@ -353,4 +414,9 @@ in DIRECTORY (via 'cd <directory>; <shell>')."
 (cffi:defcallback cb-sb-popline :int ((cols :int) (cells :pointer) (id :int))
   (when *sb-popline-callback*
     (funcall *sb-popline-callback* cols cells id))
+  0)
+
+(cffi:defcallback cb-sb-clear :int ((id :int))
+  (when *sb-clear-callback*
+    (funcall *sb-clear-callback* id))
   0)

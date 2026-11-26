@@ -166,7 +166,11 @@
        (let ((target-window (if *scroll-unfocused-window*
                                 (find-window-containing-pos x1 y1)
                                 (current-window))))
-         (lem:scroll-up *wheel-scroll-size* target-window)
+         ;; As a command, through the major mode's EXECUTE (a terminal
+         ;; buffer shows its history so), as src/mouse.lisp scrolls.
+         (when target-window
+           (with-current-window target-window
+             (call-command 'scroll-up *wheel-scroll-size*)))
          (lem:redraw-display)))
       ;; wheel down
       ((and (eql btype *mouse-wheel-down*)
@@ -174,7 +178,11 @@
        (let ((target-window (if *scroll-unfocused-window*
                                 (find-window-containing-pos x1 y1)
                                 (current-window))))
-         (lem:scroll-down *wheel-scroll-size* target-window)
+         ;; As a command, through the major mode's EXECUTE (a terminal
+         ;; buffer shows its history so), as src/mouse.lisp scrolls.
+         (when target-window
+           (with-current-window target-window
+             (call-command 'scroll-down *wheel-scroll-size*)))
          (lem:redraw-display)))
       )
     (when *message-on-mouse-event*
@@ -184,20 +192,22 @@
 (defvar *enable-hook* '())
 (defvar *disable-hook* '())
 
+(defun redraw-everything ()
+  "Draw every window again, the tab bar too: the escape sequences that turn
+the mouse reporting on and off are written behind the display's back.
+Nothing is drawn when this is loaded before the display exists."
+  (ignore-errors
+    (lem:clear-screens-of-window-list)
+    (lem:redraw-display :force t)))
+
 (defun enable-hook ()
   (format lem-ncurses:*terminal-io-saved* "~A[?1000h~A[?1002h~A[?1006h~%" #\esc #\esc #\esc)
-  (ignore-errors
-    (dolist (window (lem:window-list))
-      (lem:screen-clear (lem:window-screen window)))
-    (lem:redraw-display))
+  (redraw-everything)
   (lem:run-hooks *enable-hook*))
 
 (defun disable-hook ()
   (format lem-ncurses:*terminal-io-saved* "~A[?1006l~A[?1002l~A[?1000l~%" #\esc #\esc #\esc)
-  (ignore-errors
-    (dolist (window (lem:window-list))
-      (lem:screen-clear (lem:window-screen window)))
-    (lem:redraw-display))
+  (redraw-everything)
   (run-hooks *disable-hook*))
 
 (define-minor-mode mouse-sgr-1006-mode

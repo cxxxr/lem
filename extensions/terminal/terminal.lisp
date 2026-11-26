@@ -8,17 +8,22 @@
            :destroy
            :copy-mode-on
            :copy-mode-off
+           :process-exited-p
+           :process-directory
            :clear
            :render
            :update
            :input-character
            :input-key
+           :paste-string
            :resize
            :adjust-point
            :scrollback-count
            :activate-scrollback
            :deactivate-scrollback
            :snap-to-bottom
+           :buffer-windows
+           :frozen-scrollback-lines
            :terminal-render-throttle-ms))
 (in-package :lem-terminal/terminal)
 
@@ -31,7 +36,7 @@
 (defvar *terminals* '()
   "All live terminals, used by callbacks to locate their Lisp object by id.")
 
-(defparameter *scrollback-limit* 500
+(defparameter *scrollback-limit* 5000
   "Maximum number of scrollback lines stored in the ring buffer.")
 
 (defparameter *write-timeout-ms* 12
@@ -56,6 +61,13 @@ frontends; lower values give smoother terminal output on fast frontends.
 Read with :global scope because it is consulted from the terminal I/O and
 render-timer threads, which have no current-buffer context.")
 
+(define-editor-variable terminal-title-as-buffer-name t
+  "When non-NIL, a terminal buffer is renamed after the window title its
+program sets (e.g. bash's \"user@host: ~/dir\"), as \"*Terminal: TITLE*\".")
+
+(defparameter *bell-interval-seconds* 1
+  "Minimum seconds between two bell notices from the same terminal.")
+
 (defparameter *attribute-cache-limit* 4096
   "Maximum entries in a terminal's attribute cache.  When exceeded the cache
 is cleared wholesale — cheaper than maintaining LRU bookkeeping on the
@@ -67,9 +79,10 @@ render hot path, and the cache refills quickly for the active palette.")
 (defparameter *blue-to-fix* (make-color 0 0 #xe0)
   "vterm's default \"blue\" — too dark on most terminals; replaced with `*fixed-blue*'.")
 
-;; Byte offsets into the packed cell-data struct (14 bytes per cell):
+;; Byte offsets into the packed cell-data struct (16 bytes per cell):
 ;; uint32 ch (0), uint8 fg_r(4), fg_g(5), fg_b(6), bg_r(7), bg_g(8), bg_b(9),
-;; bold(10), underline(11), reverse(12), width(13)
+;; bold(10), underline(11), reverse(12), width(13), default_fg(14),
+;; default_bg(15)
 (defconstant +cell-off-ch+ 0)
 (defconstant +cell-off-fg-r+ 4)
 (defconstant +cell-off-fg-g+ 5)
@@ -80,6 +93,9 @@ render hot path, and the cache refills quickly for the active palette.")
 (defconstant +cell-off-bold+ 10)
 (defconstant +cell-off-underline+ 11)
 (defconstant +cell-off-reverse+ 12)
+(defconstant +cell-off-width+ 13)
+(defconstant +cell-off-default-fg+ 14)
+(defconstant +cell-off-default-bg+ 15)
 
 ;;; --- id generator ----------------------------------------------------
 
@@ -98,7 +114,10 @@ render hot path, and the cache refills quickly for the active palette.")
   (alexandria:deletef *terminals* terminal))
 
 (defun find-terminal-buffer ()
-  (alexandria:when-let (terminal (first *terminals*))
+  "Return the buffer of the most recently created terminal whose process is
+still running, or NIL.  Exited terminals are skipped so that `terminal'
+opens a fresh shell instead of reusing a dead one."
+  (alexandria:when-let (terminal (find-if-not #'process-exited-p *terminals*))
     (terminal-buffer terminal)))
 
 ;;; terminal
@@ -107,7 +126,10 @@ render hot path, and the cache refills quickly for the active palette.")
        :reader terminal-id)
    (viscus :initarg :viscus
            :reader terminal-viscus)
+   ;; NIL until the I/O thread is made: DESTROY runs before that when
+   ;; CREATE fails.
    (thread :initarg :thread
+           :initform nil
            :accessor terminal-thread)
    (buffer :initarg :buffer
            :reader terminal-buffer)
@@ -138,6 +160,11 @@ Avoids an O(rows) scan in the hot update loop.")
    (scrollback-active :initform nil
                       :accessor terminal-scrollback-active
                       :documentation "T when scrollback lines are displayed in the buffer.")
+   (scrollback-shown :initform 0
+                     :accessor terminal-scrollback-shown
+                     :type fixnum
+                     :documentation "Number of scrollback lines above the screen
+in the buffer while SCROLLBACK-ACTIVE (the rows may change meanwhile).")
    (attribute-cache :initform (make-hash-table :test #'eql)
                     :accessor terminal-attribute-cache
                     :documentation "Cache of packed-fixnum-key -> attribute.")
@@ -158,6 +185,14 @@ IO-LOCK and never held while acquiring it.")
 rendering is paced through it: it fires on the editor thread, renders, then
 re-arms only if more output arrived — so the editor is never asked to render
 faster than it (and a slow frontend like the websocket) can keep up.")
+   (last-render-time :initform 0
+                     :accessor terminal-last-render-time
+                     :documentation "GET-INTERNAL-REAL-TIME when the last render
+tick finished.  ARM-RENDER-TIMER waits only for what remains of the throttle
+interval since then, so sparse output (a keystroke echo) renders at once.")
+   (last-bell-time :initform nil
+                   :accessor terminal-last-bell-time
+                   :documentation "GET-UNIVERSAL-TIME of the last bell notice.")
    (render-timer-armed :initform nil
                        :accessor terminal-render-timer-armed
                        :type boolean
@@ -167,7 +202,28 @@ coalesces wakeups into one outstanding tick.")
          :accessor terminal-dead
          :type boolean
          :documentation "T once DESTROY has run.  Guards the I/O thread and
-queued render events from touching vterm state after it is freed.")))
+queued render events from touching vterm state after it is freed.")
+   (exit-status :initform nil
+                :accessor terminal-exit-status
+                :documentation "NIL while the child process runs.  Set on the
+editor thread by FINISH-PROCESS once the child has exited: its exit code,
+128+signal when killed by a signal, or -1 when unknown.  Once set, the
+terminal no longer renders, resizes or accepts input, so the final screen
+and the exit notice stay in the buffer.")))
+
+(defun process-exited-p (terminal)
+  "Return T when TERMINAL's child process has exited."
+  (not (null (terminal-exit-status terminal))))
+
+(defun process-directory (terminal)
+  "Return the current directory of TERMINAL's child process (the shell) as a
+directory namestring, or NIL when it is unknown: the process has exited, or
+the OS cannot tell (supported: Linux, macOS, FreeBSD)."
+  (unless (or (terminal-dead terminal)
+              (process-exited-p terminal))
+    (alexandria:when-let ((cwd (ffi::terminal-cwd (terminal-viscus terminal))))
+      (uiop:native-namestring (uiop:ensure-directory-pathname
+                               (uiop:parse-native-namestring cwd))))))
 
 (defun mark-all-rows-dirty (terminal)
   "Mark every row as dirty so the next render redraws the full screen."
@@ -199,6 +255,7 @@ tick has fully completed (including its blocking websocket flush) plus
 TERMINAL-RENDER-THROTTLE-MS.  That self-pacing is what prevents heavy output from
 flooding a slow frontend and stalling the editor."
   (when (and (not (terminal-dead terminal))
+             (not (process-exited-p terminal))
              (not (terminal-copy-mode terminal))
              (any-rows-dirty-p terminal))
     (let ((arm nil))
@@ -211,7 +268,17 @@ flooding a slow frontend and stalling the editor."
                          (setf (terminal-render-timer terminal)
                                (make-timer (lambda () (render-tick terminal))
                                            :name "terminal-render")))))
-          (start-timer timer (variable-value 'terminal-render-throttle-ms :global)))))))
+          (start-timer timer (render-delay-ms terminal)))))))
+
+(defun render-delay-ms (terminal)
+  "Milliseconds to wait before the next render: the rest of the throttle
+interval since the previous render finished, at least 1 (a timer started
+with 0 ms never fires)."
+  (let ((elapsed-ms (floor (* 1000 (- (get-internal-real-time)
+                                      (terminal-last-render-time terminal)))
+                           internal-time-units-per-second)))
+    (max 1 (- (variable-value 'terminal-render-throttle-ms :global)
+              elapsed-ms))))
 
 (defun render-tick (terminal)
   "Editor-thread render, driven by ARM-RENDER-TIMER.  Reads vterm state under
@@ -221,10 +288,12 @@ the render, so a settled terminal stops ticking (no idle flush)."
   (bt2:with-lock-held ((terminal-render-lock terminal))
     (setf (terminal-render-timer-armed terminal) nil))
   (when (and (not (terminal-dead terminal))
+             (not (process-exited-p terminal))
              (not (terminal-copy-mode terminal))
              (any-rows-dirty-p terminal))
     (bt2:with-lock-held ((terminal-io-lock terminal))
-      (render terminal)))
+      (render terminal))
+    (setf (terminal-last-render-time terminal) (get-internal-real-time)))
   ;; Output parsed during the render (or while paused) re-arms the next tick.
   (arm-render-timer terminal))
 
@@ -247,60 +316,161 @@ point is kept for manual/REPL use and tests."
            (type (integer) rows)
            (type (integer) cols))
   (let* ((id (generate-terminal-id))
-         (terminal
-           (make-instance 'terminal
-                          :id id
-                          :viscus (ffi::terminal-new directory id rows cols
-                                                     :program program
-                                                     :argv argv)
-                          :buffer buffer
-                          :rows rows
-                          :cols cols)))
-    (setf (terminal-scrollback-ring terminal)
-          (make-array *scrollback-limit* :initial-element nil))
-    (mark-all-rows-dirty terminal)
-    ;; The I/O thread owns PTY parsing: it blocks in select (process-input-wait),
-    ;; then drains and parses a budgeted slice into vterm under IO-LOCK, then asks
-    ;; the editor thread to render via ARM-RENDER-TIMER.  Because this thread now
-    ;; consumes the PTY itself, select no longer returns immediately on unread
-    ;; data — there is no hot-spin and no need for a throttling sleep.  The editor
-    ;; thread only renders (self-paced via the render timer), so heavy output can't
-    ;; monopolise the command loop or outrun a slow frontend.
-    (setf (terminal-thread terminal)
-          (bt2:make-thread
-           (lambda ()
-             (loop
-               (ffi::terminal-process-input-wait (terminal-viscus terminal))
-               (when (terminal-dead terminal) (return))
-               (bt2:with-lock-held ((terminal-io-lock terminal))
-                 (unless (terminal-dead terminal)
-                   (process-input terminal)))
-               (arm-render-timer terminal)))
-           :name (format nil "Terminal ~D" id)))
-    (add-terminal terminal)
-    terminal))
+         (viscus
+           (let ((viscus (ffi::terminal-new directory id rows cols
+                                            :program program
+                                            :argv argv)))
+             ;; NULL when terminal_new is out of memory, file descriptors,
+             ;; processes or PTYs.  Nothing is made for it then: no
+             ;; instance, no I/O thread.
+             (when (cffi:null-pointer-p viscus)
+               (editor-error "Cannot start the terminal: ~A"
+                             ;; A terminal.so built before terminal_last_error
+                             ;; cannot say why.
+                             (if (cffi:foreign-symbol-pointer "terminal_last_error")
+                                 (cffi:foreign-funcall
+                                  "strerror"
+                                  :int (cffi:foreign-funcall "terminal_last_error" :int)
+                                  :string)
+                                 "unknown error")))
+             viscus))
+         (terminal nil)
+         (registered nil))
+    ;; The shell runs from here on: if what follows fails (no thread can be
+    ;; made), it is killed and the native state freed, as nothing else could.
+    (unwind-protect
+         (progn
+           (setf terminal (make-instance 'terminal
+                                         :id id
+                                         :viscus viscus
+                                         :buffer buffer
+                                         :rows rows
+                                         :cols cols))
+           (setf (terminal-scrollback-ring terminal)
+                 (make-array *scrollback-limit* :initial-element nil))
+           (mark-all-rows-dirty terminal)
+           ;; The I/O thread owns PTY parsing: it blocks in select
+           ;; (process-input-wait), then drains and parses a budgeted slice into
+           ;; vterm under IO-LOCK, then asks the editor thread to render via
+           ;; ARM-RENDER-TIMER.  Because this thread consumes the PTY itself,
+           ;; select no longer returns immediately on unread data — there is no
+           ;; hot-spin and no need for a throttling sleep.  The editor thread only
+           ;; renders (self-paced via the render timer), so heavy output can't
+           ;; monopolise the command loop or outrun a slow frontend.
+           (setf (terminal-thread terminal)
+                 (bt2:make-thread (lambda () (io-loop terminal))
+                                  :name (format nil "Terminal ~D" id)))
+           (add-terminal terminal)
+           (setf registered t)
+           terminal)
+      (unless registered
+        (if terminal
+            (destroy terminal)
+            (ffi::terminal-delete viscus))))))
+
+(defun io-loop (terminal)
+  "Body of the terminal's I/O thread.  Blocks until the PTY has output, parses
+it into vterm under IO-LOCK and schedules a render.  Returns when DESTROY wakes
+it up, or when the PTY hangs up because the child process exited; in the
+latter case the exit is reported to the editor thread via FINISH-PROCESS."
+  (let ((viscus (terminal-viscus terminal)))
+    (loop
+      (let ((readable (= 1 (ffi::terminal-process-input-wait viscus))))
+        (when (terminal-dead terminal)
+          (return))
+        (when readable
+          (bt2:with-lock-held ((terminal-io-lock terminal))
+            (unless (terminal-dead terminal)
+              (process-input terminal))))
+        (arm-render-timer terminal)
+        ;; EOF is recorded by process-input on this thread, so no lock needed.
+        (when (ffi::terminal-eof-p viscus)
+          (let ((status (ffi::terminal-collect-exit-status viscus)))
+            (send-event (lambda () (finish-process terminal status))))
+          (return))
+        (unless readable
+          ;; Woken without DESTROY and without EOF: select failed.  Stop
+          ;; rather than spin; DESTROY still cleans up.
+          (return))))))
+
+(defun exit-notice (status)
+  (format nil "~A  (M-x terminal-restart to start again)"
+          (if (minusp status)
+              "[Process exited]"
+              (format nil "[Process exited with code ~D]" status))))
+
+(defun append-exit-notice (terminal status)
+  "Append the exit notice after the last non-blank line of the final screen."
+  (let* ((buffer (terminal-buffer terminal))
+         (point (buffer-point buffer)))
+    (with-buffer-read-only buffer nil
+      (buffer-end point)
+      (with-point ((start point))
+        (skip-whitespace-backward start)
+        (delete-between-points start point))
+      (unless (start-buffer-p point)
+        (insert-string point (format nil "~2%")))
+      (insert-string point (exit-notice status)))))
+
+(defun finish-process (terminal status)
+  "Editor-thread handler for the child process exiting.  Flushes the final
+output, freezes the terminal (see EXIT-STATUS) and appends an exit notice.
+Scrolling through the scrollback (and copy mode) ends there: the final
+output is what is to be seen, and the windows show it."
+  (unless (or (terminal-dead terminal)
+              (process-exited-p terminal))
+    (let ((scrolled (terminal-scrollback-active terminal)))
+      (setf (terminal-copy-mode terminal) nil)
+      ;; The I/O thread has stopped, so nothing else touches vterm now; the
+      ;; lock is taken only to honour RENDER's contract.  RENDER removes the
+      ;; scrollback.
+      (bt2:with-lock-held ((terminal-io-lock terminal))
+        (render terminal))
+      (setf (terminal-exit-status terminal) status)
+      (append-exit-notice terminal status)
+      (when scrolled
+        (snap-to-bottom terminal))
+      (redraw-display))))
 
 (defmethod destroy ((terminal terminal))
-  ;; Set DEAD while holding IO-LOCK: this waits out any in-flight parse and,
-  ;; because the I/O loop re-checks DEAD under the same lock before parsing,
-  ;; guarantees no parse can start afterward.  So once this returns the I/O
-  ;; thread will never touch vterm again, and it is safe to stop it and free
-  ;; the viscus without re-locking (re-locking here could hang the editor on
-  ;; the lock if destroy-thread killed the I/O thread while it held it).
-  (bt2:with-lock-held ((terminal-io-lock terminal))
-    (setf (terminal-dead terminal) t))
-  (bt2:destroy-thread (terminal-thread terminal))
-  (alexandria:when-let ((timer (terminal-render-timer terminal)))
-    (ignore-errors (stop-timer timer)))
-  (remove-terminal terminal)
-  (ffi::terminal-delete (terminal-viscus terminal)))
+  "Stop TERMINAL's I/O thread, kill its child process if it is still running
+and free the native state.  Safe to call more than once."
+  (unless (terminal-dead terminal)
+    ;; Set DEAD while holding IO-LOCK: this waits out any in-flight parse and,
+    ;; because the I/O loop re-checks DEAD under the same lock before parsing,
+    ;; guarantees no parse can start afterward.
+    (bt2:with-lock-held ((terminal-io-lock terminal))
+      (setf (terminal-dead terminal) t))
+    (unwind-protect
+         (progn
+           ;; Wake the I/O thread out of select and let it return on its own,
+           ;; rather than killing it asynchronously (which could leave IO-LOCK
+           ;; held, or error if the thread had already exited).
+           (ffi::terminal-wake (terminal-viscus terminal))
+           (let ((thread (terminal-thread terminal)))
+             (when (and thread (not (eq thread (bt2:current-thread))))
+               (ignore-errors (bt2:join-thread thread)))))
+      (alexandria:when-let ((timer (terminal-render-timer terminal)))
+        (ignore-errors (stop-timer timer)))
+      (remove-terminal terminal)
+      ;; Hangs up and reaps the child process, then frees vterm.
+      (ffi::terminal-delete (terminal-viscus terminal)))))
 
 (defmethod copy-mode-on ((terminal terminal))
-  (setf (terminal-copy-mode terminal) t))
+  "Freeze rendering and show the scrollback above the screen, so the whole
+history can be browsed and copied with ordinary Lem commands.  Returns the
+number of scrollback lines in the buffer (also when they were shown already)."
+  (prog1 (if (terminal-scrollback-active terminal)
+             (terminal-scrollback-shown terminal)
+             (or (activate-scrollback terminal :catch-up t) 0))
+    (setf (terminal-copy-mode terminal) t)))
 
 (defmethod copy-mode-off ((terminal terminal))
   (setf (terminal-copy-mode terminal) nil)
-  ;; Flush any output that accumulated (and was left unrendered) during copy mode.
+  (deactivate-scrollback terminal)
+  ;; Redraw the whole screen: output that arrived during copy mode was left
+  ;; unrendered, and leaving copy mode may have left the buffer edited.
+  (mark-all-rows-dirty terminal)
   (arm-render-timer terminal))
 
 (defun fix-blue-color (color)
@@ -309,32 +479,36 @@ point is kept for manual/REPL use and tests."
       color))
 
 (declaim (inline pack-attribute-key))
-(defun pack-attribute-key (fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr)
-  "Pack cell style into a single fixnum key (51 bits — fits in a 64-bit fixnum).
+(defun pack-attribute-key (fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr
+                           default-fg default-bg)
+  "Pack cell style into a single fixnum key (53 bits — fits in a 64-bit fixnum).
 Attr flags are masked to one bit each: some vterm builds expose underline as
 a multi-bit style enum, and an unmasked value would collide with the bg-b
 field (bits 3..10) or with neighbouring flags."
-  (logior (ash fg-r 43) (ash fg-g 35) (ash fg-b 27)
+  (logior (ash (logand default-bg 1) 52) (ash (logand default-fg 1) 51)
+          (ash fg-r 43) (ash fg-g 35) (ash fg-b 27)
           (ash bg-r 19) (ash bg-g 11) (ash bg-b 3)
           (ash (logand bold 1) 2)
           (ash (logand underline 1) 1)
           (logand reverse-attr 1)))
 
-(defun default-bg-p (r g b)
-  "Return T if the RGB values represent the terminal default background (black)."
-  (and (zerop r) (zerop g) (zerop b)))
-
-(defun get-attribute-for-cell (terminal fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr)
-  "Return a cached attribute for the given cell style components."
-  (let* ((key (pack-attribute-key fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr))
+(defun get-attribute-for-cell (terminal fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr
+                               default-fg default-bg)
+  "Return a cached attribute for the given cell style components.  Cells in
+the terminal's default colours get no colour, so they follow the editor
+theme (a light theme would otherwise show near-white text on white)."
+  (let* ((key (pack-attribute-key fg-r fg-g fg-b bg-r bg-g bg-b bold underline reverse-attr
+                                  default-fg default-bg))
          (cache (terminal-attribute-cache terminal)))
     (or (gethash key cache)
         (progn
           (when (>= (hash-table-count cache) *attribute-cache-limit*)
             (clrhash cache))
           (setf (gethash key cache)
-                (make-attribute :foreground (fix-blue-color (make-color fg-r fg-g fg-b))
-                                :background (if (default-bg-p bg-r bg-g bg-b)
+                (make-attribute :foreground (if (= 1 default-fg)
+                                                nil
+                                                (fix-blue-color (make-color fg-r fg-g fg-b)))
+                                :background (if (= 1 default-bg)
                                                 nil
                                                 (fix-blue-color (make-color bg-r bg-g bg-b)))
                                 :reverse (= 1 (logand reverse-attr 1))
@@ -348,6 +522,42 @@ field (bits 3..10) or with neighbouring flags."
 (defun cell-data-size ()
   (load-time-value (cffi:foreign-type-size '(:struct ffi::cell-data)) t))
 
+(defun blank-attribute-p (attribute)
+  "Return T when a space drawn with ATTRIBUTE is invisible: no background,
+reverse video or underline."
+  (not (or (attribute-background attribute)
+           (attribute-reverse attribute)
+           (attribute-underline attribute))))
+
+(defun trim-trailing-blanks (chars attrs)
+  "Drop the invisible spaces vterm pads every row with, so lines end where
+their text ends: copying a line does not pick up the padding and C-e stops at
+the text.  Spaces with a visible attribute (e.g. a coloured status bar) are
+kept.  ATTRS are (start end attribute) runs in ascending order.  Returns the
+trimmed CHARS and ATTRS."
+  (let ((end (length chars)))
+    (loop :for (start nil attribute) :in (reverse attrs)
+          :while (blank-attribute-p attribute)
+          :do (loop :while (and (> end start)
+                                (char= #\Space (char chars (1- end))))
+                    :do (decf end))
+          :while (= end start))
+    (if (= end (length chars))
+        (values chars attrs)
+        (values (subseq chars 0 end)
+                (loop :for (start run-end attribute) :in attrs
+                      :when (< start end)
+                        :collect (list start (min run-end end) attribute))))))
+
+(defun move-to-cursor (point row col)
+  "Move POINT to screen ROW and COL, padding the line with spaces when the
+cursor is past the end of its text (see TRIM-TRAILING-BLANKS)."
+  (move-to-line point (1+ row))
+  (move-to-column point col)
+  (let ((missing (- col (point-column point))))
+    (when (plusp missing)
+      (insert-string point (make-string missing :initial-element #\Space)))))
+
 (defun render-row-direct (terminal line-obj cols row buf cell-size)
   "Render a row directly into LINE-OBJ, bypassing the buffer edit API.
 
@@ -359,71 +569,137 @@ terminal mode bypasses standard editing commands in EXECUTE), and
 undo is irrelevant for a live shell.  Do not use this on any buffer
 that may be edited by the user or watched by other features."
   (ffi::terminal-get-row (terminal-viscus terminal) row buf cols)
+  ;; A wide character occupies two cells; vterm leaves the second one as a
+  ;; placeholder.  Skip it, so the line holds one character per glyph and Lem
+  ;; (which measures display width itself) draws it two columns wide.  INDEX
+  ;; is the position in CHARS, which falls behind COL after a wide character.
   (let ((chars (make-string cols))
+        (index 0)
+        (skip-next nil)
         (attrs nil)
         (run-start 0)
         (previous-attribute nil))
     (loop :for col :from 0 :below cols
           :for ptr := (cffi:inc-pointer buf (* col cell-size))
-          :do (let* ((ch (cffi:mem-ref ptr :uint32 +cell-off-ch+))
-                     (fg-r (cffi:mem-ref ptr :uint8 +cell-off-fg-r+))
-                     (fg-g (cffi:mem-ref ptr :uint8 +cell-off-fg-g+))
-                     (fg-b (cffi:mem-ref ptr :uint8 +cell-off-fg-b+))
-                     (bg-r (cffi:mem-ref ptr :uint8 +cell-off-bg-r+))
-                     (bg-g (cffi:mem-ref ptr :uint8 +cell-off-bg-g+))
-                     (bg-b (cffi:mem-ref ptr :uint8 +cell-off-bg-b+))
-                     (bold (cffi:mem-ref ptr :uint8 +cell-off-bold+))
-                     (underline (cffi:mem-ref ptr :uint8 +cell-off-underline+))
-                     (reverse-attr (cffi:mem-ref ptr :uint8 +cell-off-reverse+))
-                     (attribute (get-attribute-for-cell terminal
-                                                       fg-r fg-g fg-b
-                                                       bg-r bg-g bg-b
-                                                       bold underline reverse-attr))
-                     ;; Fast validity check instead of ignore-errors + code-char
-                     (char (if (and (plusp ch) (<= ch #x10FFFF))
-                               (code-char ch)
-                               #\Space)))
-                (unless (eq attribute previous-attribute)
-                  (when previous-attribute
-                    (push (list run-start col previous-attribute) attrs))
-                  (setf run-start col)
-                  (setf previous-attribute attribute))
-                (setf (schar chars col) char))
+          :do (if skip-next
+                  (setf skip-next nil)
+                  (let* ((ch (cffi:mem-ref ptr :uint32 +cell-off-ch+))
+                         (fg-r (cffi:mem-ref ptr :uint8 +cell-off-fg-r+))
+                         (fg-g (cffi:mem-ref ptr :uint8 +cell-off-fg-g+))
+                         (fg-b (cffi:mem-ref ptr :uint8 +cell-off-fg-b+))
+                         (bg-r (cffi:mem-ref ptr :uint8 +cell-off-bg-r+))
+                         (bg-g (cffi:mem-ref ptr :uint8 +cell-off-bg-g+))
+                         (bg-b (cffi:mem-ref ptr :uint8 +cell-off-bg-b+))
+                         (bold (cffi:mem-ref ptr :uint8 +cell-off-bold+))
+                         (underline (cffi:mem-ref ptr :uint8 +cell-off-underline+))
+                         (reverse-attr (cffi:mem-ref ptr :uint8 +cell-off-reverse+))
+                         (width (cffi:mem-ref ptr :uint8 +cell-off-width+))
+                         (default-fg (cffi:mem-ref ptr :uint8 +cell-off-default-fg+))
+                         (default-bg (cffi:mem-ref ptr :uint8 +cell-off-default-bg+))
+                         (attribute (get-attribute-for-cell terminal
+                                                           fg-r fg-g fg-b
+                                                           bg-r bg-g bg-b
+                                                           bold underline reverse-attr
+                                                           default-fg default-bg))
+                         ;; Fast validity check instead of ignore-errors + code-char
+                         (char (if (and (plusp ch) (<= ch #x10FFFF))
+                                   (code-char ch)
+                                   #\Space)))
+                    (unless (eq attribute previous-attribute)
+                      (when previous-attribute
+                        (push (list run-start index previous-attribute) attrs))
+                      (setf run-start index)
+                      (setf previous-attribute attribute))
+                    (setf (schar chars index) char)
+                    (incf index)
+                    (when (and (= width 2) (char/= char #\Space))
+                      (setf skip-next t))))
           :finally (when previous-attribute
-                     (push (list run-start cols previous-attribute) attrs)))
+                     (push (list run-start index previous-attribute) attrs)))
+    (when (< index cols)
+      (setf chars (subseq chars 0 index)))
     ;; Directly set line content — bypass all buffer edit machinery.
     ;; See CONTRACT above; this is permitted because the terminal buffer
     ;; is rendered-into, not edited.
-    (line:set-line-string chars line-obj)
-    (setf (getf (line:line-plist line-obj) :attribute)
-          (nreverse attrs))))
+    (multiple-value-bind (chars attrs)
+        (trim-trailing-blanks chars (nreverse attrs))
+      (line:set-line-string chars line-obj)
+      (setf (getf (line:line-plist line-obj) :attribute) attrs))))
+
+(defun buffer-windows (buffer)
+  "Every window showing BUFFER: in every frame (each frame-multiplexer tab is
+one), side and floating windows too.  The scrollback goes in and out of
+BUFFER for all of them, so all of them keep their place, and a terminal stays
+frozen while any of them reads the history."
+  (remove-duplicates
+   (loop :for frame :in (all-frames)
+         :append (get-buffer-windows buffer :frame frame :include-floating-windows t))))
+
+(defun buffer-view-points (buffer)
+  "Return the buffer point, and the view points and points of every window
+showing BUFFER.  (The place kept for a window that left BUFFER, see
+switch-to-buffer, is right-inserting: the scrollback put in moves it.)"
+  (cons (buffer-point buffer)
+        (loop :for window :in (buffer-windows buffer)
+              :collect (window-view-point window)
+              ;; a window that is not the current one has a point of its own
+              :unless (eq window (current-window))
+                :collect (window-point window))))
+
+(defun point-positions (points)
+  "Return the (line-number . charpos) of each of POINTS."
+  (mapcar (lambda (point)
+            (cons (line-number-at-point point) (point-charpos point)))
+          points))
+
+(defun shift-points-by-lines (points positions delta)
+  "Move each of POINTS to its entry of POSITIONS, DELTA lines further down."
+  (loop :for point :in points
+        :for (line-number . charpos) :in positions
+        :do (move-to-line point (+ line-number delta))
+            (line-start point)
+            (character-offset point (min charpos (length (line-string point))))))
 
 (defun deactivate-scrollback (terminal)
   "Remove scrollback lines from the buffer, keeping only terminal rows.
-Called when transitioning from scrollback-active to normal view."
-  (when (terminal-scrollback-active terminal)
+Called when transitioning from scrollback-active to normal view.  Not once the
+process has exited: the buffer then holds the final text, the exit notice at
+its end, and keeps it."
+  (when (and (terminal-scrollback-active terminal)
+             (not (process-exited-p terminal)))
     (setf (terminal-scrollback-active terminal) nil)
-    (let* ((buffer (terminal-buffer terminal))
-           (point (buffer-point buffer))
-           (rows (terminal-rows terminal))
-           (nlines (buffer-nlines buffer)))
-      (when (> nlines rows)
+    (let ((buffer (terminal-buffer terminal))
+          (shown (terminal-scrollback-shown terminal)))
+      (when (plusp shown)
         (with-buffer-read-only buffer nil
-          ;; Delete all lines before the terminal area
-          (buffer-start point)
-          (with-point ((end point))
-            (move-to-line end (1+ (- nlines rows)))
+          ;; Delete the lines above the screen, counted as they were put in:
+          ;; the rows may have changed since.
+          (with-point ((start (buffer-point buffer))
+                       (end (buffer-point buffer)))
+            (buffer-start start)
+            (move-to-line end (1+ shown))
             (line-start end)
-            (delete-between-points point end)))))))
+            (delete-between-points start end)))))))
 
-(defun activate-scrollback (terminal)
-  "Insert scrollback lines from the ring buffer into the buffer above the terminal rows."
+(defun activate-scrollback (terminal &key catch-up)
+  "Insert scrollback lines from the ring buffer into the buffer above the
+terminal rows, and return how many, or NIL when it puts in none.  With
+CATCH-UP, first render the output not rendered yet, so the rows the buffer
+shows are the ones the ring continues: lines parsed since the last render are
+in the ring and would show twice otherwise.  Not in copy mode, whose screen
+is frozen (the point and region put on it would move): lines that left the
+screen since it froze show twice then."
   (unless (terminal-scrollback-active terminal)
     ;; The scrollback ring is mutated by cb-sb-pushline/popline on the I/O
     ;; thread during parsing; snapshot it into a string under IO-LOCK, then
     ;; insert into the buffer (editor-thread-only) outside the lock.
     (let ((combined
             (bt2:with-lock-held ((terminal-io-lock terminal))
+              (when (and catch-up
+                         (not (terminal-dead terminal))
+                         (not (process-exited-p terminal))
+                         (not (terminal-copy-mode terminal)))
+                (render terminal))
               (let ((count (scrollback-count terminal)))
                 (when (plusp count)
                   (let* ((ring (terminal-scrollback-ring terminal))
@@ -436,17 +712,32 @@ Called when transitioning from scrollback-active to normal view."
                             :do (when line (write-string line s))
                                 (write-char #\newline s)))))))))
       (when combined
-        (setf (terminal-scrollback-active terminal) t)
+        (setf (terminal-scrollback-active terminal) t
+              (terminal-scrollback-shown terminal) (count #\Newline combined))
         (let* ((buffer (terminal-buffer terminal))
-               (point (buffer-point buffer)))
+               (points (buffer-view-points buffer))
+               (positions (point-positions points))
+               (count (count #\Newline combined)))
           (with-buffer-read-only buffer nil
-            (buffer-start point)
-            (insert-string point combined)))))))
+            (with-point ((start (buffer-point buffer)))
+              (buffer-start start)
+              (insert-string start combined)))
+          ;; Keep the cursor and every window on the rows they showed, so the
+          ;; history appears above the screen instead of replacing it.
+          (shift-points-by-lines points positions count)
+          count)))))
+
+(defun frozen-scrollback-lines (terminal)
+  "The number of scrollback lines above the screen in the buffer while copy
+mode freezes TERMINAL with them shown, or NIL."
+  (and (terminal-copy-mode terminal)
+       (terminal-scrollback-active terminal)
+       (terminal-scrollback-shown terminal)))
 
 (defun snap-to-bottom (terminal)
   "Reset view of every window showing the terminal buffer to the terminal area."
   (let ((buffer (terminal-buffer terminal)))
-    (dolist (window (get-buffer-windows buffer))
+    (dolist (window (buffer-windows buffer))
       (buffer-start (window-view-point window)))))
 
 (defmethod render ((terminal terminal))
@@ -502,11 +793,18 @@ Called when transitioning from scrollback-active to normal view."
                          (render-row-direct terminal cur-line cols row buf cell-size)))
              (fill dirty 0)
              (setf (terminal-dirty-any-p terminal) nil)))))
-      ;; Position cursor
-      (move-to-line point (1+ (ffi::terminal-cursor-row viscus)))
-      (move-to-column point (ffi::terminal-cursor-col viscus)))))
+      (move-to-cursor point
+                      (ffi::terminal-cursor-row viscus)
+                      (ffi::terminal-cursor-col viscus)))))
 
 (defmethod adjust-point ((terminal terminal))
+  ;; Not once the process has exited: the buffer holds the final text then,
+  ;; maybe with the scrollback above the screen, and the cursor row is not
+  ;; a line of it.
+  (unless (process-exited-p terminal)
+    (adjust-point-to-cursor terminal)))
+
+(defun adjust-point-to-cursor (terminal)
   (let* ((buffer (terminal-buffer terminal))
          (point (buffer-point buffer))
          (viscus (terminal-viscus terminal)))
@@ -515,8 +813,8 @@ Called when transitioning from scrollback-active to normal view."
         (bt2:with-lock-held ((terminal-io-lock terminal))
           (values (ffi::terminal-cursor-row viscus)
                   (ffi::terminal-cursor-col viscus)))
-      (move-to-line point (1+ row))
-      (move-to-column point col))))
+      (with-buffer-read-only buffer nil
+        (move-to-cursor point row col)))))
 
 (defmethod process-input ((terminal terminal) &optional (budget-ms *write-timeout-ms*))
   "Drain and parse a slice of PTY data (up to BUDGET-MS).
@@ -526,16 +824,42 @@ and its damage callbacks, which race with RENDER and input otherwise."
                                      budget-ms))
 
 (defmethod input-character ((terminal terminal) character &key (mod 0))
-  (bt2:with-lock-held ((terminal-io-lock terminal))
-    (ffi::terminal-input-char (terminal-viscus terminal)
-                              (char-code character)
-                              mod)))
+  (unless (process-exited-p terminal)
+    (bt2:with-lock-held ((terminal-io-lock terminal))
+      (ffi::terminal-input-char (terminal-viscus terminal)
+                                (char-code character)
+                                mod))))
 
 (defmethod input-key ((terminal terminal) key &key (mod 0))
-  (bt2:with-lock-held ((terminal-io-lock terminal))
-    (ffi::terminal-input-key (terminal-viscus terminal)
-                             key
-                             mod)))
+  (unless (process-exited-p terminal)
+    (bt2:with-lock-held ((terminal-io-lock terminal))
+      (ffi::terminal-input-key (terminal-viscus terminal)
+                               key
+                               mod))))
+
+(defun paste-text (string)
+  "Return STRING with line breaks as a terminal sends them when pasting:
+CR, like xterm, rather than LF."
+  (with-output-to-string (out)
+    (loop :with previous := nil
+          :for char :across string
+          :do (cond ((char= char #\Newline)
+                     (unless (eql previous #\Return)
+                       (write-char #\Return out)))
+                    (t (write-char char out)))
+              (setf previous char))))
+
+(defmethod paste-string ((terminal terminal) string)
+  "Send STRING to TERMINAL as pasted text.  When the program has enabled
+bracketed paste mode it receives the text between ESC[200~ and ESC[201~, so a
+shell inserts a multi-line paste instead of running its first line."
+  (unless (process-exited-p terminal)
+    (bt2:with-lock-held ((terminal-io-lock terminal))
+      (let ((viscus (terminal-viscus terminal)))
+        (ffi::terminal-paste-start viscus)
+        (loop :for char :across (paste-text string)
+              :do (ffi::terminal-input-char viscus (char-code char) 0))
+        (ffi::terminal-paste-end viscus)))))
 
 (defun same-size-p (terminal rows cols)
   (and (= (terminal-rows terminal) rows)
@@ -544,7 +868,8 @@ and its damage callbacks, which race with RENDER and input otherwise."
 (defmethod resize ((terminal terminal)
                    &key (rows (alexandria:required-argument :rows))
                         (cols (alexandria:required-argument :cols)))
-  (unless (same-size-p terminal rows cols)
+  (unless (or (process-exited-p terminal)
+              (same-size-p terminal rows cols))
     ;; terminal-resize mutates vterm (vterm-set-size) and triggers damage/
     ;; resize callbacks, so serialize against the I/O thread's parsing.
     (bt2:with-lock-held ((terminal-io-lock terminal))
@@ -583,11 +908,52 @@ and its damage callbacks, which race with RENDER and input otherwise."
       (cffi:with-foreign-slots ((ffi::row) oldpos (:struct ffi::vterm-pos))
         (mark-rows-dirty terminal ffi::row (1+ ffi::row))))))
 
+(defun title-buffer-name (title)
+  (if (string= title "")
+      "*Terminal*"
+      (format nil "*Terminal: ~A*" title)))
+
+(defun apply-title (terminal title)
+  "Editor-thread side of a title change: rename the terminal buffer."
+  (let ((buffer (terminal-buffer terminal)))
+    (when (and (not (terminal-dead terminal))
+               (variable-value 'terminal-title-as-buffer-name :global)
+               (not (deleted-buffer-p buffer)))
+      (let ((name (title-buffer-name title)))
+        (unless (string= name (buffer-name buffer))
+          (buffer-rename buffer (unique-buffer-name name)))))))
+
 (defun cb-settermprop (prop val id)
-  (declare (ignore prop val id)))
+  "Runs on the I/O thread.  Only the window title is used; the C side reports
+it once all of its fragments have arrived."
+  (declare (ignore val))
+  (let ((terminal (find-terminal-by-id id)))
+    (when (and terminal (eq prop :vterm_prop_title))
+      (let ((title (ffi::terminal-title (terminal-viscus terminal))))
+        (send-event (lambda () (apply-title terminal title)))))))
+
+(defun notify-bell (terminal)
+  "Editor-thread side of a bell: tell the user when the terminal is not on
+screen, e.g. a long command that rings the bell when it finishes.  A bell in
+a visible terminal (bash's failed completion, ...) is left silent."
+  (let ((buffer (terminal-buffer terminal)))
+    (when (and (not (terminal-dead terminal))
+               (not (deleted-buffer-p buffer))
+               ;; side and floating windows show it too
+               (null (get-buffer-windows buffer :include-floating-windows t)))
+      (message "Bell in ~A" (buffer-name buffer)))))
 
 (defun cb-bell (id)
-  (declare (ignore id)))
+  "Runs on the I/O thread.  Rate-limited so a program printing BEL in a loop
+cannot flood the editor's event queue."
+  (let ((terminal (find-terminal-by-id id))
+        (now (get-universal-time)))
+    (when (and terminal
+               (or (null (terminal-last-bell-time terminal))
+                   (>= (- now (terminal-last-bell-time terminal))
+                       *bell-interval-seconds*)))
+      (setf (terminal-last-bell-time terminal) now)
+      (send-event (lambda () (notify-bell terminal))))))
 
 (defun cb-resize (rows cols id)
   (let ((terminal (find-terminal-by-id id)))
@@ -643,6 +1009,15 @@ so only the final Lisp string is allocated here."
           (decf (scrollback-count terminal))))
       (mark-all-rows-dirty terminal))))
 
+(defun cb-sb-clear (id)
+  "Discard the stored scrollback (ESC[3J, sent by `clear').  Runs on the I/O
+thread while parsing, under IO-LOCK like the other scrollback callbacks."
+  (let ((terminal (find-terminal-by-id id)))
+    (when terminal
+      (fill (terminal-scrollback-ring terminal) nil)
+      (setf (terminal-scrollback-head terminal) 0
+            (scrollback-count terminal) 0))))
+
 (ffi::set-callbacks :damage 'cb-damage
                     :moverect 'cb-moverect
                     :movecursor 'cb-movecursor
@@ -650,4 +1025,5 @@ so only the final Lisp string is allocated here."
                     :bell 'cb-bell
                     :resize 'cb-resize
                     :sb-pushline 'cb-sb-pushline
-                    :sb-popline 'cb-sb-popline)
+                    :sb-popline 'cb-sb-popline
+                    :sb-clear 'cb-sb-clear)
