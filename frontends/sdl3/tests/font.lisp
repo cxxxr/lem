@@ -340,3 +340,73 @@
                "narrow, ★ is a cell wide")
            (ok (<= (abs (- cell (advance (font:font-cjk-narrow-bold-font font)))) 1)
                "and in bold")))))))
+
+;;; A packaged macOS Lem.app ships only the mono and icon fonts; the CJK,
+;;; emoji and braille fonts come from the system (see
+;;; `lem-sdl3/font::*mac-default-font-files*').
+
+(defun mac-p ()
+  (typep (lem-sdl3/platform:get-platform) 'lem-sdl3/platform:mac))
+
+(defun call-with-mono-only-resources (function)
+  "Call FUNCTION with the resource directory set to a temporary one holding
+only the two NotoSansMono fonts, as in the packaged Lem.app."
+  (let* ((directory (uiop:ensure-directory-pathname
+                     (merge-pathnames (format nil "lem-sdl3-fonts-~D/" (random 1000000))
+                                      (uiop:temporary-directory))))
+         (fonts (merge-pathnames "resources/fonts/" directory)))
+    (ensure-directories-exist fonts)
+    (unwind-protect
+         (progn
+           (dolist (name '("NotoSansMono-Regular.ttf" "NotoSansMono-Bold.ttf"))
+             (uiop:copy-file (asdf:system-relative-pathname
+                              :lem-sdl3 (format nil "resources/fonts/~A" name))
+                             (merge-pathnames name fonts)))
+           (let ((lem-sdl3/resource:*resource-directory* directory))
+             (funcall function)))
+      (uiop:delete-directory-tree directory :validate t))))
+
+(deftest missing-bundled-fonts-fall-back-to-system-fonts
+  (if (not (mac-p))
+      (skip "The system font defaults are macOS-only")
+      (call-with-mono-only-resources
+       (lambda ()
+         (let ((config (font:make-font-config :size 14)))
+           (flet ((system-font-p (reader role)
+                    (member (namestring (funcall reader config))
+                            (rest (assoc role font::*mac-default-font-files*))
+                            :test #'string=)))
+             (ok (system-font-p #'font::font-config-cjk-normal-file :cjk-regular)
+                 "CJK uses a system font")
+             (ok (system-font-p #'font::font-config-cjk-bold-file :cjk-bold)
+                 "bold CJK uses a system font")
+             (ok (system-font-p #'font::font-config-braille-file :braille)
+                 "braille uses Apple Braille")
+             (ok (every #'probe-file
+                        (list (font::font-config-cjk-normal-file config)
+                              (font::font-config-cjk-bold-file config)
+                              (font::font-config-emoji-file config)
+                              (font::font-config-braille-file config)))
+                 "every default file exists"))
+           (with-ttf ()
+             (call-with-font
+              config
+              (lambda (font)
+                (ok (has-glyph-p (font:font-cjk-normal-font font) #\日)
+                    "the system CJK font has 日")))))))))
+
+(deftest missing-bundled-fonts-do-not-signal
+  ;; Without the bundled file or a platform font, the latin font is used,
+  ;; so Lem still starts.
+  (call-with-mono-only-resources
+   (lambda ()
+     (ok (font::default-font-file "resources/fonts/no-such-font.ttc"
+                                  :no-such-role #p"/latin.ttf")))))
+
+(deftest mac-font-list-comes-from-core-text
+  (if (not (mac-p))
+      (skip "Core Text is macOS-only")
+      (let ((files (font:get-font-list (lem-sdl3/platform:get-platform))))
+        (ok (find "Menlo.ttc" files :test (lambda (name file) (search name file)))
+            "Menlo is listed")
+        (ok (every #'probe-file files) "every listed file exists"))))
