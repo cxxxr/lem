@@ -89,6 +89,7 @@
                (:file "scroll-view")
                (:file "grapheme-clusters")
                (:file "proportional-text")
-               (:file "wrapped-lines"))
+               (:file "wrapped-lines")
+               (:file "frame-multiplexer"))
   :perform (test-op (o c)
                     (symbol-call :rove :run c)))
