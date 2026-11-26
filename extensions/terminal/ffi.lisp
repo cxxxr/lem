@@ -129,6 +129,12 @@ in DIRECTORY (via 'cd <directory>; <shell>')."
   (key :int)
   (mod :int))
 
+(cffi:defcfun ("terminal_paste_start" terminal-paste-start) :void
+  (terminal :pointer))
+
+(cffi:defcfun ("terminal_paste_end" terminal-paste-end) :void
+  (terminal :pointer))
+
 (cffi:defcfun ("terminal_process_input_wait" terminal-process-input-wait) :int
   "Block until the PTY is readable (returns 1) or TERMINAL-WAKE was called /
 the PTY already hung up (returns 0)."

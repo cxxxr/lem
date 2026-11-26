@@ -23,6 +23,7 @@
     terminal-resize
     terminal-copy-mode-on
     terminal-send-next-key
+    terminal-yank
     lem-core::<mouse-motion-event>
     lem-core::<mouse-event>
     lem/frame-multiplexer:frame-multiplexer-advice))
@@ -67,6 +68,7 @@ dependency on the TRAMP extension is needed."
 (define-key *terminal-mode-keymap* "C-c" 'terminal-input)
 (define-key *terminal-mode-keymap* "C-z" 'terminal-input)
 (define-key *terminal-mode-keymap* "C-q" 'terminal-send-next-key)
+(define-key *terminal-mode-keymap* "C-y" 'terminal-yank)
 (define-key *terminal-mode-keymap* "C-x [" 'terminal-copy-mode-on)
 (define-key *terminal-copy-mode-keymap* "Escape" 'terminal-copy-mode-off)
 
@@ -277,9 +279,12 @@ in Lem (e.g. C-x for nano, or C-q itself)."
     (resize-terminal terminal window)))
 
 (defmethod lem-core:paste-using-mode ((mode terminal-mode) string)
-  (let ((terminal (get-current-live-terminal)))
-    (loop :for c :across string
-          :do (terminal:input-character terminal c))))
+  (terminal:paste-string (get-current-live-terminal) string))
+
+(define-command terminal-yank () ()
+  "Paste the latest kill (or the clipboard) into the terminal."
+  (alexandria:when-let ((string (yank-from-clipboard-or-killring)))
+    (terminal:paste-string (get-current-live-terminal) string)))
 
 (defun on-window-size-change (window)
   (alexandria:when-let (terminal (buffer-terminal (window-buffer window)))

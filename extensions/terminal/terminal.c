@@ -347,6 +347,18 @@ void terminal_input_key(struct terminal *terminal, VTermKey key,
   vterm_keyboard_key(terminal->vterm, key, mod);
 }
 
+/* Bracket pasted text.  vterm emits ESC[200~ / ESC[201~ only when the
+   program has enabled bracketed paste mode (DECSET 2004). */
+void terminal_paste_start(struct terminal *terminal)
+{
+  vterm_keyboard_start_paste(terminal->vterm);
+}
+
+void terminal_paste_end(struct terminal *terminal)
+{
+  vterm_keyboard_end_paste(terminal->vterm);
+}
+
 /* Block until the PTY has data (or has hung up) or terminal_wake was
    called.  Returns 1 when the PTY is readable, 0 when woken (or the PTY
    already hit EOF, so there is nothing left to wait for). */
