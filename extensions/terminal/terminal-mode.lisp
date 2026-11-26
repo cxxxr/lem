@@ -23,6 +23,7 @@
     terminal-resize
     terminal-copy-mode-on
     terminal-send-next-key
+    terminal-yank
     lem-core::<mouse-motion-event>
     lem-core::<mouse-event>
     lem/frame-multiplexer:frame-multiplexer-advice))
@@ -277,9 +278,17 @@ in Lem (e.g. C-x for nano, or C-q itself)."
     (resize-terminal terminal window)))
 
 (defmethod lem-core:paste-using-mode ((mode terminal-mode) string)
-  (let ((terminal (get-current-live-terminal)))
-    (loop :for c :across string
-          :do (terminal:input-character terminal c))))
+  (terminal:paste-string (get-current-live-terminal) string))
+
+(define-command terminal-yank () ()
+  "Paste the latest kill (or the clipboard) into the terminal."
+  (alexandria:when-let ((string (yank-from-clipboard-or-killring)))
+    (terminal:paste-string (get-current-live-terminal) string)))
+
+;; Whatever key yank is bound to (C-y by default) pastes into the terminal,
+;; instead of trying to insert into the read-only buffer.
+(defmethod execute ((mode terminal-mode) (command yank) argument)
+  (terminal-yank))
 
 (defun on-window-size-change (window)
   (alexandria:when-let (terminal (buffer-terminal (window-buffer window)))

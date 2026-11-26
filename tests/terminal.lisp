@@ -126,3 +126,28 @@ Returns T on EOF, NIL on timeout."
   (with-test-terminal (viscus "printf 'あい-abc'")
     (ok (drain-until-eof viscus))
     (ok (equal "あい-abc" (string-right-trim " " (render-row-text viscus 0))))))
+
+(defun parse-until-row-contains (viscus string &key (row 0) (timeout-seconds 5))
+  "Parse PTY output until screen ROW contains STRING.  Returns T when it does,
+NIL on timeout."
+  (loop :with deadline := (+ (get-internal-real-time)
+                             (* timeout-seconds internal-time-units-per-second))
+        :until (search string (row-string viscus row))
+        :when (> (get-internal-real-time) deadline)
+          :do (return-from parse-until-row-contains nil)
+        :do (ffi::terminal-process-input-timed viscus 10)
+            (sleep 0.01))
+  t)
+
+(deftest paste-is-bracketed-and-uses-cr
+  ;; The program enables bracketed paste, then dumps the 15 bytes it reads:
+  ;; ESC[200~ a CR b ESC[201~
+  (with-test-terminal (viscus "stty raw -echo; printf '\\033[?2004hready'; dd bs=1 count=15 2>/dev/null | od -An -c | tr -d ' \\n'; echo")
+    ;; "ready" comes after stty, so the PTY is raw before anything is pasted.
+    (ok (parse-until-row-contains viscus "ready"))
+    (let ((terminal (make-instance 'lem-terminal/terminal::terminal
+                                   :id *test-terminal-id* :viscus viscus
+                                   :rows 24 :cols 80 :buffer nil)))
+      (lem-terminal/terminal:paste-string terminal (format nil "a~%b")))
+    (ok (drain-until-eof viscus))
+    (ok (search "033[200~a\\rb033[201~" (row-string viscus 0)))))
