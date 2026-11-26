@@ -143,9 +143,31 @@ the same immutable instance for every subsequent message."
                            :collect (lem:window-view window)))
        'vector)))
 
+(defun valid-display-size-p (width height)
+  "Return T when WIDTH and HEIGHT are usable display sizes in character units.
+
+The browser client computes these by dividing the pixel size of its
+editor element by the font metrics.  When the webview window has no
+layout yet (e.g. the webkit renderer failed to start, as happens
+under WSLg without a working GPU surface) the values arrive as
+JSON null and would otherwise be stored as NIL, later crashing
+MAX-WINDOW-HEIGHT with (- NIL 0) and cascading into an error-error
+loop during frame setup.
+
+NOTE: Lem with webview likely won't work under WSL due to webkitgtk
+limitations."
+  (and (typep width  '(integer 1))
+       (typep height '(integer 1))))
+
 (defmethod resize-display ((jsonrpc jsonrpc) width height)
-  (setf (jsonrpc-display-width jsonrpc) width
-        (jsonrpc-display-height jsonrpc) height))
+  "Apply the client-reported display size (character units) when valid.
+Return non-NIL when the size was applied, NIL when rejected (e.g. JSON
+null from a client that has no layout yet), so callers can avoid
+propagating a rejected size to other clients."
+  (when (valid-display-size-p width height)
+    (setf (jsonrpc-display-width jsonrpc) width
+          (jsonrpc-display-height jsonrpc) height)
+    t))
 
 (defmethod notify ((jsonrpc jsonrpc) method argument)
   (jsonrpc:broadcast (jsonrpc-server jsonrpc) method argument))
@@ -195,8 +217,11 @@ the same immutable instance for every subsequent message."
       (when size
         (let ((width (gethash "width" size))
               (height (gethash "height" size)))
-          (resize-display (lem:implementation) width height)
-          (notify (lem:implementation) "resize-display" size)))
+          ;; Only rebroadcast a size the server actually applied, so a
+          ;; client reporting a bogus size (JSON null with no layout)
+          ;; doesn't resize every other client to null x null.
+          (when (resize-display (lem:implementation) width height)
+            (notify (lem:implementation) "resize-display" size))))
       (lem:send-event (lambda ()
                         (lem-core::adjust-all-window-size)
                         (lem:redraw-display :force t))))))
@@ -572,7 +597,7 @@ the same immutable instance for every subsequent message."
         (yason:encode-object-element "cursor" (bool (lem-core:cursor-attribute-p attribute)))))))
 
 
-
+
 ;;; drawing
 (defgeneric object-width (drawing-object))
 

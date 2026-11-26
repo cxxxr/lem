@@ -337,6 +337,7 @@
    :split-window-horizontally
    :split-window-sensibly
    :get-next-window
+   :get-previous-window
    :delete-window
    :get-buffer-windows
    :other-buffer
@@ -761,7 +762,7 @@
    :*inits-directory-name*
    :load-site-init)
   ;; system.lisp
-  (:export 
+  (:export
    :exec-path)
   ;; command-line-arguments
   (:export

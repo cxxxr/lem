@@ -1,11 +1,12 @@
 (in-package :lem/buffer/internal)
 
-(defvar *case-fold-search* nil)
+(defvar *case-fold-search* t
+  "Non-nil means case-insensitive matching in search-forward/search-backward.")
 
 (defun char-compare-function ()
   (if *case-fold-search*
-      #'char=
-      #'char-equal))
+      #'char-equal
+      #'char=))
 
 (defun search-step (point first-search search step move-matched endp)
   (with-point ((start-point point))

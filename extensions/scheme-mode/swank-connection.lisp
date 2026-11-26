@@ -398,7 +398,10 @@
              (let ((buffer (make-buffer (buffer-name temp-buffer))))
                (with-buffer-read-only buffer nil
                  (erase-buffer buffer)
-                 (insert-buffer (buffer-point buffer) temp-buffer))
+                 (insert-buffer (buffer-point buffer) temp-buffer)
+                 ;; insert-buffer no longer appends a trailing newline; keep
+                 ;; one so the typeout popup ends on a fresh line.
+                 (insert-character (buffer-point buffer) #\newline))
                (with-pop-up-typeout-window (stream buffer)
                  (declare (ignore stream)))))))
 

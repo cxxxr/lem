@@ -120,6 +120,10 @@
     (insert-character output-point #\newline)
     (with-point ((first-point output-point))
       (insert-buffer output-point (session-input-buffer session))
+      ;; insert-buffer no longer appends a trailing newline; keep one so
+      ;; execute-input output starts on its own line and the prompt region
+      ;; covers the line break.
+      (insert-character output-point #\newline)
       (with-point ((first-line-end-point first-point))
         (line-end first-line-end-point)
         (put-text-property first-point first-line-end-point 'prompt-first-p t))

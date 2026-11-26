@@ -230,7 +230,9 @@
              (kill-region start p)))
           (t
            (or (line-offset (current-point) arg)
-               (buffer-end (current-point)))
+               (if (minusp arg)
+                   (buffer-start (current-point))
+                   (buffer-end (current-point))))
            (let ((end (current-point)))
              (kill-region start end))))))))
 
