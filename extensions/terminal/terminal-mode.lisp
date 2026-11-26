@@ -4,6 +4,11 @@
   (:local-nicknames (:terminal :lem-terminal/terminal)))
 (in-package :lem-terminal/terminal-mode)
 
+(defvar *running-bypass-command* nil
+  "Bound to T while a bypass command runs.  Commands it runs in turn (the
+command chosen in M-x, for instance) are what the user asked for, not
+keystrokes for the shell, so they run as in any other buffer.")
+
 ;; FIXME: Think of a better name
 (defvar *bypass-commands*
   '(next-window
@@ -121,7 +126,9 @@ user's shell started in a directory."
 \(e.g. /sudo::/etc or /ssh:user@host:/var/log), the terminal is opened
 on the remote host with appropriate privileges.
 
-With a universal argument, always create a new terminal buffer."
+With a universal argument, always create a new terminal buffer.  Run from a
+terminal buffer it also creates a new one, since C-u goes to the shell there
+and returning to the same terminal would do nothing."
   (let* ((buf (current-buffer))
          ;; Check both buffer-filename (file buffers) and buffer-directory
          ;; (directory-mode buffers) for a potential TRAMP path.
@@ -133,7 +140,8 @@ With a universal argument, always create a new terminal buffer."
         ((and program argv)
          (create-terminal-with-command program argv))
         ;; Local: reuse or create
-        (always-create-terminal-p
+        ((or always-create-terminal-p
+             (buffer-terminal buf))
          (create-terminal (buffer-directory buf)))
         (t
          (alexandria:if-let (buffer (terminal:find-terminal-buffer))
@@ -260,8 +268,11 @@ find-file start where the shell is."
 (defmethod execute ((mode terminal-mode) command argment)
   (sync-buffer-directory (current-buffer))
   (cond
-    ((member command *bypass-commands* :test #'typep)
+    (*running-bypass-command*
      (call-next-method))
+    ((member command *bypass-commands* :test #'typep)
+     (let ((*running-bypass-command* t))
+       (call-next-method)))
     ((typep command 'scroll-up)
      ;; Populate buffer with scrollback lines so Lem can scroll up
      (alexandria:when-let ((terminal (get-current-terminal)))
