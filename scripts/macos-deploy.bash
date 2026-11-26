@@ -37,8 +37,9 @@ fi
 
 # The SDL3 frontend loads these Homebrew libraries at build time, and deploy
 # bundles the ones it loads; check up front so a missing one is named.
+# (SDL3_image is built below; cmake builds it.)
 if [[ "$FRONTEND" == sdl3 ]]; then
-  for formula in sdl3 sdl3_ttf sdl3_image freetype harfbuzz; do
+  for formula in sdl3 sdl3_ttf freetype harfbuzz cmake; do
     if ! brew --prefix --installed "$formula" >/dev/null 2>&1; then
       echo "error: Homebrew formula '$formula' is not installed (brew install $formula)." >&2
       exit 1
@@ -48,6 +49,52 @@ fi
 
 # ===== 1) ビルド =====
 qlot install
+
+# SDL3: build SDL3_image with macOS's ImageIO instead of using Homebrew's.
+# Homebrew's links libavif, libjxl, libtiff, libwebp and their codecs
+# (about 10 MB, libaom alone 4 MB). With ImageIO, macOS decodes PNG, JPEG,
+# GIF, BMP and TIFF and the library links only SDL3 and system frameworks.
+# WebP, AVIF and JPEG XL are left out: SDL3_image has no ImageIO path for
+# them. The build is cached in bin/.macos-deps, keyed by version.
+SDL3_IMAGE_VERSION="3.4.8"
+SDL3_IMAGE_SHA256="e8223b424bc7541cf84ffff5cf7e4f24ec3711c60462cb1bd6dc1d7bd7f25477"
+SDL3_IMAGE_LIB_DIR="$parent_dir/bin/.macos-deps/sdl3_image-$SDL3_IMAGE_VERSION"
+
+build_sdl3_image() {
+  local work="$parent_dir/bin/.macos-deps/sdl3_image-$SDL3_IMAGE_VERSION-work"
+  local tarball="$work/SDL3_image-$SDL3_IMAGE_VERSION.tar.gz"
+  rm -rf "$work" "$SDL3_IMAGE_LIB_DIR"
+  mkdir -p "$work"
+  curl -fsSL -o "$tarball" \
+    "https://github.com/libsdl-org/SDL_image/releases/download/release-$SDL3_IMAGE_VERSION/SDL3_image-$SDL3_IMAGE_VERSION.tar.gz"
+  if [[ "$(shasum -a 256 "$tarball" | awk '{print $1}')" != "$SDL3_IMAGE_SHA256" ]]; then
+    echo "error: SDL3_image $SDL3_IMAGE_VERSION download does not match its SHA-256." >&2
+    exit 1
+  fi
+  tar -xzf "$tarball" -C "$work"
+  cmake -S "$work/SDL3_image-$SDL3_IMAGE_VERSION" -B "$work/build" \
+    -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+    -DSDL3_DIR="$(brew --prefix sdl3)/lib/cmake/SDL3" \
+    -DSDLIMAGE_VENDORED=OFF -DSDLIMAGE_SAMPLES=OFF -DSDLIMAGE_TESTS=OFF -DSDLIMAGE_INSTALL=OFF \
+    -DSDLIMAGE_BACKEND_IMAGEIO=ON -DSDLIMAGE_BACKEND_STB=ON -DSDLIMAGE_PNG_LIBPNG=OFF \
+    -DSDLIMAGE_AVIF=OFF -DSDLIMAGE_JXL=OFF -DSDLIMAGE_WEBP=OFF -DSDLIMAGE_TIF=ON \
+    -DCMAKE_INSTALL_NAME_DIR=@loader_path -DCMAKE_BUILD_WITH_INSTALL_NAME_DIR=ON
+  cmake --build "$work/build" -j "$(sysctl -n hw.ncpu)"
+  mkdir -p "$SDL3_IMAGE_LIB_DIR"
+  # The real file under the name CFFI asks for (:default "libSDL3_image").
+  cp "$(realpath "$work/build/libSDL3_image.dylib")" "$SDL3_IMAGE_LIB_DIR/libSDL3_image.dylib"
+  rm -rf "$work"
+}
+
+LISP_LIBRARY_SETUP=()
+if [[ "$FRONTEND" == sdl3 ]]; then
+  if [[ ! -f "$SDL3_IMAGE_LIB_DIR/libSDL3_image.dylib" ]]; then
+    build_sdl3_image
+  fi
+  # Searched before the system paths, so cl-sdl3 loads (and deploy bundles)
+  # this SDL3_image rather than Homebrew's.
+  LISP_LIBRARY_SETUP=(--eval "(push #p\"$SDL3_IMAGE_LIB_DIR/\" cffi:*foreign-library-directories*)")
+fi
 
 # Build the lem-terminal native helper with libvterm statically linked so the
 # bundled terminal.so has no external libvterm dependency. It must exist before
@@ -60,7 +107,33 @@ LEM_TERMINAL_STATIC=1 make terminal-lib
 # either frontend) left, so its files would end up in this one.
 rm -rf bin/Lem.app "bin/$DEPLOY_NAME.app" bin/__lem_renaming__.app
 
-qlot exec sbcl --eval "(ql:quickload :$SYSTEM)" --eval "(asdf:make :$SYSTEM)"
+# cl+ssl loads OpenSSL through Homebrew's unversioned opt/openssl, which may
+# point at OpenSSL 4. cl+ssl needs OpenSSL 3, and deploy bundles whatever
+# was loaded, so a build on such a machine shipped both versions. Point
+# cl+ssl at openssl@3 before it loads; step 2 bundles exactly these files.
+BUILD_OPENSSL_LIB="$(brew --prefix openssl@3)/lib"
+for lib in libssl.3.dylib libcrypto.3.dylib; do
+  if [[ ! -e "$BUILD_OPENSSL_LIB/$lib" ]]; then
+    echo "error: $BUILD_OPENSSL_LIB/$lib not found (brew install openssl@3)." >&2
+    exit 1
+  fi
+done
+
+qlot exec sbcl --eval '(ql:quickload :cl+ssl/config)' \
+  --eval "(cl+ssl/config:define-libcrypto-path \"$BUILD_OPENSSL_LIB/libcrypto.3.dylib\")" \
+  --eval "(cl+ssl/config:define-libssl-path \"$BUILD_OPENSSL_LIB/libssl.3.dylib\")" \
+  ${LISP_LIBRARY_SETUP[@]+"${LISP_LIBRARY_SETUP[@]}"} \
+  --eval "(ql:quickload :$SYSTEM)" --eval "(asdf:make :$SYSTEM)"
+
+# Confirm deploy bundled the SDL3_image built above, not Homebrew's.
+if [[ "$FRONTEND" == sdl3 ]]; then
+  for lib in "bin/$DEPLOY_NAME.app/Contents/MacOS/"libSDL3_image*.dylib; do
+    if ! otool -L "$lib" | grep -q ImageIO.framework; then
+      echo "error: $lib is not the ImageIO build of SDL3_image." >&2
+      exit 1
+    fi
+  done
+fi
 
 # Confirm the deploy library actually bundled terminal.so into the app; a
 # missing helper means the terminal extension would silently disable itself.
@@ -292,6 +365,15 @@ while IFS= read -r lib; do
   fi
 done < <(bundled_libraries)
 if (( remaining )); then
+  exit 1
+fi
+
+# Only OpenSSL 3 belongs in the app (see the build step).
+other_openssl="$(find "$LIBDIR" -maxdepth 1 \( -name 'libssl.*.dylib' -o -name 'libcrypto.*.dylib' \) \
+                   ! -name 'libssl.3.dylib' ! -name 'libcrypto.3.dylib')"
+if [[ -n "$other_openssl" ]]; then
+  echo "error: OpenSSL other than 3 was bundled:" >&2
+  echo "$other_openssl" | sed 's/^/  /' >&2
   exit 1
 fi
 
