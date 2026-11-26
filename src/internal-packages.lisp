@@ -215,7 +215,6 @@
    :frame-window-tree
    :frame-floating-windows
    :frame-header-windows
-   :remove-header-window
    :frame-floating-prompt-window
    :frame-prompt-window
    :frame-message-window

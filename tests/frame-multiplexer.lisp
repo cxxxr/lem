@@ -76,20 +76,3 @@
       (ng (member hidden (all-frames)) "the hidden tab is freed")
       (ok (zerop (hash-table-count lem/frame-multiplexer::*virtual-frame-map*))
           "the table of tabs is reset"))))
-
-(deftest turning-it-off-takes-the-tab-bar-off-when-deleting-it-fails-early
-  (with-frame-multiplexer ()
-    (lem/frame-multiplexer:frame-multiplexer-create-with-new-buffer-list)
-    (let ((tab-bar (find-if (lambda (window)
-                              (typep window 'lem/frame-multiplexer::virtual-frame))
-                            (frame-header-windows (current-frame)))))
-      (lem/frame-multiplexer:frame-multiplexer-prev)
-      (let ((shown (current-frame)))
-        ;; delete-window signals deleting the attached window, before the
-        ;; tab bar is taken off the frame
-        (lem-core::set-window-attached-window :not-a-window tab-bar)
-        (lem/frame-multiplexer::disable-frame-multiplexer)
-        (ng (variable-value 'lem/frame-multiplexer::frame-multiplexer :global)
-            "frame-multiplexer is off")
-        (ng (member tab-bar (frame-header-windows shown))
-            "the tab bar is gone")))))

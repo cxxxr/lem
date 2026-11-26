@@ -179,12 +179,8 @@ redraw-display関数でキャッシュを捨てて画面全体を再描画しま
     (alexandria:nconcf header-windows (list window))))
 
 (defun remove-header-window (frame window)
-  "Remove WINDOW from the header windows of FRAME and mark them modified.
-Deleting a header window does this; call it to take one off FRAME when
-deleting it failed."
   (with-slots (header-windows) frame
-    (setf header-windows (remove window header-windows)))
-  (notify-header-window-modified frame))
+    (setf header-windows (remove window header-windows))))
 
 
 (defun topleft-window-y (frame)
