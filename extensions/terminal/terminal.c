@@ -229,7 +229,9 @@ struct terminal *terminal_new(int id,
      overwrote the shell output and leaked into the scrollback. */
   vterm_screen_enable_altscreen(screen, 1);
 
-  struct terminal *terminal = malloc(sizeof(struct terminal));
+  /* Zeroed: the cursor is read at the first render, which can come before
+     libvterm reports where the cursor is. */
+  struct terminal *terminal = calloc(1, sizeof(struct terminal));
   if (terminal == NULL) {
     return NULL;
   }
