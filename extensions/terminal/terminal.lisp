@@ -307,13 +307,22 @@ point is kept for manual/REPL use and tests."
            (type (integer) rows)
            (type (integer) cols))
   (let* ((id (generate-terminal-id))
+         (viscus
+           (let ((viscus (ffi:terminal-new directory id rows cols
+                                            (callback-pointers)
+                                            :program program
+                                            :argv argv)))
+             ;; NULL when terminal_new is out of memory, file descriptors,
+             ;; processes or PTYs.  Nothing is made for it then: no
+             ;; instance, no I/O thread.
+             (when (cffi:null-pointer-p viscus)
+               (editor-error "Cannot start the terminal: ~A"
+                             (ffi:terminal-last-error-message)))
+             viscus))
          (terminal
            (make-instance 'terminal
                           :id id
-                          :viscus (ffi:terminal-new directory id rows cols
-                                                     (callback-pointers)
-                                                     :program program
-                                                     :argv argv)
+                          :viscus viscus
                           :buffer buffer
                           :rows rows
                           :cols cols)))

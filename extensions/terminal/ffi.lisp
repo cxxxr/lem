@@ -6,7 +6,8 @@
            :vterm-pos
            :vterm-prop
            :terminal-title
-           :terminal-cwd))
+           :terminal-cwd
+           :terminal-last-error-message))
 (in-package :lem-terminal/ffi)
 
 (pushnew (asdf:system-relative-pathname
@@ -144,6 +145,16 @@ the PTY already hung up (returns 0)."
 (cffi:defcfun ("terminal_wake" terminal-wake) :void
   "Interrupt a blocked TERMINAL-PROCESS-INPUT-WAIT from another thread."
   (terminal :pointer))
+
+(cffi:defcfun ("terminal_last_error" %terminal-last-error) :int)
+
+(defun terminal-last-error-message ()
+  "Return why the last TERMINAL-NEW of this thread returned a null pointer, as
+the message of its errno.  A terminal.so built before terminal_last_error
+cannot say why: \"unknown error\" then."
+  (if (cffi:foreign-symbol-pointer "terminal_last_error")
+      (cffi:foreign-funcall "strerror" :int (%terminal-last-error) :string)
+      "unknown error"))
 
 (cffi:defcfun ("terminal_title" %terminal-title) :pointer
   (terminal :pointer))
