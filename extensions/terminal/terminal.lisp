@@ -9,6 +9,7 @@
            :copy-mode-on
            :copy-mode-off
            :process-exited-p
+           :process-directory
            :clear
            :render
            :update
@@ -185,6 +186,18 @@ and the exit notice stay in the buffer.")))
 (defun process-exited-p (terminal)
   "Return T when TERMINAL's child process has exited."
   (not (null (terminal-exit-status terminal))))
+
+(defun process-directory (terminal)
+  "Return the current directory of TERMINAL's child process (the shell) as a
+directory namestring, or NIL when it is unknown: the process has exited, or
+the OS has no /proc/PID/cwd (only Linux is supported for now)."
+  (unless (or (terminal-dead terminal)
+              (process-exited-p terminal))
+    (let ((pid (ffi::terminal-pid (terminal-viscus terminal))))
+      (when (plusp pid)
+        (alexandria:when-let ((directory (ignore-errors
+                                          (truename (format nil "/proc/~D/cwd/" pid)))))
+          (namestring directory))))))
 
 (defun mark-all-rows-dirty (terminal)
   "Mark every row as dirty so the next render redraws the full screen."
