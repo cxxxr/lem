@@ -242,10 +242,18 @@
 (defmacro with-idle-timers (() &body body)
   `(call-with-idle-timers (lambda () ,@body)))
 
+(defun timer-started-p (timer)
+  "Return true if the idle TIMER counts from a time. One started while the
+editor was not idle counts from the next with-idle-timers: such as one that
+a command started while the editor was busy, seen by a read loop before that
+loop enters with-idle-timers again."
+  (not (null (timer-last-time timer))))
+
 (defun update-idle-timers ()
   (let* ((tick-time (get-microsecond-time *timer-manager*))
          (updating-timers (remove-if-not (lambda (timer)
-                                           (< (timer-next-time timer) tick-time))
+                                           (and (timer-started-p timer)
+                                                (< (timer-next-time timer) tick-time)))
                                          *idle-timer-list*))
          (deleting-timers (remove-if #'timer-repeat-p
                                      updating-timers))
@@ -264,7 +272,7 @@
     (not (null updating-timers))))
 
 (defun get-next-timer-timing-ms ()
-  (when-let (timers *idle-timer-list*)
+  (when-let (timers (remove-if-not #'timer-started-p *idle-timer-list*))
     (- (loop :for timer :in timers
              :minimize (timer-next-time timer))
        (get-microsecond-time *timer-manager*))))
