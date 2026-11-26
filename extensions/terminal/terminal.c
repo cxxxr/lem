@@ -2,9 +2,14 @@
 // osx   gcc terminal.c -I/opt/homebrew/include -L/opt/homebrew/lib -lvterm -o terminal.so -shared -fPIC
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <string.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <vterm.h>
@@ -36,7 +41,13 @@ static run_shell_result run_shell(int rows, int cols, const char *program, char*
   assert(pid >= 0);
   if (pid == 0) {
     setenv("TERM", "xterm-256color", 1);
-    assert(execvp(program, argv) >= 0);
+    execvp(program, argv);
+    /* Only reached when exec failed.  Report it on the PTY so the user sees
+       why the terminal died, and exit with the shell convention for
+       "command not found" instead of aborting (which would dump core). */
+    fprintf(stderr, "lem-terminal: cannot execute %s: %s\n",
+            program, strerror(errno));
+    _exit(127);
   }
 
   run_shell_result result = { pid, fd };
@@ -50,6 +61,17 @@ struct terminal {
   VTermScreen *screen;
   int fd;
   int pid;
+
+  /* Process lifecycle.
+     wake_pipe: written by terminal_wake to interrupt the I/O thread's
+     select so it can exit without being killed asynchronously.
+     eof: set once the PTY reports hangup (the child side is closed).
+     reaped/exit_status: set once waitpid has collected the child. */
+  int wake_pipe[2];
+  int eof;
+  int reaped;
+  int exit_status;
+
   VTermScreenCell lastCell;
   VTermPos cursorPos;
   int cursorVisible;
@@ -182,6 +204,18 @@ struct terminal *terminal_new(int id,
   terminal->vterm = vterm;
   terminal->fd = result.fd;
   terminal->pid = result.pid;
+  terminal->eof = 0;
+  terminal->reaped = 0;
+  terminal->exit_status = -1;
+  if (pipe(terminal->wake_pipe) != 0) {
+    terminal->wake_pipe[0] = -1;
+    terminal->wake_pipe[1] = -1;
+  } else {
+    fcntl(terminal->wake_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(terminal->wake_pipe[1], F_SETFD, FD_CLOEXEC);
+  }
+  /* Keep the PTY master out of shells spawned by later terminals. */
+  fcntl(terminal->fd, F_SETFD, FD_CLOEXEC);
 
   terminal->cb_damage = cb_damage;
   terminal->cb_moverect = cb_moverect;
@@ -201,8 +235,98 @@ struct terminal *terminal_new(int id,
   return terminal;
 }
 
+static int decode_wait_status(int status)
+{
+  if (WIFEXITED(status))
+    return WEXITSTATUS(status);
+  if (WIFSIGNALED(status))
+    return 128 + WTERMSIG(status);
+  return -1;
+}
+
+/* Try to collect the child without blocking.  Returns 1 once the child has
+   been reaped (now or earlier), 0 while it is still running. */
+static int try_reap(struct terminal *terminal)
+{
+  if (terminal->reaped)
+    return 1;
+  int status;
+  pid_t r = waitpid(terminal->pid, &status, WNOHANG);
+  if (r == terminal->pid) {
+    terminal->reaped = 1;
+    terminal->exit_status = decode_wait_status(status);
+    return 1;
+  }
+  if (r < 0 && errno == ECHILD) {
+    /* Someone else (e.g. SIGCHLD set to SIG_IGN) already collected it. */
+    terminal->reaped = 1;
+    terminal->exit_status = -1;
+    return 1;
+  }
+  return 0;
+}
+
+/* Reap the child, waiting up to MAX_MS for it to exit. */
+static int reap_with_timeout(struct terminal *terminal, int max_ms)
+{
+  for (int waited = 0; ; waited += 10) {
+    if (try_reap(terminal))
+      return 1;
+    if (waited >= max_ms)
+      return 0;
+    usleep(10 * 1000);
+  }
+}
+
+/* Returns 1 once the PTY has hung up (the child closed its side). */
+int terminal_eof_p(struct terminal *terminal)
+{
+  return terminal->eof;
+}
+
+/* Called by the I/O thread after it observed EOF.  Gives the child a short
+   grace period to finish exiting, then returns its exit status: the exit
+   code, 128+signal when killed by a signal, or -1 when unknown (not yet
+   exited, or reaped elsewhere). */
+int terminal_collect_exit_status(struct terminal *terminal)
+{
+  reap_with_timeout(terminal, 500);
+  return terminal->reaped ? terminal->exit_status : -1;
+}
+
+/* Interrupt a blocked terminal_process_input_wait so the I/O thread can
+   observe that the terminal is being destroyed. */
+void terminal_wake(struct terminal *terminal)
+{
+  if (terminal->wake_pipe[1] >= 0) {
+    char c = 0;
+    ssize_t r;
+    do {
+      r = write(terminal->wake_pipe[1], &c, 1);
+    } while (r < 0 && errno == EINTR);
+  }
+}
+
+/* Free the terminal and make sure the child process does not outlive it.
+   The I/O thread must already have stopped using TERMINAL. */
 void terminal_delete(struct terminal *terminal)
 {
+  if (!try_reap(terminal)) {
+    /* forkpty made the child a session leader, so -pid addresses its whole
+       process group (the shell and its foreground job). */
+    kill(-terminal->pid, SIGHUP);
+    kill(terminal->pid, SIGHUP);
+  }
+  close(terminal->fd);
+  if (!reap_with_timeout(terminal, 200)) {
+    kill(-terminal->pid, SIGKILL);
+    kill(terminal->pid, SIGKILL);
+    waitpid(terminal->pid, NULL, 0);
+  }
+  if (terminal->wake_pipe[0] >= 0)
+    close(terminal->wake_pipe[0]);
+  if (terminal->wake_pipe[1] >= 0)
+    close(terminal->wake_pipe[1]);
   vterm_free(terminal->vterm);
   free(terminal);
 }
@@ -219,13 +343,32 @@ void terminal_input_key(struct terminal *terminal, VTermKey key,
   vterm_keyboard_key(terminal->vterm, key, mod);
 }
 
-void terminal_process_input_wait(struct terminal *terminal)
+/* Block until the PTY has data (or has hung up) or terminal_wake was
+   called.  Returns 1 when the PTY is readable, 0 when woken (or the PTY
+   already hit EOF, so there is nothing left to wait for). */
+int terminal_process_input_wait(struct terminal *terminal)
 {
   int fd = terminal->fd;
-  fd_set readfds;
-  FD_ZERO(&readfds);
-  FD_SET(fd, &readfds);
-  select(fd + 1, &readfds, NULL, NULL, NULL);
+  int wfd = terminal->wake_pipe[0];
+  if (terminal->eof)
+    return 0;
+  for (;;) {
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(fd, &readfds);
+    if (wfd >= 0)
+      FD_SET(wfd, &readfds);
+    int nfds = (wfd > fd ? wfd : fd) + 1;
+    int r = select(nfds, &readfds, NULL, NULL, NULL);
+    if (r < 0) {
+      if (errno == EINTR)
+        continue;
+      return 0;
+    }
+    if (wfd >= 0 && FD_ISSET(wfd, &readfds))
+      return 0;
+    return 1;
+  }
 }
 
 /* Time-budgeted PTY drain (xterm.js WriteBuffer pattern).
@@ -250,8 +393,15 @@ size_t terminal_process_input_timed(struct terminal *terminal, int max_ms)
     if (select(fd + 1, &readfds, NULL, NULL, &timeout) <= 0)
       break;
     ssize_t size = read(fd, buf, sizeof(buf));
-    if (size <= 0)
+    if (size < 0 && (errno == EINTR || errno == EAGAIN))
       break;
+    if (size <= 0) {
+      /* Linux reports a hung-up PTY master as EIO, BSD/macOS as EOF (0).
+         Either way the child side is gone; remember it so the I/O thread
+         stops instead of spinning on a permanently-readable fd. */
+      terminal->eof = 1;
+      break;
+    }
     vterm_input_write(terminal->vterm, buf, size);
     total += size;
 

@@ -8,6 +8,7 @@
            :destroy
            :copy-mode-on
            :copy-mode-off
+           :process-exited-p
            :clear
            :render
            :update
@@ -98,7 +99,10 @@ render hot path, and the cache refills quickly for the active palette.")
   (alexandria:deletef *terminals* terminal))
 
 (defun find-terminal-buffer ()
-  (alexandria:when-let (terminal (first *terminals*))
+  "Return the buffer of the most recently created terminal whose process is
+still running, or NIL.  Exited terminals are skipped so that `terminal'
+opens a fresh shell instead of reusing a dead one."
+  (alexandria:when-let (terminal (find-if-not #'process-exited-p *terminals*))
     (terminal-buffer terminal)))
 
 ;;; terminal
@@ -167,7 +171,18 @@ coalesces wakeups into one outstanding tick.")
          :accessor terminal-dead
          :type boolean
          :documentation "T once DESTROY has run.  Guards the I/O thread and
-queued render events from touching vterm state after it is freed.")))
+queued render events from touching vterm state after it is freed.")
+   (exit-status :initform nil
+                :accessor terminal-exit-status
+                :documentation "NIL while the child process runs.  Set on the
+editor thread by FINISH-PROCESS once the child has exited: its exit code,
+128+signal when killed by a signal, or -1 when unknown.  Once set, the
+terminal no longer renders, resizes or accepts input, so the final screen
+and the exit notice stay in the buffer.")))
+
+(defun process-exited-p (terminal)
+  "Return T when TERMINAL's child process has exited."
+  (not (null (terminal-exit-status terminal))))
 
 (defun mark-all-rows-dirty (terminal)
   "Mark every row as dirty so the next render redraws the full screen."
@@ -199,6 +214,7 @@ tick has fully completed (including its blocking websocket flush) plus
 TERMINAL-RENDER-THROTTLE-MS.  That self-pacing is what prevents heavy output from
 flooding a slow frontend and stalling the editor."
   (when (and (not (terminal-dead terminal))
+             (not (process-exited-p terminal))
              (not (terminal-copy-mode terminal))
              (any-rows-dirty-p terminal))
     (let ((arm nil))
@@ -221,6 +237,7 @@ the render, so a settled terminal stops ticking (no idle flush)."
   (bt2:with-lock-held ((terminal-render-lock terminal))
     (setf (terminal-render-timer-armed terminal) nil))
   (when (and (not (terminal-dead terminal))
+             (not (process-exited-p terminal))
              (not (terminal-copy-mode terminal))
              (any-rows-dirty-p terminal))
     (bt2:with-lock-held ((terminal-io-lock terminal))
@@ -267,33 +284,90 @@ point is kept for manual/REPL use and tests."
     ;; thread only renders (self-paced via the render timer), so heavy output can't
     ;; monopolise the command loop or outrun a slow frontend.
     (setf (terminal-thread terminal)
-          (bt2:make-thread
-           (lambda ()
-             (loop
-               (ffi::terminal-process-input-wait (terminal-viscus terminal))
-               (when (terminal-dead terminal) (return))
-               (bt2:with-lock-held ((terminal-io-lock terminal))
-                 (unless (terminal-dead terminal)
-                   (process-input terminal)))
-               (arm-render-timer terminal)))
-           :name (format nil "Terminal ~D" id)))
+          (bt2:make-thread (lambda () (io-loop terminal))
+                           :name (format nil "Terminal ~D" id)))
     (add-terminal terminal)
     terminal))
 
+(defun io-loop (terminal)
+  "Body of the terminal's I/O thread.  Blocks until the PTY has output, parses
+it into vterm under IO-LOCK and schedules a render.  Returns when DESTROY wakes
+it up, or when the PTY hangs up because the child process exited; in the
+latter case the exit is reported to the editor thread via FINISH-PROCESS."
+  (let ((viscus (terminal-viscus terminal)))
+    (loop
+      (let ((readable (= 1 (ffi::terminal-process-input-wait viscus))))
+        (when (terminal-dead terminal)
+          (return))
+        (when readable
+          (bt2:with-lock-held ((terminal-io-lock terminal))
+            (unless (terminal-dead terminal)
+              (process-input terminal))))
+        (arm-render-timer terminal)
+        ;; EOF is recorded by process-input on this thread, so no lock needed.
+        (when (ffi::terminal-eof-p viscus)
+          (let ((status (ffi::terminal-collect-exit-status viscus)))
+            (send-event (lambda () (finish-process terminal status))))
+          (return))
+        (unless readable
+          ;; Woken without DESTROY and without EOF: select failed.  Stop
+          ;; rather than spin; DESTROY still cleans up.
+          (return))))))
+
+(defun exit-notice (status)
+  (if (minusp status)
+      "[Process exited]"
+      (format nil "[Process exited with code ~D]" status)))
+
+(defun append-exit-notice (terminal status)
+  "Append the exit notice after the last non-blank line of the final screen."
+  (let* ((buffer (terminal-buffer terminal))
+         (point (buffer-point buffer)))
+    (with-buffer-read-only buffer nil
+      (buffer-end point)
+      (with-point ((start point))
+        (skip-whitespace-backward start)
+        (delete-between-points start point))
+      (unless (start-buffer-p point)
+        (insert-string point (format nil "~2%")))
+      (insert-string point (exit-notice status)))))
+
+(defun finish-process (terminal status)
+  "Editor-thread handler for the child process exiting.  Flushes the final
+output, freezes the terminal (see EXIT-STATUS) and appends an exit notice."
+  (unless (or (terminal-dead terminal)
+              (process-exited-p terminal))
+    ;; The I/O thread has stopped, so nothing else touches vterm now; the lock
+    ;; is taken only to honour RENDER's contract.
+    (bt2:with-lock-held ((terminal-io-lock terminal))
+      (render terminal))
+    (setf (terminal-exit-status terminal) status)
+    (append-exit-notice terminal status)
+    (redraw-display)))
+
 (defmethod destroy ((terminal terminal))
-  ;; Set DEAD while holding IO-LOCK: this waits out any in-flight parse and,
-  ;; because the I/O loop re-checks DEAD under the same lock before parsing,
-  ;; guarantees no parse can start afterward.  So once this returns the I/O
-  ;; thread will never touch vterm again, and it is safe to stop it and free
-  ;; the viscus without re-locking (re-locking here could hang the editor on
-  ;; the lock if destroy-thread killed the I/O thread while it held it).
-  (bt2:with-lock-held ((terminal-io-lock terminal))
-    (setf (terminal-dead terminal) t))
-  (bt2:destroy-thread (terminal-thread terminal))
-  (alexandria:when-let ((timer (terminal-render-timer terminal)))
-    (ignore-errors (stop-timer timer)))
-  (remove-terminal terminal)
-  (ffi::terminal-delete (terminal-viscus terminal)))
+  "Stop TERMINAL's I/O thread, kill its child process if it is still running
+and free the native state.  Safe to call more than once."
+  (unless (terminal-dead terminal)
+    ;; Set DEAD while holding IO-LOCK: this waits out any in-flight parse and,
+    ;; because the I/O loop re-checks DEAD under the same lock before parsing,
+    ;; guarantees no parse can start afterward.
+    (bt2:with-lock-held ((terminal-io-lock terminal))
+      (setf (terminal-dead terminal) t))
+    (unwind-protect
+         (progn
+           ;; Wake the I/O thread out of select and let it return on its own,
+           ;; rather than killing it asynchronously (which could leave IO-LOCK
+           ;; held, or error if the thread had already exited).
+           (ffi::terminal-wake (terminal-viscus terminal))
+           (let ((thread (terminal-thread terminal)))
+             (when (and thread (not (eq thread (bt2:current-thread))))
+               (ignore-errors (bt2:join-thread thread)))))
+      (alexandria:when-let ((timer (terminal-render-timer terminal)))
+        (ignore-errors (stop-timer timer)))
+      (remove-terminal terminal)
+      ;; Hangs up and reaps the child process, then frees vterm.
+      (ffi::terminal-delete (terminal-viscus terminal)))))
 
 (defmethod copy-mode-on ((terminal terminal))
   (setf (terminal-copy-mode terminal) t))
@@ -526,16 +600,18 @@ and its damage callbacks, which race with RENDER and input otherwise."
                                      budget-ms))
 
 (defmethod input-character ((terminal terminal) character &key (mod 0))
-  (bt2:with-lock-held ((terminal-io-lock terminal))
-    (ffi::terminal-input-char (terminal-viscus terminal)
-                              (char-code character)
-                              mod)))
+  (unless (process-exited-p terminal)
+    (bt2:with-lock-held ((terminal-io-lock terminal))
+      (ffi::terminal-input-char (terminal-viscus terminal)
+                                (char-code character)
+                                mod))))
 
 (defmethod input-key ((terminal terminal) key &key (mod 0))
-  (bt2:with-lock-held ((terminal-io-lock terminal))
-    (ffi::terminal-input-key (terminal-viscus terminal)
-                             key
-                             mod)))
+  (unless (process-exited-p terminal)
+    (bt2:with-lock-held ((terminal-io-lock terminal))
+      (ffi::terminal-input-key (terminal-viscus terminal)
+                               key
+                               mod))))
 
 (defun same-size-p (terminal rows cols)
   (and (= (terminal-rows terminal) rows)
@@ -544,7 +620,8 @@ and its damage callbacks, which race with RENDER and input otherwise."
 (defmethod resize ((terminal terminal)
                    &key (rows (alexandria:required-argument :rows))
                         (cols (alexandria:required-argument :cols)))
-  (unless (same-size-p terminal rows cols)
+  (unless (or (process-exited-p terminal)
+              (same-size-p terminal rows cols))
     ;; terminal-resize mutates vterm (vterm-set-size) and triggers damage/
     ;; resize callbacks, so serialize against the I/O thread's parsing.
     (bt2:with-lock-held ((terminal-io-lock terminal))
