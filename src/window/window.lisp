@@ -152,6 +152,8 @@ is drawn in a proportional font and wrapped by its pixel width.")
   (need-to-redraw window))
 
 (defun window-height-without-modeline (window)
+  "Return the number of rows of WINDOW that show text: its height without the
+modeline, when it has one."
   (- (window-height window)
      (if (window-use-modeline-p window) 1 0)))
 
