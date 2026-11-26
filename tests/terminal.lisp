@@ -151,3 +151,15 @@ NIL on timeout."
       (lem-terminal/terminal:paste-string terminal (format nil "a~%b")))
     (ok (drain-until-eof viscus))
     (ok (search "033[200~a\\rb033[201~" (row-string viscus 0)))))
+
+(deftest process-directory-follows-the-shell
+  (with-test-terminal (viscus "cd /tmp && exec sleep 100")
+    (let ((terminal (make-instance 'lem-terminal/terminal::terminal
+                                   :id *test-terminal-id* :viscus viscus
+                                   :rows 24 :cols 80 :buffer nil)))
+      (if (uiop:directory-exists-p "/proc/self/")
+          (ok (loop :repeat 100
+                    :thereis (equal (namestring (truename "/tmp/"))
+                                    (lem-terminal/terminal:process-directory terminal))
+                    :do (sleep 0.02)))
+          (skip "/proc is not available")))))

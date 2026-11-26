@@ -282,6 +282,12 @@ static int reap_with_timeout(struct terminal *terminal, int max_ms)
   }
 }
 
+/* Returns the process id of the child (the shell). */
+int terminal_pid(struct terminal *terminal)
+{
+  return terminal->pid;
+}
+
 /* Returns 1 once the PTY has hung up (the child closed its side). */
 int terminal_eof_p(struct terminal *terminal)
 {
