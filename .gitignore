@@ -46,6 +46,7 @@ logs/
 # macOS deploy artifacts
 resources/lem.icns
 lem-macos.zip
+lem-sdl3-macos.zip
 lem-macos/
 
 # lem-terminal native helper, built from terminal.c via `make terminal-lib`
