@@ -18,9 +18,12 @@
 #ifdef __APPLE__
   #include <util.h>
   #include <sys/ioctl.h>
+  #include <libproc.h>
 #elif __FreeBSD__
   #include <sys/types.h>
   #include <sys/ioctl.h>
+  #include <sys/sysctl.h>
+  #include <sys/user.h>
   #include <termios.h>
   #include <libutil.h>
 #else
@@ -316,6 +319,46 @@ static int reap_with_timeout(struct terminal *terminal, int max_ms)
 const char *terminal_title(struct terminal *terminal)
 {
   return terminal->title;
+}
+
+/* Copy the child's current working directory into BUF (NUL-terminated) and
+   return its length, or -1 when it cannot be determined. */
+int terminal_cwd(struct terminal *terminal, char *buf, int size)
+{
+  if (size <= 0 || terminal->pid <= 0)
+    return -1;
+#if defined(__APPLE__)
+  struct proc_vnodepathinfo info;
+  if (proc_pidinfo(terminal->pid, PROC_PIDVNODEPATHINFO, 0,
+                   &info, sizeof(info)) != (int)sizeof(info))
+    return -1;
+  int len = (int)strlen(info.pvi_cdir.vip_path);
+  if (len >= size)
+    return -1;
+  memcpy(buf, info.pvi_cdir.vip_path, len + 1);
+  return len;
+#elif defined(__FreeBSD__)
+  int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_CWD, terminal->pid };
+  struct kinfo_file info;
+  size_t info_size = sizeof(info);
+  memset(&info, 0, sizeof(info));
+  info.kf_structsize = sizeof(info);
+  if (sysctl(mib, 4, &info, &info_size, NULL, 0) != 0)
+    return -1;
+  int len = (int)strlen(info.kf_path);
+  if (len == 0 || len >= size)
+    return -1;
+  memcpy(buf, info.kf_path, len + 1);
+  return len;
+#else
+  char link[64];
+  snprintf(link, sizeof(link), "/proc/%d/cwd", (int)terminal->pid);
+  ssize_t len = readlink(link, buf, size - 1);
+  if (len < 0)
+    return -1;
+  buf[len] = '\0';
+  return (int)len;
+#endif
 }
 
 /* Returns the process id of the child (the shell). */
