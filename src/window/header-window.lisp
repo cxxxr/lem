@@ -20,8 +20,7 @@ Subclasses can specialize this to request more vertical space.")
   (call-next-method))
 
 (defmethod %delete-window ((window header-window))
-  (remove-header-window (current-frame) window)
-  (notify-header-window-modified (current-frame)))
+  (remove-header-window (current-frame) window))
 
 (defun header-window-p (window)
   (typep window 'header-window))

@@ -346,6 +346,14 @@ all-frames.  An error freeing one is logged and the others are freed still."
       (call-logging-errors "freeing a frame of a hidden tab"
                            (lambda () (teardown-frame frame))))))
 
+(defun delete-tab-bar (virtual-frame)
+  "Delete VIRTUAL-FRAME, the tab bar.  An error doing so is logged, and the
+tab bar is taken off the frame shown still: its buttons switch to the hidden
+tabs, which are torn down."
+  (call-logging-errors "deleting the tab bar"
+                       (lambda () (delete-window virtual-frame)))
+  (remove-header-window (virtual-frame-current virtual-frame) virtual-frame))
+
 (defun frame-multiplexer-off ()
   ;; Turning it off (at exit too) must not stop halfway: errors freeing the
   ;; hidden tabs or deleting the tab bar are logged, so that the variable's
@@ -355,8 +363,7 @@ all-frames.  An error freeing one is logged and the others are freed still."
       (unwind-protect
            (dolist (virtual-frame virtual-frames)
              (free-hidden-frames virtual-frame)
-             (call-logging-errors "deleting the tab bar"
-                                  (lambda () (delete-window virtual-frame))))
+             (delete-tab-bar virtual-frame))
         (clrhash *virtual-frame-map*)))))
 
 (defclass frame-multiplexer-advice () ())
