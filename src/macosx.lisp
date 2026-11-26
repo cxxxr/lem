@@ -41,3 +41,29 @@
         :when (and symbol (find symbol (cffi:list-foreign-libraries)
                                 :key #'cffi:foreign-library-name))
         :do (setf (deploy:library-dont-deploy-p (deploy:ensure-library symbol)) t)))
+
+;; Make the deployed app's library reloading at boot one linkage-table pass
+;; instead of one per library.
+;;
+;; Deploy reopens each bundled library with LOAD-SHARED-OBJECT, and after
+;; each one SBCL looks up again, with dlsym, every foreign symbol not yet
+;; resolved: about 1,900 with the SDL3 frontend, several hundred of which
+;; resolve only once their library is open.  With 17 libraries that took
+;; about 8 seconds before the window appeared.  Opening a library does not
+;; use the linkage table, so while deploy's reload hook runs (priority
+;; most-positive-fixnum - 10) the update is skipped, and right after it one
+;; full update resolves everything.  This uses SBCL's own exported
+;; SB-SYS:UPDATE-ALIEN-LINKAGE-TABLE and SB-INT:ENCAPSULATE (as TRACE does).
+#+sbcl
+(progn
+  (deploy:define-hook (:boot defer-linkage-table-updates (- most-positive-fixnum 5)) ()
+    (sb-ext:without-package-locks
+      (sb-int:encapsulate 'sb-sys:update-alien-linkage-table 'lem-deferred
+                          (lambda (function &rest arguments)
+                            (declare (ignore function arguments))
+                            nil))))
+
+  (deploy:define-hook (:boot update-linkage-table-once (- most-positive-fixnum 15)) ()
+    (sb-ext:without-package-locks
+      (sb-int:unencapsulate 'sb-sys:update-alien-linkage-table 'lem-deferred))
+    (sb-sys:update-alien-linkage-table t)))
