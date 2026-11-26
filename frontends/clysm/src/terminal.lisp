@@ -85,6 +85,10 @@ sends (here they are encoded as xterm does, by KEY-SEQUENCE)."))
 (defparameter *scrollback-limit* 5000
   "The number of lines that xterm.js keeps above the screen.")
 
+(defparameter *kill-grace-ms* 200
+  "How long a process killed with SIGHUP has to exit before it gets SIGKILL,
+as Lem's native terminal waits (terminal_delete).")
+
 (defparameter *bell-interval-seconds* 1
   "Minimum seconds between two bell notices from the same terminal.")
 
@@ -133,6 +137,10 @@ three 32-bit words, little-endian: content, foreground, background.")
    (output-subscription :initform nil
                         :accessor terminal-output-subscription
                         :documentation "The handler of the pty's output (its dispose() removes it).")
+   (exited :initform nil
+           :accessor terminal-exited
+           :documentation "T once node-pty reported the process's exit (also
+after it was killed).")
    (closed :initform nil
            :accessor terminal-closed
            :documentation "T once the process has ended (and its output is
@@ -282,6 +290,7 @@ told of the changes of the screen, the exit, the title and the bell."
                      nil)))
     (js:call pty "onExit"
              (lambda (event)
+               (setf (terminal-exited terminal) t)
                (unless (terminal-closed terminal)
                  (let ((status (exit-status-code event)))
                    ;; after what was written before it is parsed
@@ -308,11 +317,52 @@ told of the changes of the screen, the exit, the title and the bell."
   (unless (terminal-closed terminal)
     (js:call (terminal-pty terminal) "write" string)))
 
+(defun process-start-time (pid)
+  "When process PID started (field starttime of /proc/PID/stat), or NIL
+where it cannot be read: no /proc (macOS), no such process, or one that has
+exited.  With its pid,
+it tells a process from a later one that got the same pid."
+  (ignore-errors
+   (let* ((stat (js:call (node-module "node:fs") "readFileSync"
+                         (format nil "/proc/~D/stat" pid) "utf8"))
+          ;; "pid (comm) state ppid ... starttime ...": comm may hold spaces
+          (fields (uiop:split-string
+                   (string-trim " " (subseq stat (1+ (position #\) stat :from-end t)))))))
+     ;; a zombie has exited: it counts as gone
+     (unless (equal (first fields) "Z")
+       (nth 19 fields)))))
+
+(defun signal-shell (pid signal)
+  "Send SIGNAL to the process PID and its process group: node-pty makes it
+a session leader, so the group is the shell and its foreground job, and
+the kernel signals a group as one (a process forked meanwhile gets it too)."
+  (let ((process (js:global "process")))
+    (ignore-errors (js:call process "kill" (- pid) signal))
+    (ignore-errors (js:call process "kill" pid signal))))
+
 (defun kill-process (terminal)
-  "Kill TERMINAL's process if it still runs, and free its screen."
+  "Kill TERMINAL's process if it still runs, and free its screen.  As Lem's
+native terminal does (terminal_delete), the process and its group get
+SIGHUP, and SIGKILL *KILL-GRACE-MS* later if the process has not exited (a
+program can ignore SIGHUP).  Jobs that outlive the shell (nohup, disown)
+are left running, as a terminal closed does."
   (unless (terminal-closed terminal)
     (setf (terminal-closed terminal) t)
-    (ignore-errors (js:call (terminal-pty terminal) "kill")))
+    ;; once node-pty has seen the exit, the pid may be another process's
+    (unless (terminal-exited terminal)
+      (let* ((pid (js:get (terminal-pty terminal) "pid"))
+             (start (process-start-time pid)))
+        (signal-shell pid "SIGHUP")
+        (js:funcall (js:global "setTimeout")
+                    (lambda ()
+                      ;; still the same process: node-pty reaps a process at
+                      ;; once but reports its exit up to 200 ms later
+                      (when (if start
+                                (equal start (process-start-time pid))
+                                (not (terminal-exited terminal)))
+                        (signal-shell pid "SIGKILL"))
+                      nil)
+                    *kill-grace-ms*))))
   (alexandria:when-let ((subscription (terminal-output-subscription terminal)))
     ;; the screen is freed even when this fails
     (ignore-errors (js:call subscription "dispose")))
