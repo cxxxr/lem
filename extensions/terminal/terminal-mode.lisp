@@ -22,6 +22,7 @@
     execute-command
     terminal-resize
     terminal-copy-mode-on
+    terminal-send-next-key
     lem-core::<mouse-motion-event>
     lem-core::<mouse-event>
     lem/frame-multiplexer:frame-multiplexer-advice))
@@ -61,6 +62,11 @@ dependency on the TRAMP extension is needed."
 (define-key *terminal-mode-keymap* 'self-insert 'terminal-input)
 (define-key *terminal-mode-keymap* 'undefined-key 'terminal-input)
 (define-key *terminal-mode-keymap* "C-h" 'terminal-input)
+;; C-c and C-z are prefix keys in Lem, which would delay SIGINT until the next
+;; key and swallow job control; a shell needs them immediately.
+(define-key *terminal-mode-keymap* "C-c" 'terminal-input)
+(define-key *terminal-mode-keymap* "C-z" 'terminal-input)
+(define-key *terminal-mode-keymap* "C-q" 'terminal-send-next-key)
 (define-key *terminal-mode-keymap* "C-x [" 'terminal-copy-mode-on)
 (define-key *terminal-copy-mode-keymap* "Escape" 'terminal-copy-mode-off)
 
@@ -141,44 +147,56 @@ process has already exited (so there is nothing to send input to)."
       (editor-error "Terminal process has exited"))
     terminal))
 
+(defun send-key (terminal key)
+  "Send the Lem KEY to TERMINAL, translating it to the matching vterm key or
+character with its modifiers."
+  (let ((mod (logior (if (key-ctrl key) ffi::vterm_mod_ctrl 0)
+                     (if (key-meta key) ffi::vterm_mod_alt 0)
+                     (if (key-shift key) ffi::vterm_mod_shift 0))))
+    (alexandria:switch ((key-sym key) :test #'equal)
+      ("Return" (terminal:input-key terminal ffi::vterm_key_enter :mod mod))
+      ("Backspace" (terminal:input-key terminal ffi::vterm_key_backspace :mod mod))
+      ("Tab" (terminal:input-key terminal ffi::vterm_key_tab :mod mod))
+      ("Escape" (terminal:input-key terminal ffi::vterm_key_escape :mod mod))
+      ("Up" (terminal:input-key terminal ffi::vterm_key_up :mod mod))
+      ("Down" (terminal:input-key terminal ffi::vterm_key_down :mod mod))
+      ("Left" (terminal:input-key terminal ffi::vterm_key_left :mod mod))
+      ("Right" (terminal:input-key terminal ffi::vterm_key_right :mod mod))
+      ("Insert" (terminal:input-key terminal ffi::vterm_key_ins :mod mod))
+      ("Delete" (terminal:input-key terminal ffi::vterm_key_del :mod mod))
+      ("Home" (terminal:input-key terminal ffi::vterm_key_home :mod mod))
+      ("End" (terminal:input-key terminal ffi::vterm_key_end :mod mod))
+      ("PageUp" (terminal:input-key terminal ffi::vterm_key_pageup :mod mod))
+      ("PageDown" (terminal:input-key terminal ffi::vterm_key_pagedown :mod mod))
+      ("F1" (terminal:input-key terminal (+ 1 ffi::vterm_key_function_0) :mod mod))
+      ("F2" (terminal:input-key terminal (+ 2 ffi::vterm_key_function_0) :mod mod))
+      ("F3" (terminal:input-key terminal (+ 3 ffi::vterm_key_function_0) :mod mod))
+      ("F4" (terminal:input-key terminal (+ 4 ffi::vterm_key_function_0) :mod mod))
+      ("F5" (terminal:input-key terminal (+ 5 ffi::vterm_key_function_0) :mod mod))
+      ("F6" (terminal:input-key terminal (+ 6 ffi::vterm_key_function_0) :mod mod))
+      ("F7" (terminal:input-key terminal (+ 7 ffi::vterm_key_function_0) :mod mod))
+      ("F8" (terminal:input-key terminal (+ 8 ffi::vterm_key_function_0) :mod mod))
+      ("F9" (terminal:input-key terminal (+ 9 ffi::vterm_key_function_0) :mod mod))
+      ("F10" (terminal:input-key terminal (+ 10 ffi::vterm_key_function_0) :mod mod))
+      ("F11" (terminal:input-key terminal (+ 11 ffi::vterm_key_function_0) :mod mod))
+      ("F12" (terminal:input-key terminal (+ 12 ffi::vterm_key_function_0) :mod mod))
+      ("Space" (terminal:input-character terminal #\Space :mod mod))
+      (otherwise
+       (when (= 1 (length (key-sym key)))
+         (terminal:input-character terminal (char (key-sym key) 0) :mod mod))))))
+
 (define-command terminal-input () ()
+  "Send the keys that invoked this command to the terminal."
+  (let ((terminal (get-current-live-terminal)))
+    (dolist (key (last-read-key-sequence))
+      (send-key terminal key))))
+
+(define-command terminal-send-next-key () ()
+  "Read the next key and send it to the terminal as is, even when it is bound
+in Lem (e.g. C-x for nano, or C-q itself)."
   (let ((terminal (get-current-live-terminal))
-        (keyseq (last-read-key-sequence)))
-    (dolist (key keyseq)
-      (let ((mod (logior (if (key-ctrl key) ffi::vterm_mod_ctrl 0)
-                         (if (key-meta key) ffi::vterm_mod_alt 0)
-                         (if (key-shift key) ffi::vterm_mod_shift 0))))
-        (alexandria:switch ((key-sym key) :test #'equal)
-          ("Return" (terminal:input-key terminal ffi::vterm_key_enter :mod mod))
-          ("Backspace" (terminal:input-key terminal ffi::vterm_key_backspace :mod mod))
-          ("Tab" (terminal:input-key terminal ffi::vterm_key_tab :mod mod))
-          ("Escape" (terminal:input-key terminal ffi::vterm_key_escape :mod mod))
-          ("Up" (terminal:input-key terminal ffi::vterm_key_up :mod mod))
-          ("Down" (terminal:input-key terminal ffi::vterm_key_down :mod mod))
-          ("Left" (terminal:input-key terminal ffi::vterm_key_left :mod mod))
-          ("Right" (terminal:input-key terminal ffi::vterm_key_right :mod mod))
-          ("Insert" (terminal:input-key terminal ffi::vterm_key_ins :mod mod))
-          ("Delete" (terminal:input-key terminal ffi::vterm_key_del :mod mod))
-          ("Home" (terminal:input-key terminal ffi::vterm_key_home :mod mod))
-          ("End" (terminal:input-key terminal ffi::vterm_key_end :mod mod))
-          ("PageUp" (terminal:input-key terminal ffi::vterm_key_pageup :mod mod))
-          ("PageDown" (terminal:input-key terminal ffi::vterm_key_pagedown :mod mod))
-          ("F1" (terminal:input-key terminal (+ 1 ffi::vterm_key_function_0) :mod mod))
-          ("F2" (terminal:input-key terminal (+ 2 ffi::vterm_key_function_0) :mod mod))
-          ("F3" (terminal:input-key terminal (+ 3 ffi::vterm_key_function_0) :mod mod))
-          ("F4" (terminal:input-key terminal (+ 4 ffi::vterm_key_function_0) :mod mod))
-          ("F5" (terminal:input-key terminal (+ 5 ffi::vterm_key_function_0) :mod mod))
-          ("F6" (terminal:input-key terminal (+ 6 ffi::vterm_key_function_0) :mod mod))
-          ("F7" (terminal:input-key terminal (+ 7 ffi::vterm_key_function_0) :mod mod))
-          ("F8" (terminal:input-key terminal (+ 8 ffi::vterm_key_function_0) :mod mod))
-          ("F9" (terminal:input-key terminal (+ 9 ffi::vterm_key_function_0) :mod mod))
-          ("F10" (terminal:input-key terminal (+ 10 ffi::vterm_key_function_0) :mod mod))
-          ("F11" (terminal:input-key terminal (+ 11 ffi::vterm_key_function_0) :mod mod))
-          ("F12" (terminal:input-key terminal (+ 12 ffi::vterm_key_function_0) :mod mod))
-          ("Space" (terminal:input-character terminal #\Space :mod mod))
-          (otherwise
-           (when (= 1 (length (key-sym key)))
-             (terminal:input-character terminal (char (key-sym key) 0) :mod mod))))))))
+        (key (read-key)))
+    (send-key terminal key)))
 
 (defmacro define-terminal-key-command (name keyspec vterm-key)
   (alexandria:with-unique-names (terminal)
