@@ -1,7 +1,8 @@
 (defpackage :lem-sdl3/font
   (:use :cl)
   (:import-from :lem-sdl3/resource
-                :get-resource-pathname)
+                :get-resource-pathname
+                :find-resource-pathname)
   (:export :default-font-size
            :font
            :font-latin-normal-font
@@ -62,6 +63,18 @@ skipped.")
   '("/System/Library/Fonts/Apple Color Emoji.ttc")
   "The platform's own colour emoji fonts, tried in order before the bundled
 Noto Color Emoji, so emoji look as they do in other applications.")
+
+(defparameter *mac-default-font-files*
+  '((:cjk-regular "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc"
+                  "/System/Library/Fonts/Hiragino Sans GB.ttc"
+                  "/System/Library/Fonts/STHeiti Light.ttc")
+    (:cjk-bold "/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc"
+               "/System/Library/Fonts/Hiragino Sans GB.ttc"
+               "/System/Library/Fonts/STHeiti Medium.ttc")
+    (:braille "/System/Library/Fonts/Apple Braille.ttf"))
+  "macOS fonts used for each role when the bundled font for it is missing, as
+in the packaged Lem.app, which leaves the large Noto CJK fonts out.  Each
+role lists candidates in order; the first that exists is used.")
 
 (defparameter *max-fontconfig-fallback-fonts* 12
   "How many of fontconfig's sorted monospace matches to use as fallbacks.")
@@ -129,11 +142,33 @@ Noto Color Emoji, so emoji look as they do in other applications.")
   (setf (lem:config :sdl2-font-size)
         (round (/ (font-config-size font-config) ratio))))
 
-(defun default-emoji-font-file ()
+(defgeneric platform-default-font-file (platform role)
+  (:documentation "Return an existing font file PLATFORM provides for ROLE
+(:cjk-regular, :cjk-bold or :braille), or NIL.  Used when the bundled font
+for ROLE is missing."))
+
+(defmethod platform-default-font-file (platform role)
+  (declare (ignore platform role))
+  nil)
+
+(defmethod platform-default-font-file ((platform lem-sdl3/platform:mac) role)
+  (find-if #'probe-file (rest (assoc role *mac-default-font-files*))))
+
+(defun default-font-file (bundled-file role latin-file)
+  "Return the font file to use for ROLE when none is configured: BUNDLED-FILE
+if it exists, else the platform's font for ROLE, else LATIN-FILE, so that a
+build without the bundled font still starts."
+  (or (find-resource-pathname bundled-file)
+      (platform-default-font-file (lem-sdl3/platform:get-platform) role)
+      latin-file))
+
+(defun default-emoji-font-file (latin-file)
   "Return the colour emoji font to use when none is configured: the first of
-*system-emoji-font-files* that exists, or the bundled Noto Color Emoji."
+*system-emoji-font-files* that exists, else the bundled Noto Color Emoji,
+else LATIN-FILE (no colour emoji, but Lem still starts)."
   (or (find-if #'probe-file *system-emoji-font-files*)
-      (get-resource-pathname "resources/fonts/NotoColorEmoji.ttf")))
+      (find-resource-pathname "resources/fonts/NotoColorEmoji.ttf")
+      latin-file))
 
 (defun make-font-config (&key (size (lem:config :sdl2-font-size *default-font-size*))
                               latin-normal-file
@@ -144,30 +179,38 @@ Noto Color Emoji, so emoji look as they do in other applications.")
                               brail-file
                               (fallback-files (lem:config :sdl3-fallback-fonts))
                               (system-fallback (lem:config :sdl3-system-fallback-fonts t)))
-  (%make-font-config
-   :size (lem:config :font-size (or size *default-font-size*))
-   :latin-normal-file (or latin-normal-file
-                          (lem:config
-                           :sdl2-normal-font
-                           (get-resource-pathname "resources/fonts/NotoSansMono-Regular.ttf")))
-   :latin-bold-file (or latin-bold-file
-                        (lem:config
-                         :sdl2-bold-font
-                         (get-resource-pathname "resources/fonts/NotoSansMono-Bold.ttf")))
-   :cjk-normal-file (or cjk-normal-file
-                        (lem:config
-                         :sdl2-cjk-normal-font
-                         (get-resource-pathname "resources/fonts/NotoSansCJK-Regular.ttc")))
-   :cjk-bold-file (or cjk-bold-file
-                      (lem:config
-                       :sdl2-cjk-bold-font
-                       (get-resource-pathname "resources/fonts/NotoSansCJK-Bold.ttc")))
-   :emoji-file (or emoji-file
-                   (lem:config :sdl2-emoji-font (default-emoji-font-file)))
-   :braille-file (or brail-file
-                     (get-resource-pathname "resources/fonts/FreeMono.ttf"))
-   :fallback-files fallback-files
-   :system-fallback system-fallback))
+  ;; The mono fonts always ship; the CJK, emoji and braille ones may be left
+  ;; out of a packaged build (see *mac-default-font-files*).  Defaults are
+  ;; computed only when nothing is configured, so a user's font settings
+  ;; never cost a file lookup.
+  (let* ((latin-normal-file
+           (or latin-normal-file
+               (lem:config :sdl2-normal-font)
+               (get-resource-pathname "resources/fonts/NotoSansMono-Regular.ttf")))
+         (latin-bold-file
+           (or latin-bold-file
+               (lem:config :sdl2-bold-font)
+               (get-resource-pathname "resources/fonts/NotoSansMono-Bold.ttf"))))
+    (%make-font-config
+     :size (lem:config :font-size (or size *default-font-size*))
+     :latin-normal-file latin-normal-file
+     :latin-bold-file latin-bold-file
+     :cjk-normal-file (or cjk-normal-file
+                          (lem:config :sdl2-cjk-normal-font)
+                          (default-font-file "resources/fonts/NotoSansCJK-Regular.ttc"
+                                             :cjk-regular latin-normal-file))
+     :cjk-bold-file (or cjk-bold-file
+                        (lem:config :sdl2-cjk-bold-font)
+                        (default-font-file "resources/fonts/NotoSansCJK-Bold.ttc"
+                                           :cjk-bold latin-bold-file))
+     :emoji-file (or emoji-file
+                     (lem:config :sdl2-emoji-font)
+                     (default-emoji-font-file latin-normal-file))
+     :braille-file (or brail-file
+                       (default-font-file "resources/fonts/FreeMono.ttf"
+                                          :braille latin-normal-file))
+     :fallback-files fallback-files
+     :system-fallback system-fallback)))
 
 (defun merge-font-config (new old)
   (%make-font-config :size (or (font-config-size new)
@@ -466,10 +509,9 @@ system's) at its size, skipping files that fail to open."
         :collect (first (split-sequence:split-sequence #\: line :count 1))))
 
 (defmethod get-font-list ((platform lem-sdl3/platform:mac))
-  (loop :for line :in (split-sequence:split-sequence #\newline
-                                                     (uiop:run-program "fc-list" :output :string)
-                                                     :remove-empty-subseqs t)
-        :collect (first (split-sequence:split-sequence #\: line :count 1))))
+  ;; Core Text, not fc-list: fontconfig is only there if Homebrew put it
+  ;; there, and a packaged Lem.app must find fonts on any Mac.
+  (lem-darwin/fonts:available-font-files))
 
 (defmethod get-font-list ((platform lem-sdl3/platform:windows))
   (loop :for file :in (lem:directory-files "C:/Windows/Fonts/*.[otOT][tT][fF]")

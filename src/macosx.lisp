@@ -31,6 +31,9 @@
 ;; the deployed binary loads them from the system at boot.
 (unless (deploy:deployed-p)
   (loop :for (package-name symbol-name) :in '((:lem-darwin/appearance "CORE-FOUNDATION")
+                                              (:lem-darwin/fonts "CORE-TEXT")
+                                              (:lem-darwin/layer "QUARTZ-CORE")
+                                              (:lem-darwin/layer "CORE-GRAPHICS")
                                               (:objc-cffi "LIBOBJC")
                                               (:cffi "LIBFFI"))
         :for package := (find-package package-name)

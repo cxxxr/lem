@@ -5,4 +5,5 @@
                (:feature (:and :darwin :arm64) "cl-objc"))
   :components ((:file "appearance")
                (:file "scroll")
-               (:file "layer")))
+               (:file "layer")
+               (:file "fonts")))
