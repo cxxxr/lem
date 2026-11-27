@@ -443,6 +443,42 @@ field (bits 3..10) or with neighbouring flags."
 (defun cell-data-size ()
   (load-time-value (cffi:foreign-type-size '(:struct ffi::cell-data)) t))
 
+(defun blank-attribute-p (attribute)
+  "Return T when a space drawn with ATTRIBUTE is invisible: no background,
+reverse video or underline."
+  (not (or (attribute-background attribute)
+           (attribute-reverse attribute)
+           (attribute-underline attribute))))
+
+(defun trim-trailing-blanks (chars attrs)
+  "Drop the invisible spaces vterm pads every row with, so lines end where
+their text ends: copying a line does not pick up the padding and C-e stops at
+the text.  Spaces with a visible attribute (e.g. a coloured status bar) are
+kept.  ATTRS are (start end attribute) runs in ascending order.  Returns the
+trimmed CHARS and ATTRS."
+  (let ((end (length chars)))
+    (loop :for (start nil attribute) :in (reverse attrs)
+          :while (blank-attribute-p attribute)
+          :do (loop :while (and (> end start)
+                                (char= #\Space (char chars (1- end))))
+                    :do (decf end))
+          :while (= end start))
+    (if (= end (length chars))
+        (values chars attrs)
+        (values (subseq chars 0 end)
+                (loop :for (start run-end attribute) :in attrs
+                      :when (< start end)
+                        :collect (list start (min run-end end) attribute))))))
+
+(defun move-to-cursor (point row col)
+  "Move POINT to screen ROW and COL, padding the line with spaces when the
+cursor is past the end of its text (see TRIM-TRAILING-BLANKS)."
+  (move-to-line point (1+ row))
+  (move-to-column point col)
+  (let ((missing (- col (point-column point))))
+    (when (plusp missing)
+      (insert-string point (make-string missing :initial-element #\Space)))))
+
 (defun render-row-direct (terminal line-obj cols row buf cell-size)
   "Render a row directly into LINE-OBJ, bypassing the buffer edit API.
 
@@ -503,9 +539,10 @@ that may be edited by the user or watched by other features."
     ;; Directly set line content — bypass all buffer edit machinery.
     ;; See CONTRACT above; this is permitted because the terminal buffer
     ;; is rendered-into, not edited.
-    (line:set-line-string chars line-obj)
-    (setf (getf (line:line-plist line-obj) :attribute)
-          (nreverse attrs))))
+    (multiple-value-bind (chars attrs)
+        (trim-trailing-blanks chars (nreverse attrs))
+      (line:set-line-string chars line-obj)
+      (setf (getf (line:line-plist line-obj) :attribute) attrs))))
 
 (defun buffer-view-points (buffer)
   "Return the buffer point and the view points of every window showing BUFFER."
@@ -636,9 +673,9 @@ Called when transitioning from scrollback-active to normal view."
                          (render-row-direct terminal cur-line cols row buf cell-size)))
              (fill dirty 0)
              (setf (terminal-dirty-any-p terminal) nil)))))
-      ;; Position cursor
-      (move-to-line point (1+ (ffi::terminal-cursor-row viscus)))
-      (move-to-column point (ffi::terminal-cursor-col viscus)))))
+      (move-to-cursor point
+                      (ffi::terminal-cursor-row viscus)
+                      (ffi::terminal-cursor-col viscus)))))
 
 (defmethod adjust-point ((terminal terminal))
   (let* ((buffer (terminal-buffer terminal))
@@ -649,8 +686,8 @@ Called when transitioning from scrollback-active to normal view."
         (bt2:with-lock-held ((terminal-io-lock terminal))
           (values (ffi::terminal-cursor-row viscus)
                   (ffi::terminal-cursor-col viscus)))
-      (move-to-line point (1+ row))
-      (move-to-column point col))))
+      (with-buffer-read-only buffer nil
+        (move-to-cursor point row col)))))
 
 (defmethod process-input ((terminal terminal) &optional (budget-ms *write-timeout-ms*))
   "Drain and parse a slice of PTY data (up to BUDGET-MS).
