@@ -81,6 +81,7 @@ render hot path, and the cache refills quickly for the active palette.")
 (defconstant +cell-off-bold+ 10)
 (defconstant +cell-off-underline+ 11)
 (defconstant +cell-off-reverse+ 12)
+(defconstant +cell-off-width+ 13)
 
 ;;; --- id generator ----------------------------------------------------
 
@@ -439,38 +440,52 @@ terminal mode bypasses standard editing commands in EXECUTE), and
 undo is irrelevant for a live shell.  Do not use this on any buffer
 that may be edited by the user or watched by other features."
   (ffi::terminal-get-row (terminal-viscus terminal) row buf cols)
+  ;; A wide character occupies two cells; vterm leaves the second one as a
+  ;; placeholder.  Skip it, so the line holds one character per glyph and Lem
+  ;; (which measures display width itself) draws it two columns wide.  INDEX
+  ;; is the position in CHARS, which falls behind COL after a wide character.
   (let ((chars (make-string cols))
+        (index 0)
+        (skip-next nil)
         (attrs nil)
         (run-start 0)
         (previous-attribute nil))
     (loop :for col :from 0 :below cols
           :for ptr := (cffi:inc-pointer buf (* col cell-size))
-          :do (let* ((ch (cffi:mem-ref ptr :uint32 +cell-off-ch+))
-                     (fg-r (cffi:mem-ref ptr :uint8 +cell-off-fg-r+))
-                     (fg-g (cffi:mem-ref ptr :uint8 +cell-off-fg-g+))
-                     (fg-b (cffi:mem-ref ptr :uint8 +cell-off-fg-b+))
-                     (bg-r (cffi:mem-ref ptr :uint8 +cell-off-bg-r+))
-                     (bg-g (cffi:mem-ref ptr :uint8 +cell-off-bg-g+))
-                     (bg-b (cffi:mem-ref ptr :uint8 +cell-off-bg-b+))
-                     (bold (cffi:mem-ref ptr :uint8 +cell-off-bold+))
-                     (underline (cffi:mem-ref ptr :uint8 +cell-off-underline+))
-                     (reverse-attr (cffi:mem-ref ptr :uint8 +cell-off-reverse+))
-                     (attribute (get-attribute-for-cell terminal
-                                                       fg-r fg-g fg-b
-                                                       bg-r bg-g bg-b
-                                                       bold underline reverse-attr))
-                     ;; Fast validity check instead of ignore-errors + code-char
-                     (char (if (and (plusp ch) (<= ch #x10FFFF))
-                               (code-char ch)
-                               #\Space)))
-                (unless (eq attribute previous-attribute)
-                  (when previous-attribute
-                    (push (list run-start col previous-attribute) attrs))
-                  (setf run-start col)
-                  (setf previous-attribute attribute))
-                (setf (schar chars col) char))
+          :do (if skip-next
+                  (setf skip-next nil)
+                  (let* ((ch (cffi:mem-ref ptr :uint32 +cell-off-ch+))
+                         (fg-r (cffi:mem-ref ptr :uint8 +cell-off-fg-r+))
+                         (fg-g (cffi:mem-ref ptr :uint8 +cell-off-fg-g+))
+                         (fg-b (cffi:mem-ref ptr :uint8 +cell-off-fg-b+))
+                         (bg-r (cffi:mem-ref ptr :uint8 +cell-off-bg-r+))
+                         (bg-g (cffi:mem-ref ptr :uint8 +cell-off-bg-g+))
+                         (bg-b (cffi:mem-ref ptr :uint8 +cell-off-bg-b+))
+                         (bold (cffi:mem-ref ptr :uint8 +cell-off-bold+))
+                         (underline (cffi:mem-ref ptr :uint8 +cell-off-underline+))
+                         (reverse-attr (cffi:mem-ref ptr :uint8 +cell-off-reverse+))
+                         (width (cffi:mem-ref ptr :uint8 +cell-off-width+))
+                         (attribute (get-attribute-for-cell terminal
+                                                           fg-r fg-g fg-b
+                                                           bg-r bg-g bg-b
+                                                           bold underline reverse-attr))
+                         ;; Fast validity check instead of ignore-errors + code-char
+                         (char (if (and (plusp ch) (<= ch #x10FFFF))
+                                   (code-char ch)
+                                   #\Space)))
+                    (unless (eq attribute previous-attribute)
+                      (when previous-attribute
+                        (push (list run-start index previous-attribute) attrs))
+                      (setf run-start index)
+                      (setf previous-attribute attribute))
+                    (setf (schar chars index) char)
+                    (incf index)
+                    (when (and (= width 2) (char/= char #\Space))
+                      (setf skip-next t))))
           :finally (when previous-attribute
-                     (push (list run-start cols previous-attribute) attrs)))
+                     (push (list run-start index previous-attribute) attrs)))
+    (when (< index cols)
+      (setf chars (subseq chars 0 index)))
     ;; Directly set line content — bypass all buffer edit machinery.
     ;; See CONTRACT above; this is permitted because the terminal buffer
     ;; is rendered-into, not edited.
