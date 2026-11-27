@@ -93,6 +93,11 @@ Available interfaces: ~A"
 (defgeneric lem-if:update-background (implementation color-name))
 (defgeneric lem-if:update-cursor-shape (implementation cursor-type)
   (:method (implementation cursor-type)))
+(defgeneric lem-if:cursor-blink-off-p (implementation)
+  (:documentation "Return true while IMPLEMENTATION blinks the cursor and the
+blink is in its off phase: the current window is then drawn without its
+cursors.  A frontend that blinks the cursor redraws when the phase changes.")
+  (:method (implementation) nil))
 (defgeneric lem-if:display-width (implementation))
 (defgeneric lem-if:display-height (implementation))
 (defgeneric lem-if:display-title (implementation))

@@ -94,6 +94,27 @@ Scripts that need shaping (for example Devanagari or Tamil) show every
 character, but Lem draws one character per cell, so combining marks are not
 joined.
 
+### Cursor blinking
+
+The cursor blinks while Lem waits for input and the window has focus. Typing
+or running any other command shows it again. After 10 blinks with no input,
+it stays shown so an idle editor stops redrawing. Three variables control
+blinking:
+
+- `lem-sdl3/cursor-blink:*cursor-blink*`: set to `nil` to stop the cursor
+  blinking.
+- `lem-sdl3/cursor-blink:*cursor-blink-interval*`: how long, in milliseconds,
+  the cursor stays shown, and then hidden (default 500).
+- `lem-sdl3/cursor-blink:*cursor-blinks*`: how many blinks after the last input
+  (default 10), or `nil` to blink without end.
+
+For example, in `$HOME/.lem/init.lisp`:
+
+```common-lisp
+#+lem-sdl3
+(setf lem-sdl3/cursor-blink:*cursor-blinks* nil)
+```
+
 ### Keyboard layout (Windows / macOS)
 
 If your keyboard is a JIS layout, put the following in `$HOME/.lem/init.lisp`:

@@ -8,7 +8,8 @@
         :lem-sdl3/resource
         :lem-sdl3/log
         :lem-sdl3/mouse)
-  (:local-nicknames (:display :lem-sdl3/display)
+  (:local-nicknames (:cursor-blink :lem-sdl3/cursor-blink)
+                    (:display :lem-sdl3/display)
                     (:view :lem-sdl3/view)
                     (:event :lem-sdl3/event)
                     (:ffi :lem-sdl3/ffi))
@@ -454,9 +455,11 @@ updated once for all of them (see update-window)."
     (event:+window-display-scale-changed+
      (note-window-change display :display))
     (event:+window-focus-gained+
-     (setf (display:display-focus-p display) t))
+     (setf (display:display-focus-p display) t)
+     (lem:send-event #'restart-cursor-blink-and-redraw))
     (event:+window-focus-lost+
-     (setf (display:display-focus-p display) nil))))
+     (setf (display:display-focus-p display) nil)
+     (lem:send-event #'restart-cursor-blink-and-redraw))))
 
 (defun resize-window (display)
   "Remake DISPLAY's texture at the window's pixel size, and lay out and
@@ -502,9 +505,22 @@ size change that changed the scale, and any other is a resize."
   (multiple-value-bind (x y) (ffi:get-mouse-state)
     (values (round x) (round y))))
 
+(defun input-event-type-p (type)
+  "Return true if an SDL event of TYPE is input that shows the cursor and
+blinks it from the start: a key, text or a mouse button, but not the mouse
+moving, which is no reason to touch the cursor."
+  (or (= type event:+key-down+)
+      (= type event:+text-input+)
+      (= type event:+text-editing+)
+      (= type event:+mouse-button-down+)))
+
 (defun dispatch-event (display event)
   "Handle one SDL event.  Return true when the event loop should stop."
   (let ((type (event:event-type event)))
+    ;; Sent before the input itself, so the cursor is shown again by the
+    ;; time the editor redraws after the input's command.
+    (when (input-event-type-p type)
+      (lem:send-event #'restart-cursor-blink-and-redraw))
     (alexandria:switch (type)
       (event:+quit+
        #+windows
@@ -892,6 +908,27 @@ step of a resize, is drawn once."
   (with-debug ("lem-if:update-cursor-type")
     (display:with-display (display)
       (setf (display:display-cursor-type display) cursor-type))))
+
+(defun restart-cursor-blink ()
+  "Show the cursor and, while the Lem window has focus, blink it from the
+start once the editor is idle; an unfocused window's cursor does not blink.
+Return true if the cursor was hidden.  Runs on the editor thread, on input
+(see input-event-type-p) and when the window gains or loses focus."
+  (display:with-display (display)
+    (let ((blink (display:display-cursor-blink display)))
+      (if (display:display-focus-p display)
+          (cursor-blink:restart-cursor-blink blink)
+          (cursor-blink:stop-cursor-blink blink)))))
+
+(defun restart-cursor-blink-and-redraw ()
+  "Restart the cursor's blink (see restart-cursor-blink), and redraw if
+that showed the cursor."
+  (when (restart-cursor-blink)
+    (lem:redraw-display)))
+
+(defmethod lem-if:cursor-blink-off-p ((implementation sdl3))
+  (display:with-display (display)
+    (cursor-blink:cursor-blink-off-p (display:display-cursor-blink display))))
 
 (defmethod lem-if:display-width ((implementation sdl3))
   (with-debug ("lem-if:display-width")

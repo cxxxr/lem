@@ -802,6 +802,7 @@
    :update-foreground
    :update-background
    :update-cursor-shape
+   :cursor-blink-off-p
    :display-width
    :display-height
    :display-title
