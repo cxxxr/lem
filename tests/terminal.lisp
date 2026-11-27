@@ -159,12 +159,11 @@ NIL on timeout."
     (let ((terminal (make-instance 'lem-terminal/terminal::terminal
                                    :id *test-terminal-id* :viscus viscus
                                    :rows 24 :cols 80 :buffer nil)))
-      (if (uiop:directory-exists-p "/proc/self/")
-          (ok (loop :repeat 100
-                    :thereis (equal (namestring (truename "/tmp/"))
-                                    (lem-terminal/terminal:process-directory terminal))
-                    :do (sleep 0.02)))
-          (skip "/proc is not available")))))
+      ;; truename: on macOS /tmp is a symlink to /private/tmp.
+      (ok (loop :repeat 100
+                :thereis (equal (uiop:native-namestring (truename "/tmp/"))
+                                (lem-terminal/terminal:process-directory terminal))
+                :do (sleep 0.02))))))
 
 (deftest trailing-blanks-are-trimmed
   (let ((plain (lem:make-attribute :foreground "white"))
