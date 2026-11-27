@@ -22,7 +22,8 @@
            :activate-scrollback
            :deactivate-scrollback
            :snap-to-bottom
-           :terminal-render-throttle-ms))
+           :terminal-render-throttle-ms
+           :callback-pointers))
 (in-package :lem-terminal/terminal)
 
 ;;; --- module-level state and tunables ---------------------------------
@@ -285,7 +286,8 @@ point is kept for manual/REPL use and tests."
          (terminal
            (make-instance 'terminal
                           :id id
-                          :viscus (ffi::terminal-new directory id rows cols
+                          :viscus (ffi:terminal-new directory id rows cols
+                                                     (callback-pointers)
                                                      :program program
                                                      :argv argv)
                           :buffer buffer
@@ -860,12 +862,60 @@ thread while parsing, under IO-LOCK like the other scrollback callbacks."
       (setf (terminal-scrollback-head terminal) 0
             (scrollback-count terminal) 0))))
 
-(ffi::set-callbacks :damage 'cb-damage
-                    :moverect 'cb-moverect
-                    :movecursor 'cb-movecursor
-                    :settermprop 'cb-settermprop
-                    :bell 'cb-bell
-                    :resize 'cb-resize
-                    :sb-pushline 'cb-sb-pushline
-                    :sb-popline 'cb-sb-popline
-                    :sb-clear 'cb-sb-clear)
+;; libvterm calls these from C, with the terminal's id as the last argument.
+(cffi:defcallback damage-callback :int ((rect (:pointer (:struct ffi:vterm-rect)))
+                                        (id :int))
+  (cb-damage rect id)
+  0)
+
+(cffi:defcallback moverect-callback :int ((dest (:pointer (:struct ffi:vterm-rect)))
+                                          (src (:pointer (:struct ffi:vterm-rect)))
+                                          (id :int))
+  (cb-moverect dest src id)
+  0)
+
+(cffi:defcallback movecursor-callback :int ((pos (:pointer (:struct ffi:vterm-pos)))
+                                            (oldpos (:pointer (:struct ffi:vterm-pos)))
+                                            (visible :int)
+                                            (id :int))
+  (cb-movecursor pos oldpos visible id)
+  0)
+
+(cffi:defcallback settermprop-callback :int ((prop ffi:vterm-prop)
+                                             (val :pointer)
+                                             (id :int))
+  (cb-settermprop prop val id)
+  0)
+
+(cffi:defcallback bell-callback :int ((id :int))
+  (cb-bell id)
+  0)
+
+(cffi:defcallback resize-callback :int ((rows :int) (cols :int) (id :int))
+  (cb-resize rows cols id)
+  0)
+
+(cffi:defcallback sb-pushline-callback :int ((cols :int) (cells :pointer) (id :int))
+  (cb-sb-pushline cols cells id)
+  0)
+
+(cffi:defcallback sb-popline-callback :int ((cols :int) (cells :pointer) (id :int))
+  (cb-sb-popline cols cells id)
+  0)
+
+(cffi:defcallback sb-clear-callback :int ((id :int))
+  (cb-sb-clear id)
+  0)
+
+(defun callback-pointers ()
+  "Return the libvterm callback pointers for FFI:TERMINAL-NEW, in the order
+of terminal_new's arguments."
+  (list (cffi:callback damage-callback)
+        (cffi:callback moverect-callback)
+        (cffi:callback movecursor-callback)
+        (cffi:callback settermprop-callback)
+        (cffi:callback bell-callback)
+        (cffi:callback resize-callback)
+        (cffi:callback sb-pushline-callback)
+        (cffi:callback sb-popline-callback)
+        (cffi:callback sb-clear-callback)))

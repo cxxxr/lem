@@ -16,6 +16,7 @@ callbacks ignore events from these tests.")
 
 (defun make-test-terminal (script)
   (ffi::terminal-new "" *test-terminal-id* 24 80
+                     (lem-terminal/terminal:callback-pointers)
                      :program "/bin/sh"
                      :argv (list "/bin/sh" "-c" script)))
 
@@ -59,6 +60,7 @@ Returns T on EOF, NIL on timeout."
 (deftest exec-failure-exits-with-127
   (if (library-available-p)
       (let ((viscus (ffi::terminal-new "" *test-terminal-id* 24 80
+                                       (lem-terminal/terminal:callback-pointers)
                                        :program "/nonexistent/lem-terminal-test"
                                        :argv (list "/nonexistent/lem-terminal-test"))))
         (unwind-protect
@@ -209,9 +211,10 @@ NIL on timeout."
   "Run SCRIPT in a registered terminal (so the scrollback callbacks reach it)
 and return how many scrollback lines it kept."
   (let* ((id 424242)
-         (viscus (ffi::terminal-new "" id 24 80
-                                    :program "/bin/sh"
-                                    :argv (list "/bin/sh" "-c" script)))
+         (viscus (ffi:terminal-new "" id 24 80
+                                   (lem-terminal/terminal:callback-pointers)
+                                   :program "/bin/sh"
+                                   :argv (list "/bin/sh" "-c" script)))
          (terminal (make-instance 'lem-terminal/terminal::terminal
                                   :id id :viscus viscus
                                   :rows 24 :cols 80 :buffer nil)))
@@ -222,7 +225,7 @@ and return how many scrollback lines it kept."
          (progn (drain-until-eof viscus)
                 (lem-terminal/terminal:scrollback-count terminal))
       (lem-terminal/terminal::remove-terminal terminal)
-      (ffi::terminal-delete viscus))))
+      (ffi:terminal-delete viscus))))
 
 (deftest clear-discards-scrollback
   (if (library-available-p)
