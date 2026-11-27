@@ -1,5 +1,10 @@
 (defpackage :lem-terminal/ffi
-  (:use :cl))
+  (:use :cl)
+  (:export :terminal-new
+           :terminal-delete
+           :vterm-rect
+           :vterm-pos
+           :vterm-prop))
 (in-package :lem-terminal/ffi)
 
 (pushnew (asdf:system-relative-pathname
@@ -91,32 +96,26 @@
   (cb_bell :pointer)
   (cb_resize :pointer)
   (cb_sb_pushline :pointer)
-  (cb_sb_popline :pointer))
+  (cb_sb_popline :pointer)
+  (cb_sb_clear :pointer))
 
-(defun terminal-new (directory id rows cols &key program argv)
+(defun terminal-new (directory id rows cols callbacks &key program argv)
   "Create a new terminal PTY running PROGRAM with ARGV.
 When PROGRAM/ARGV are not provided, defaults to the user's shell started
-in DIRECTORY (via 'cd <directory>; <shell>')."
+in DIRECTORY (via 'cd <directory>; <shell>').
+CALLBACKS is the list of the libvterm callback pointers, in the order of
+terminal_new's arguments: damage, moverect, movecursor, settermprop, bell,
+resize, sb_pushline, sb_popline and sb_clear.  Each is called with ID as its
+last argument."
   (let* ((shell (or (uiop:getenv "SHELL") "/bin/bash"))
          (program (or program shell))
          (argv (or argv
                    (list shell "-c"
                          (concatenate 'string "cd " directory "; " shell)))))
-    (%terminal-new id
-                   rows
-                   cols
-                   program
-                   argv
-                   (cffi:callback cb-damage)
-                   (cffi:callback cb-moverect)
-                   (cffi:callback cb-movecursor)
-                   (cffi:callback cb-settermprop)
-                   (cffi:callback cb-bell)
-                   (cffi:callback cb-resize)
-                   (cffi:callback cb-sb-pushline)
-                   (cffi:callback cb-sb-popline))))
+    (apply #'%terminal-new id rows cols program argv callbacks)))
 
 (cffi:defcfun ("terminal_delete" terminal-delete) :void
+  "Free TERMINAL: hang up its child process, close the PTY and reap the child."
   (terminal :pointer))
 
 (cffi:defcfun ("terminal_input_char" terminal-input-char) :void
@@ -290,16 +289,20 @@ when it was killed by a signal, or -1 when unknown."
 ;; empty/garbage row range -- erases and scrolls the cursor didn't visit
 ;; (clear, completion listings) were never re-rendered, leaving ghosting.
 (cffi:defcstruct vterm-rect
+  "A rectangle of screen cells, as libvterm passes it to the damage and
+moverect callbacks."
   (start-row :int)
   (end-row :int)
   (start-col :int)
   (end-col :int))
 
 (cffi:defcstruct vterm-pos
+  "A screen position, as libvterm passes it to the movecursor callback."
   (row :int)
   (col :int))
 
 (cffi:defcenum vterm-prop
+  "The terminal properties libvterm reports to the settermprop callback."
   (:VTERM_PROP_CURSORVISIBLE 1) ; bool
   :VTERM_PROP_CURSORBLINK       ; bool
   :VTERM_PROP_ALTSCREEN         ; bool
@@ -310,77 +313,3 @@ when it was killed by a signal, or -1 when unknown."
   :VTERM_PROP_MOUSE             ; number
   :VTERM_PROP_FOCUSREPORT       ; bool
   )
-
-(defvar *damage-callback* nil)
-(defvar *moverect-callback* nil)
-(defvar *movecursor-callback* nil)
-(defvar *settermprop-callback* nil)
-(defvar *bell-callback* nil)
-(defvar *resize-callback* nil)
-(defvar *sb-pushline-callback* nil)
-(defvar *sb-popline-callback* nil)
-
-(defun set-callbacks (&key damage
-                           moverect
-                           movecursor
-                           settermprop
-                           bell
-                           resize
-                           sb-pushline
-                           sb-popline)
-  (setf *damage-callback* damage
-        *moverect-callback* moverect
-        *movecursor-callback* movecursor
-        *settermprop-callback* settermprop
-        *bell-callback* bell
-        *resize-callback* resize
-        *sb-pushline-callback* sb-pushline
-        *sb-popline-callback* sb-popline)
-  (values))
-
-(cffi:defcallback cb-damage :int ((rect (:pointer (:struct vterm-rect))) (id :int))
-  (when *damage-callback*
-    (funcall *damage-callback* rect id))
-  0)
-
-(cffi:defcallback cb-moverect :int ((dest (:pointer (:struct vterm-rect)))
-                                    (src (:pointer (:struct vterm-rect)))
-                                    (id :int))
-  (when *moverect-callback*
-    (funcall *moverect-callback* dest src id))
-  0)
-
-(cffi:defcallback cb-movecursor :int ((pos (:pointer (:struct vterm-pos)))
-                                      (oldpos (:pointer (:struct vterm-pos)))
-                                      (visible :int)
-                                      (id :int))
-  (when *movecursor-callback*
-    (funcall *movecursor-callback* pos oldpos visible id))
-  0)
-
-(cffi:defcallback cb-settermprop :int ((prop vterm-prop)
-                                       (val :pointer)
-                                       (id :int))
-  (when *settermprop-callback*
-    (funcall *settermprop-callback* prop val id))
-  0)
-
-(cffi:defcallback cb-bell :int ((id :int))
-  (when *bell-callback*
-    (funcall *bell-callback* id))
-  0)
-
-(cffi:defcallback cb-resize :int ((rows :int) (cols :int) (id :int))
-  (when *resize-callback*
-    (funcall *resize-callback* rows cols id))
-  0)
-
-(cffi:defcallback cb-sb-pushline :int ((cols :int) (cells :pointer) (id :int))
-  (when *sb-pushline-callback*
-    (funcall *sb-pushline-callback* cols cells id))
-  0)
-
-(cffi:defcallback cb-sb-popline :int ((cols :int) (cells :pointer) (id :int))
-  (when *sb-popline-callback*
-    (funcall *sb-popline-callback* cols cells id))
-  0)

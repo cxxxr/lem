@@ -84,7 +84,7 @@ struct terminal {
   int (*cb_resize)(int rows, int cols, int id);
   int (*cb_sb_pushline)(int cols, const VTermScreenCell *cells, int id);
   int (*cb_sb_popline)(int cols, VTermScreenCell *cells, int id);
-  int (*cb_sb_clear)(int id); // TODO
+  int (*cb_sb_clear)(int id);
 
   /* Per-terminal scrollback line extraction buffer.
      Max line: 1024 cols * 4 bytes UTF-8 + NUL = 4097 bytes.
@@ -157,6 +157,14 @@ static int cb_sb_popline(int cols, VTermScreenCell *cells, void *user)
   return 0;
 }
 
+/* ESC[3J (sent by `clear` and `reset`) discards the scrollback. */
+static int cb_sb_clear(void *user)
+{
+  struct terminal *terminal = ((struct terminal *)user);
+  terminal->cb_sb_clear(terminal->id);
+  return 0;
+}
+
 static void output_callback(const char *s, size_t len, void *user)
 {
   struct terminal *terminal = (struct terminal *) user;
@@ -172,6 +180,7 @@ VTermScreenCallbacks screen_callbacks = {
   cb_resize,
   cb_sb_pushline,
   cb_sb_popline,
+  cb_sb_clear,
 };
 
 struct terminal *terminal_new(int id,
@@ -186,7 +195,8 @@ struct terminal *terminal_new(int id,
 			      void *cb_bell,
 			      void *cb_resize,
 			      void *cb_sb_pushline,
-                              void *cb_sb_popline)
+                              void *cb_sb_popline,
+                              void *cb_sb_clear)
 {
   run_shell_result result = run_shell(rows, cols, program, argv);
 
@@ -229,6 +239,7 @@ struct terminal *terminal_new(int id,
   terminal->cb_resize = cb_resize;
   terminal->cb_sb_pushline = cb_sb_pushline;
   terminal->cb_sb_popline = cb_sb_popline;
+  terminal->cb_sb_clear = cb_sb_clear;
   terminal->sb_line_buf[0] = '\0';
   terminal->sb_line_len = 0;
 
