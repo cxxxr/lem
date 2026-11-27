@@ -92,6 +92,10 @@ struct terminal {
      don't race when their I/O threads invoke vterm callbacks. */
   char sb_line_buf[4097];
   int  sb_line_len;
+
+  /* Window title (OSC 0/2), assembled from vterm's string fragments. */
+  char   title[1024];
+  size_t title_len;
 };
 
 static int cb_damage(VTermRect rect, void *user)
@@ -124,6 +128,19 @@ static int cb_movecursor(VTermPos pos, VTermPos oldpos, int visible,
 static int cb_settermprop(VTermProp prop, VTermValue *val, void *user)
 {
   struct terminal *terminal = ((struct terminal *)user);
+  if (prop == VTERM_PROP_TITLE) {
+    /* The title may arrive in several fragments; report it once complete.
+       Overlong titles are truncated. */
+    if (val->string.initial)
+      terminal->title_len = 0;
+    size_t room = sizeof(terminal->title) - 1 - terminal->title_len;
+    size_t n = val->string.len < room ? val->string.len : room;
+    memcpy(terminal->title + terminal->title_len, val->string.str, n);
+    terminal->title_len += n;
+    terminal->title[terminal->title_len] = '\0';
+    if (!val->string.final)
+      return 1;
+  }
   terminal->cb_settermprop(prop, val, terminal->id);
   return 0;
 }
@@ -242,6 +259,8 @@ struct terminal *terminal_new(int id,
   terminal->cb_sb_clear = cb_sb_clear;
   terminal->sb_line_buf[0] = '\0';
   terminal->sb_line_len = 0;
+  terminal->title[0] = '\0';
+  terminal->title_len = 0;
 
   vterm_output_set_callback(vterm, output_callback, (void *) terminal);
   vterm_screen_set_callbacks(screen, &screen_callbacks, terminal);
@@ -291,6 +310,12 @@ static int reap_with_timeout(struct terminal *terminal, int max_ms)
       return 0;
     usleep(10 * 1000);
   }
+}
+
+/* Returns the last complete window title set by the program (OSC 0/2). */
+const char *terminal_title(struct terminal *terminal)
+{
+  return terminal->title;
 }
 
 /* Returns the process id of the child (the shell). */

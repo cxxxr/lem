@@ -4,7 +4,8 @@
            :terminal-delete
            :vterm-rect
            :vterm-pos
-           :vterm-prop))
+           :vterm-prop
+           :terminal-title))
 (in-package :lem-terminal/ffi)
 
 (pushnew (asdf:system-relative-pathname
@@ -142,6 +143,18 @@ the PTY already hung up (returns 0)."
 (cffi:defcfun ("terminal_wake" terminal-wake) :void
   "Interrupt a blocked TERMINAL-PROCESS-INPUT-WAIT from another thread."
   (terminal :pointer))
+
+(cffi:defcfun ("terminal_title" %terminal-title) :pointer
+  (terminal :pointer))
+
+(defun terminal-title (terminal)
+  "Return the window title last set by the program in TERMINAL.  Bytes that
+are not valid UTF-8 (e.g. a title truncated mid-character) fall back to
+latin-1 rather than signalling, since this runs on the I/O thread."
+  (let ((pointer (%terminal-title terminal)))
+    (handler-case (cffi:foreign-string-to-lisp pointer :encoding :utf-8)
+      (error ()
+        (cffi:foreign-string-to-lisp pointer :encoding :iso-8859-1)))))
 
 (cffi:defcfun ("terminal_pid" terminal-pid) :int
   "Return the process id of the terminal's child process."
