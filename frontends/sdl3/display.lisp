@@ -10,6 +10,7 @@
            :display
            :current-display
            :display-cursor-type
+           :display-cursor-blink
            :display-latin-font
            :display-cjk-normal-font
            :display-redraw-at-least-once-p
@@ -117,6 +118,9 @@ Retina to a 1x display).")
    (cursor-type :initform :box
                 :accessor display-cursor-type
                 :type lem:cursor-type)
+   (cursor-blink :initform (lem-sdl3/cursor-blink:make-cursor-blink)
+                 :reader display-cursor-blink
+                 :documentation "The cursor's blink (see lem-sdl3/cursor-blink).")
    (font-config :initarg :font-config
                 :accessor display-font-config)
    (font :initarg :font

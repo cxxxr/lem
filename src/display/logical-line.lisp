@@ -605,7 +605,8 @@ VIRTUAL-ITEMS arrive in draw order (from `create-logical-line')."
       (if-push (make-temporary-highlight-line-overlay buffer)
                overlays))
     (if (and (eq window (current-window))
-             (not (window-cursor-invisible-p window)))
+             (not (window-cursor-invisible-p window))
+             (not (lem-if:cursor-blink-off-p (implementation))))
         (append overlays
                 (mapcar #'make-cursor-overlay*
                         (buffer-cursors (window-buffer window))))
