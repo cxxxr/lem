@@ -325,6 +325,7 @@
    :window-delete-hook
    :window-leave-hook
    :window-use-modeline-p
+   :window-height-without-modeline
    :window-redraw
    :current-window
    :last-focused-window
