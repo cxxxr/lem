@@ -482,6 +482,8 @@ struct cell_data {
   uint8_t  underline;
   uint8_t  reverse_attr;
   uint8_t  width;
+  uint8_t  default_fg;  /* 1 when fg is the terminal default color */
+  uint8_t  default_bg;  /* 1 when bg is the terminal default color */
 };
 
 /* Fill 'out' with packed cell data for an entire row.
@@ -495,6 +497,8 @@ int terminal_get_row(struct terminal *terminal, int row,
     VTermPos pos = { .row = row, .col = col };
     VTermScreenCell cell;
     vterm_screen_get_cell(screen, pos, &cell);
+    out[col].default_fg  = VTERM_COLOR_IS_DEFAULT_FG(&cell.fg) ? 1 : 0;
+    out[col].default_bg  = VTERM_COLOR_IS_DEFAULT_BG(&cell.bg) ? 1 : 0;
     if (VTERM_COLOR_IS_INDEXED(&cell.fg)) {
       vterm_screen_convert_color_to_rgb(screen, &cell.fg);
     }

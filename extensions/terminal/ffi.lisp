@@ -188,7 +188,9 @@ when it was killed by a signal, or -1 when unknown."
   (bold :uint8)
   (underline :uint8)
   (reverse-attr :uint8)
-  (width :uint8))
+  (width :uint8)
+  (default-fg :uint8)
+  (default-bg :uint8))
 
 (cffi:defcfun ("terminal_get_row" terminal-get-row) :int
   (terminal :pointer)
