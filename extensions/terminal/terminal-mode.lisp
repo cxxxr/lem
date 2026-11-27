@@ -116,6 +116,8 @@ user's shell started in a directory."
                                     :directory ""
                                     :program program :argv argv)))
     (setf (buffer-terminal buffer) terminal)
+    ;; Remembered so `terminal-restart' runs the same command again.
+    (setf (buffer-value buffer 'terminal-command) (list program argv))
     (change-buffer-mode buffer 'terminal-mode)
     (let ((window (pop-to-buffer buffer)))
       (resize-terminal (buffer-terminal buffer) window)
@@ -147,6 +149,26 @@ and returning to the same terminal would do nothing."
          (alexandria:if-let (buffer (terminal:find-terminal-buffer))
            (setf (current-window) (pop-to-buffer buffer))
            (create-terminal (buffer-directory buf))))))))
+
+(define-command terminal-restart () ()
+  "Start the terminal's command again in the current terminal buffer, after
+its process has exited.  The old output is discarded."
+  (let* ((buffer (current-buffer))
+         (old (buffer-terminal buffer)))
+    (unless old
+      (editor-error "Not a terminal buffer"))
+    (unless (terminal:process-exited-p old)
+      (editor-error "Terminal process is still running"))
+    (terminal:destroy old)
+    (with-buffer-read-only buffer nil
+      (erase-buffer buffer))
+    (destructuring-bind (&optional program argv)
+        (buffer-value buffer 'terminal-command)
+      (setf (buffer-terminal buffer)
+            (terminal:create :cols 80 :rows 24 :buffer buffer
+                             :directory (if program "" (buffer-directory buffer))
+                             :program program :argv argv)))
+    (resize-terminal (buffer-terminal buffer) (current-window))))
 
 (defun get-current-terminal ()
   (buffer-terminal (current-buffer)))
