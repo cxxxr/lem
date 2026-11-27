@@ -89,3 +89,20 @@ Returns T on EOF, NIL on timeout."
           (ffi::terminal-delete viscus)
           (ng (process-alive-p pid))))
       (skip "terminal.so is not built")))
+
+(defun row-string (viscus row &key (cols 80))
+  "Return the text of screen ROW, with trailing blanks removed."
+  (let ((cell-size (cffi:foreign-type-size '(:struct ffi::cell-data))))
+    (cffi:with-foreign-object (buf '(:struct ffi::cell-data) cols)
+      (ffi::terminal-get-row viscus row buf cols)
+      (string-right-trim
+       " "
+       (coerce (loop :for col :from 0 :below cols
+                     :for ch := (cffi:mem-ref (cffi:inc-pointer buf (* col cell-size)) :uint32 0)
+                     :collect (if (< 0 ch #x110000) (code-char ch) #\Space))
+               'string)))))
+
+(deftest alternate-screen-restores-main-screen
+  (with-test-terminal (viscus "printf 'main'; printf '\\033[?1049h\\033[Halt'; printf '\\033[?1049l'")
+    (ok (drain-until-eof viscus))
+    (ok (equal "main" (row-string viscus 0)))))
