@@ -129,7 +129,25 @@ in DIRECTORY (via 'cd <directory>; <shell>')."
   (key :int)
   (mod :int))
 
-(cffi:defcfun ("terminal_process_input_wait" terminal-process-input-wait) :void
+(cffi:defcfun ("terminal_process_input_wait" terminal-process-input-wait) :int
+  "Block until the PTY is readable (returns 1) or TERMINAL-WAKE was called /
+the PTY already hung up (returns 0)."
+  (terminal :pointer))
+
+(cffi:defcfun ("terminal_wake" terminal-wake) :void
+  "Interrupt a blocked TERMINAL-PROCESS-INPUT-WAIT from another thread."
+  (terminal :pointer))
+
+(cffi:defcfun ("terminal_eof_p" %terminal-eof-p) :int
+  (terminal :pointer))
+
+(defun terminal-eof-p (terminal)
+  "Return T once the PTY has hung up, i.e. the child process closed its side."
+  (= 1 (%terminal-eof-p terminal)))
+
+(cffi:defcfun ("terminal_collect_exit_status" terminal-collect-exit-status) :int
+  "Reap the exited child and return its status: the exit code, 128+signal
+when it was killed by a signal, or -1 when unknown."
   (terminal :pointer))
 
 (cffi:defcfun ("terminal_process_input_nonblock" terminal-process-input-nonblock) :size

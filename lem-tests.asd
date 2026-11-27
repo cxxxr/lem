@@ -14,6 +14,7 @@
                "lem-nix-mode"
                "lem-clojure-mode"
                "lem-typst-mode"
+               "lem-terminal"
                "cl-ansi-text"
                "trivial-package-local-nicknames"
                "rove"
@@ -90,6 +91,7 @@
                (:file "grapheme-clusters")
                (:file "proportional-text")
                (:file "wrapped-lines")
+               (:file "terminal")
                (:file "frame-multiplexer"))
   :perform (test-op (o c)
                     (symbol-call :rove :run c)))

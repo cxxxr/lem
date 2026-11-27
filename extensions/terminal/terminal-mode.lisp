@@ -133,8 +133,16 @@ With a universal argument, always create a new terminal buffer."
 (defun get-current-terminal ()
   (buffer-terminal (current-buffer)))
 
+(defun get-current-live-terminal ()
+  "Return the current buffer's terminal, signalling `editor-error' when its
+process has already exited (so there is nothing to send input to)."
+  (let ((terminal (get-current-terminal)))
+    (when (and terminal (terminal:process-exited-p terminal))
+      (editor-error "Terminal process has exited"))
+    terminal))
+
 (define-command terminal-input () ()
-  (let ((terminal (get-current-terminal))
+  (let ((terminal (get-current-live-terminal))
         (keyseq (last-read-key-sequence)))
     (dolist (key keyseq)
       (let ((mod (logior (if (key-ctrl key) ffi::vterm_mod_ctrl 0)
@@ -177,7 +185,7 @@ With a universal argument, always create a new terminal buffer."
     `(progn
        (define-key *terminal-mode-keymap* ,keyspec ',name)
        (define-command ,name () ()
-         (let ((,terminal (get-current-terminal)))
+         (let ((,terminal (get-current-live-terminal)))
            (terminal:input-key ,terminal ,vterm-key))))))
 
 (define-terminal-key-command terminal-key-return "Return" ffi::vterm_key_enter)
@@ -229,6 +237,11 @@ With a universal argument, always create a new terminal buffer."
      (call-next-method))
     ((typep command 'scroll-down)
      (call-next-method))
+    ;; Once the process has exited the buffer is plain read-only text holding
+    ;; the final screen, so let every other command behave as in any other buffer.
+    ((alexandria:when-let ((terminal (get-current-terminal)))
+       (terminal:process-exited-p terminal))
+     (call-next-method))
     (t
      ;; Any other command (typing, etc.) — remove scrollback from buffer
      (alexandria:when-let ((terminal (get-current-terminal)))
@@ -246,7 +259,7 @@ With a universal argument, always create a new terminal buffer."
     (resize-terminal terminal window)))
 
 (defmethod lem-core:paste-using-mode ((mode terminal-mode) string)
-  (let ((terminal (get-current-terminal)))
+  (let ((terminal (get-current-live-terminal)))
     (loop :for c :across string
           :do (terminal:input-character terminal c))))
 
